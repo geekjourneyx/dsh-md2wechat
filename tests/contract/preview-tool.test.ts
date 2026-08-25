@@ -756,6 +756,28 @@ describe('md2wechat_preview', () => {
     })).resolves.toMatchObject({ receipt: { id: result.previewReceiptId } })
   })
 
+  it('keeps a committed preview successful when the audit warning reporter also fails', async () => {
+    const failingStore = new ArtifactStore(fs as never, workspace, '.dsh/md2wechat', {
+      beforeNativeCommit({ destinationPath }) {
+        if (destinationPath.endsWith('/operations.jsonl')) throw new Error(`raw-audit ${workspace} ${credentialReference}`)
+      },
+    })
+    const tool = createPreviewTool({
+      ...dependencies(new PreviewGateway(), failingStore),
+      reportAuditFailure() {
+        throw new Error(`raw-reporter ${workspace} ${credentialReference}`)
+      },
+    })
+
+    const result = await tool.execute({ manifestPath }, exec())
+
+    await expect(validateCurrentPreview(store, {
+      snapshotInput: await currentSnapshotInput(),
+      credentialValue,
+      now: new Date('2026-08-25T00:05:00.000Z'),
+    })).resolves.toMatchObject({ receipt: { id: result.previewReceiptId } })
+  })
+
   it('serializes concurrent previews and leaves one valid current pointer', async () => {
     const firstGateway = new PreviewGateway()
     const secondGateway = new PreviewGateway()

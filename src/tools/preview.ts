@@ -235,7 +235,12 @@ export function createPreviewTool({
               }, resolved.secrets)
             } catch (operationHistoryError) {
               void operationHistoryError
-              reportAuditFailure('article preview operation history could not be recorded')
+              try {
+                reportAuditFailure('article preview operation history could not be recorded')
+              } catch (auditReporterError) {
+                void auditReporterError
+                // The advisory reporter cannot revoke a preview whose current pointer already committed.
+              }
             }
             return domainResult({
               manifestPath: prepared.current.manifestPath,
