@@ -18,6 +18,10 @@ export interface ArtifactStoreInternals {
 export interface ArtifactOutputStage {
   /** Canonically contained process path reserved for external CLI output. */
   readonly processPath: string
+  /** Revalidate the private output reservation immediately before external spawn. */
+  readonly beforeSpawn: (signal: AbortSignal) => Promise<void>
+  /** Read and bind one complete non-empty regular staged output within a caller-supplied size limit. */
+  read(maxBytes: number, signal?: AbortSignal): Promise<Uint8Array>
   /** Validate the staged output and atomically publish it to its final artifact path. */
   commit(signal?: AbortSignal): Promise<void>
   /** Remove uncommitted staged output without touching a changed or escaping path. */
@@ -30,6 +34,12 @@ export interface ArtifactReadAuthorization {
   readonly processPath: string
   /** Revalidate target identity, version, regular-file type, and content hash immediately before spawn. */
   readonly beforeSpawn: (signal: AbortSignal) => Promise<void>
+}
+
+/** Publication policy for one private external-process output. */
+export interface ArtifactOutputOptions {
+  /** Refuse to replace different bytes at an existing destination. */
+  readonly immutable?: boolean
 }
 
 interface PublicationBinding {
@@ -131,6 +141,65 @@ export class ArtifactStore {
   }
 
   /**
+   * Publish an immutable content-addressed artifact or accept identical existing bytes.
+   * @param relative - Artifact-relative destination.
+   * @param bytes - Complete expected bytes.
+   * @param signal - Optional cancellation signal.
+   */
+  async writeIdenticalOrNew(relative: string, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
+    try {
+      const existing = await this.read(relative, signal)
+      if (sha256(existing) !== sha256(bytes)) throw new Error('existing immutable artifact contains different bytes')
+      return
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'FS_NOT_FOUND')) throw error
+    }
+    await this.writeAtomic(relative, bytes, signal)
+    const published = await this.read(relative, signal)
+    if (sha256(published) !== sha256(bytes)) throw new Error('immutable artifact changed during publication')
+  }
+
+  /**
+   * Remove a regular artifact only while its canonical identity and bytes still match.
+   * @param relative - Artifact-relative candidate owned by an uncommitted transaction.
+   * @param expectedSha256 - Exact lowercase SHA-256 of the owned bytes.
+   * @param signal - Optional cancellation signal.
+   */
+  async removeIfMatching(relative: string, expectedSha256: string, signal?: AbortSignal): Promise<void> {
+    if (!/^[a-f0-9]{64}$/u.test(expectedSha256)) throw new TypeError('expected artifact SHA-256 must be 64 lowercase hexadecimal characters')
+    let target: FsTarget
+    try {
+      target = await this.resolveContained(relative, signal)
+      const info = await this.fs.stat(target, signal)
+      if (info === undefined) return
+      if (info.type !== 'file') return
+      const bytes = await this.fs.readBytes(target, signal, MAX_ARTIFACT_BYTES)
+      if (sha256(bytes) !== expectedSha256) return
+      const current = await this.resolveContained(relative, signal)
+      const currentInfo = await this.fs.stat(current, signal)
+      if (current.targetKey !== target.targetKey || currentInfo?.type !== 'file') return
+      const currentBytes = await this.fs.readBytes(current, signal, MAX_ARTIFACT_BYTES)
+      if (sha256(currentBytes) !== expectedSha256) return
+      await rm(this.fs.processPath(current))
+    } catch (error) {
+      if (error instanceof Error && (('code' in error && (error.code === 'FS_NOT_FOUND' || error.code === 'ENOENT')))) return
+      throw error
+    }
+  }
+
+  /**
+   * Require one canonical contained artifact to remain beneath another.
+   * @param parentRelative - Artifact-relative parent directory.
+   * @param childRelative - Artifact-relative child artifact.
+   * @param signal - Optional cancellation signal.
+   */
+  async assertContainedWithin(parentRelative: string, childRelative: string, signal?: AbortSignal): Promise<void> {
+    const parent = await this.resolveContained(parentRelative, signal)
+    const child = await this.resolveContained(childRelative, signal)
+    if (!this.fs.contains(parent, child)) throw new Error('artifact must stay inside its immutable revision directory')
+  }
+
+  /**
    * Copy an explicit absolute file into contained artifact storage.
    * @param sourceAbsolute - Absolute external source path.
    * @param destinationRelative - Artifact-relative destination.
@@ -172,7 +241,11 @@ export class ArtifactStore {
    * @param signal - Optional cancellation signal for reservation.
    * @returns Explicit staged-output lifecycle.
    */
-  async stageOutput(destinationRelative: string, signal?: AbortSignal): Promise<ArtifactOutputStage> {
+  async stageOutput(
+    destinationRelative: string,
+    signal?: AbortSignal,
+    options: ArtifactOutputOptions = {},
+  ): Promise<ArtifactOutputStage> {
     this.resolve(destinationRelative)
     const stageDirectoryRelative = `.staging/${randomUUID()}`
     const stageRelative = `${stageDirectoryRelative}/output`
@@ -182,6 +255,7 @@ export class ArtifactStore {
     const parent = await this.revalidateContained(stageDirectoryRelative, reservedParent, signal, 'staging directory changed during reservation')
     const target = await this.revalidateContained(stageRelative, reservedTarget, signal, 'staging output changed during reservation')
     let state: 'open' | 'committed' | 'cleaned' = 'open'
+    let validated: { sha256: string; version: string; maxBytes: number } | undefined
 
     const cleanup = async (cleanupSignal?: AbortSignal): Promise<void> => {
       if (state === 'cleaned') return
@@ -191,6 +265,38 @@ export class ArtifactStore {
 
     return {
       processPath: this.fs.processPath(target),
+      beforeSpawn: async (spawnSignal: AbortSignal): Promise<void> => {
+        spawnSignal.throwIfAborted()
+        const currentParent = await this.revalidateContained(
+          stageDirectoryRelative,
+          parent,
+          spawnSignal,
+          'staging directory changed before spawn',
+        )
+        const current = await this.revalidateContained(stageRelative, target, spawnSignal, 'staging output changed before spawn')
+        if (this.fs.processPath(currentParent) !== dirname(this.fs.processPath(current))) {
+          throw new Error('staging output left its reserved directory before spawn')
+        }
+        if (await this.fs.stat(current, spawnSignal) !== undefined) throw new Error('staging output already exists before spawn')
+      },
+      read: async (maxBytes: number, readSignal?: AbortSignal): Promise<Uint8Array> => {
+        if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_ARTIFACT_BYTES) {
+          throw new TypeError('staging output size limit must be a positive safe integer within the artifact limit')
+        }
+        if (state !== 'open') throw new Error('staging output is no longer open')
+        const current = await this.revalidateContained(stageRelative, target, readSignal, 'staging output changed before validation')
+        await this.revalidateContained(stageDirectoryRelative, parent, readSignal, 'staging directory changed before validation')
+        const info = await this.fs.stat(current, readSignal)
+        if (info === undefined || info.type !== 'file') throw new Error('staged output must be a regular file')
+        if (info.size !== undefined && (info.size < 1 || info.size > maxBytes)) throw new Error('staged output size is outside the allowed range')
+        const bytes = await this.fs.readBytes(current, readSignal, maxBytes)
+        if (bytes.byteLength === 0) throw new Error('staged output must not be empty')
+        const final = await this.revalidateContained(stageRelative, target, readSignal, 'staging output changed during validation')
+        const finalInfo = await this.fs.stat(final, readSignal)
+        if (finalInfo?.type !== 'file' || finalInfo.version !== info.version) throw new Error('staged output changed during validation')
+        validated = { sha256: sha256(bytes), version: String(info.version), maxBytes }
+        return bytes
+      },
       commit: async (commitSignal?: AbortSignal): Promise<void> => {
         if (state !== 'open') throw new Error('staging output is no longer open')
         let current: FsTarget
@@ -200,8 +306,15 @@ export class ArtifactStore {
         } catch (error) {
           throw new Error('staging output changed or escaped before commit', { cause: error })
         }
-        const bytes = await this.fs.readBytes(current, commitSignal, MAX_ARTIFACT_BYTES)
-        await this.writeAtomic(destinationRelative, bytes, commitSignal)
+        const binding = validated
+        const info = await this.fs.stat(current, commitSignal)
+        if (info === undefined || info.type !== 'file') throw new Error('staged output must be a regular file before commit')
+        const bytes = await this.fs.readBytes(current, commitSignal, binding?.maxBytes ?? MAX_ARTIFACT_BYTES)
+        if (binding !== undefined && (String(info.version) !== binding.version || sha256(bytes) !== binding.sha256)) {
+          throw new Error('staged output changed after validation')
+        }
+        if (options.immutable === true) await this.writeIdenticalOrNew(destinationRelative, bytes, commitSignal)
+        else await this.writeAtomic(destinationRelative, bytes, commitSignal)
         state = 'committed'
         await cleanup(commitSignal)
       },
