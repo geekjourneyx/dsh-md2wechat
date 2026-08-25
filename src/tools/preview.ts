@@ -13,6 +13,7 @@ import type { ArtifactReadAuthorization, ArtifactStore } from '../workspace/arti
 import { appendOperation } from '../workspace/revision.ts'
 import {
   cleanupPreviewSnapshot,
+  createPreviewPublicationOwnership,
   createPreviewReceipt,
   createPreviewSnapshot,
   PREVIEW_HTML_LIMIT_BYTES,
@@ -47,7 +48,7 @@ interface PreviewToolDependencies {
   previewBackgroundType: PreviewBackgroundType
   now?: () => Date
   previewTtlMs?: number
-  reportAuditFailure?: (message: string) => void
+  reportAuditFailure: (message: string) => void
 }
 
 interface LocalPreviewImage {
@@ -93,6 +94,7 @@ export function createPreviewTool({
   requiredSafeString(previewTheme, 'preview theme')
   oneOf(previewFontSize, ['small', 'medium', 'large'], 'preview font size')
   oneOf(previewBackgroundType, ['default', 'grid', 'none'], 'preview background type')
+  if (typeof reportAuditFailure !== 'function') throw new TypeError('preview audit failure reporter is required')
   return defineTool({
     name: TOOL_NAME,
     description: 'Generate an expiring, signed HTML preview for one immutable md2wechat article revision after one-time approval.',
@@ -216,8 +218,9 @@ export function createPreviewTool({
               issuedAt: issued.toISOString(),
               expiresAt: expires.toISOString(),
             })
-            transaction = { state: 'published', snapshot, receipt }
-            await stage.commit(exec.signal)
+            const ownership = createPreviewPublicationOwnership()
+            transaction = { state: 'published', snapshot, receipt, ownership }
+            await stage.commit(exec.signal, ownership.html)
             transaction = await publishPreviewSnapshot(store, transaction, exec.signal)
             try {
               await appendOperation(store, prepared.current.revision, {
@@ -232,12 +235,7 @@ export function createPreviewTool({
               }, resolved.secrets)
             } catch (operationHistoryError) {
               void operationHistoryError
-              try {
-                reportAuditFailure?.('article preview operation history could not be recorded')
-              } catch (auditReporterError) {
-                void auditReporterError
-                // A committed preview remains usable when advisory audit reporting also fails.
-              }
+              reportAuditFailure('article preview operation history could not be recorded')
             }
             return domainResult({
               manifestPath: prepared.current.manifestPath,

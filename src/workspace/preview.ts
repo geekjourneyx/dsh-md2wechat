@@ -1,7 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 import { PLUGIN_VERSION, SUPPORTED_CLI_VERSION } from '../version.ts'
 import { validateArtifactId, validateArtifactRelativePath } from './artifact-store.ts'
-import type { ArtifactStore } from './artifact-store.ts'
+import type { ArtifactPublicationOwnership, ArtifactStore } from './artifact-store.ts'
 
 const PREVIEW_SCHEMA_VERSION = 1
 const PROOF_KEY_LABEL = 'dsh-md2wechat/preview-proof-key/v1'
@@ -71,11 +71,18 @@ export interface PreviewReceipt {
   signature: string
 }
 
+/** Per-attempt ownership proof for each content-addressed preview artifact. */
+export interface PreviewPublicationOwnership {
+  html: ArtifactPublicationOwnership
+  snapshot: ArtifactPublicationOwnership
+  receipt: ArtifactPublicationOwnership
+}
+
 /** Explicit lifecycle for one preview publication attempt. */
 export type PreviewTransaction =
   | { state: 'prepared'; snapshot: PreviewSnapshot }
-  | { state: 'published'; snapshot: PreviewSnapshot; receipt: PreviewReceipt }
-  | { state: 'committed'; snapshot: PreviewSnapshot; receipt: PreviewReceipt; manifestPath: string }
+  | { state: 'published'; snapshot: PreviewSnapshot; receipt: PreviewReceipt; ownership: PreviewPublicationOwnership }
+  | { state: 'committed'; snapshot: PreviewSnapshot; receipt: PreviewReceipt; ownership: PreviewPublicationOwnership; manifestPath: string }
 
 /** Inputs used to create the signed receipt after staged HTML validation. */
 export interface PreviewReceiptInput {
@@ -104,6 +111,18 @@ export interface CurrentPreview {
 
 /** Maximum complete preview HTML accepted from the external CLI. */
 export const PREVIEW_HTML_LIMIT_BYTES = MAX_PREVIEW_HTML_BYTES
+
+/**
+ * Create empty per-attempt ownership proof for content-addressed preview artifacts.
+ * @returns Mutable ownership flags set only by successful first publication.
+ */
+export function createPreviewPublicationOwnership(): PreviewPublicationOwnership {
+  return {
+    html: { created: false },
+    snapshot: { created: false },
+    receipt: { created: false },
+  }
+}
 
 /**
  * Create a relocation-stable snapshot from exact article, image, transformation, account, and version inputs.
@@ -204,8 +223,8 @@ export async function publishPreviewSnapshot(
   const identity = await store.canonicalIdentity(paths.manifestPath, signal)
   await enqueuePublication(identity, async () => {
     signal?.throwIfAborted()
-    await store.writeIdenticalOrNew(paths.snapshotPath, encodeCanonical(snapshot), signal)
-    await store.writeIdenticalOrNew(paths.receiptPath, encodeCanonical(receipt), signal)
+    await store.writeIdenticalOrNew(paths.snapshotPath, encodeCanonical(snapshot), signal, transaction.ownership.snapshot)
+    await store.writeIdenticalOrNew(paths.receiptPath, encodeCanonical(receipt), signal, transaction.ownership.receipt)
     signal?.throwIfAborted()
     await store.writeAtomic(paths.manifestPath, encodeCanonical({
       schemaVersion: PREVIEW_SCHEMA_VERSION,
@@ -216,7 +235,7 @@ export async function publishPreviewSnapshot(
       previewHtmlPath: paths.previewHtmlPath,
     }), signal)
   })
-  return { state: 'committed', snapshot, receipt, manifestPath: paths.manifestPath }
+  return { state: 'committed', snapshot, receipt, ownership: transaction.ownership, manifestPath: paths.manifestPath }
 }
 
 /**
@@ -245,7 +264,9 @@ export async function validateCurrentPreview(store: ArtifactStore, input: Curren
     assertReceiptBindings(snapshot, receipt)
     if (receipt.id !== pointer.receiptId || receipt.previewHtmlPath !== paths.previewHtmlPath) throw new Error('receipt path changed')
     if (receipt.pluginVersion !== PLUGIN_VERSION || receipt.cliVersion !== SUPPORTED_CLI_VERSION) throw new Error('version changed')
-    if (Date.parse(receipt.expiresAt) <= input.now.getTime()) throw new Error('receipt expired')
+    if (input.now.getTime() < Date.parse(receipt.issuedAt) || Date.parse(receipt.expiresAt) <= input.now.getTime()) {
+      throw new Error('receipt is outside its validity interval')
+    }
     const unsigned = unsignedReceipt(receipt)
     const expectedSignature = sign(unsigned, input.credentialValue)
     if (!safeHexEqual(receipt.signature, expectedSignature)) throw new Error('signature changed')
@@ -254,9 +275,9 @@ export async function validateCurrentPreview(store: ArtifactStore, input: Curren
       throw new Error('preview HTML changed')
     }
     return { snapshot, receipt, manifestPath }
-  } catch (error) {
-    if (input.signal?.aborted) throw new Error('preview validation cancelled')
-    throw new Error('stale preview', { cause: error })
+  } catch {
+    if (input.signal?.aborted) throw safePreviewValidationError('preview validation cancelled')
+    throw safePreviewValidationError('stale preview')
   }
 }
 
@@ -273,21 +294,19 @@ export async function cleanupPreviewSnapshot(
 ): Promise<void> {
   switch (transaction.state) {
     case 'prepared': {
-      const path = previewPaths(transaction.snapshot).snapshotPath
-      const current = await currentPointer(store, transaction.snapshot.revisionId, signal)
-      if (current === 'unknown' || current?.snapshotId === transaction.snapshot.id) return
-      await store.removeIfMatching(path, sha256(encodeCanonical(transaction.snapshot)), signal)
       return
     }
     case 'published': {
       const paths = previewPaths(transaction.snapshot, transaction.receipt)
       const current = await currentPointer(store, transaction.snapshot.revisionId, signal)
       if (current === 'unknown' || current?.receiptId === transaction.receipt.id) return
-      await store.removeIfMatching(paths.receiptPath, sha256(encodeCanonical(transaction.receipt)), signal)
-      if (current?.snapshotId !== transaction.snapshot.id) {
+      if (transaction.ownership.receipt.created) {
+        await store.removeIfMatching(paths.receiptPath, sha256(encodeCanonical(transaction.receipt)), signal)
+      }
+      if (transaction.ownership.snapshot.created && current?.snapshotId !== transaction.snapshot.id) {
         await store.removeIfMatching(paths.snapshotPath, sha256(encodeCanonical(transaction.snapshot)), signal)
       }
-      if (current?.previewHtmlPath !== paths.previewHtmlPath) {
+      if (transaction.ownership.html.created && current?.previewHtmlPath !== paths.previewHtmlPath) {
         await store.removeIfMatching(paths.previewHtmlPath, transaction.receipt.previewHtmlSha256, signal)
       }
       return
@@ -297,6 +316,12 @@ export async function cleanupPreviewSnapshot(
     default:
       return assertNever(transaction)
   }
+}
+
+function safePreviewValidationError(message: 'stale preview' | 'preview validation cancelled'): Error {
+  const error = new Error(message)
+  error.stack = `Error: ${message}`
+  return error
 }
 
 function previewPaths(snapshot: PreviewSnapshot, receipt?: PreviewReceipt) {

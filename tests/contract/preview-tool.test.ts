@@ -226,6 +226,7 @@ describe('md2wechat_preview', () => {
       previewTheme: 'default',
       previewFontSize: 'medium' as const,
       previewBackgroundType: 'none' as const,
+      reportAuditFailure() {},
     }
   }
 
@@ -328,6 +329,12 @@ describe('md2wechat_preview', () => {
     controller.abort(new Error('cancelled before preview'))
     await expect(createPreviewTool(dependencies(gateway)).execute({ manifestPath }, exec(controller.signal))).rejects.toThrow()
     expect(gateway.calls).toHaveLength(0)
+  })
+
+  it('requires a safe audit-failure reporter before registering the tool', () => {
+    const missingReporter = dependencies(new PreviewGateway()) as Partial<ReturnType<typeof dependencies>>
+    delete missingReporter.reportAuditFailure
+    expect(() => createPreviewTool(missingReporter as ReturnType<typeof dependencies>)).toThrow('audit')
   })
 
   it('revalidates article and every local image immediately before spawn', async () => {
@@ -654,6 +661,78 @@ describe('md2wechat_preview', () => {
         credentialValue,
         now: new Date('2026-08-25T00:05:00.000Z'),
       })).resolves.toMatchObject({ receipt: { id: first.previewReceiptId } })
+    },
+  )
+
+  it.each(['prepared', 'html-published', 'snapshot-published', 'receipt-published'] as const)(
+    'never removes artifacts from committed A or B when retry A fails after %s',
+    async (phase) => {
+      const firstGateway = new PreviewGateway()
+      firstGateway.html = '<article>A</article>'
+      const first = await createPreviewTool(dependencies(firstGateway)).execute({ manifestPath }, exec())
+      const firstPointer = JSON.parse(decoder.decode(await store.read(`revisions/${revisionId}/previews/current.json`))) as {
+        snapshotPath: string; receiptPath: string; previewHtmlPath: string
+      }
+
+      const secondGateway = new PreviewGateway()
+      secondGateway.html = '<article>B</article>'
+      const secondDeps = { ...dependencies(secondGateway), layoutBaseUrl: 'https://layout-b.example', now: () => new Date('2026-08-25T00:01:00.000Z') }
+      await createPreviewTool(secondDeps).execute({ manifestPath }, exec())
+      const currentPath = `revisions/${revisionId}/previews/current.json`
+      const secondPointerBytes = await store.read(currentPath)
+      const secondPointer = JSON.parse(decoder.decode(secondPointerBytes)) as {
+        snapshotPath: string; receiptPath: string; previewHtmlPath: string
+      }
+      const protectedPaths = [...new Set([
+        firstPointer.snapshotPath, firstPointer.receiptPath, firstPointer.previewHtmlPath,
+        secondPointer.snapshotPath, secondPointer.receiptPath, secondPointer.previewHtmlPath,
+      ])]
+      const protectedBytes = new Map<string, Uint8Array>()
+      for (const path of protectedPaths) protectedBytes.set(path, await store.read(path))
+      const filesBeforeRetry = await listRegularFiles(store.resolve(`revisions/${revisionId}/previews`))
+
+      const retryGateway = new PreviewGateway()
+      retryGateway.html = '<article>A</article>'
+      let retryStore = new ArtifactStore(fs as never, workspace, '.dsh/md2wechat')
+      if (phase === 'prepared') {
+        retryGateway.run = async (_argv, options) => {
+          if (options?.beforeSpawn !== undefined) await options.beforeSpawn(options.signal ?? new AbortController().signal)
+          throw new Error('retry A prepared failure')
+        }
+      }
+      if (phase === 'html-published') {
+        let identityCalls = 0
+        const originalIdentity = retryStore.canonicalIdentity.bind(retryStore)
+        retryStore.canonicalIdentity = async (path, signal) => {
+          identityCalls++
+          if (identityCalls === 2) throw new Error('retry A failure after HTML publication')
+          return originalIdentity(path, signal)
+        }
+      }
+      if (phase === 'snapshot-published') {
+        retryStore = new ArtifactStore(fs as never, workspace, '.dsh/md2wechat', {
+          beforeNativeCommit({ destinationPath }) {
+            if (destinationPath.includes('/previews/receipts/')) throw new Error('retry A failure after snapshot publication')
+          },
+        })
+      }
+      if (phase === 'receipt-published') {
+        retryStore = new ArtifactStore(fs as never, workspace, '.dsh/md2wechat', {
+          beforeNativeCommit({ destinationPath }) {
+            if (destinationPath.endsWith('/previews/current.json')) throw new Error('retry A failure after receipt publication')
+          },
+        })
+      }
+      const retryDeps = {
+        ...dependencies(retryGateway, retryStore),
+        now: () => new Date('2026-08-25T00:02:00.000Z'),
+      }
+      await expect(createPreviewTool(retryDeps).execute({ manifestPath }, exec())).rejects.toThrow('article preview failed')
+
+      expect(await store.read(currentPath)).toEqual(secondPointerBytes)
+      for (const [path, bytes] of protectedBytes) expect(await store.read(path)).toEqual(bytes)
+      expect(await listRegularFiles(store.resolve(`revisions/${revisionId}/previews`))).toEqual(filesBeforeRetry)
+      expect(first.previewHtmlPath).toBe(firstPointer.previewHtmlPath)
     },
   )
 

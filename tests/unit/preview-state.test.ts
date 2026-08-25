@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ArtifactStore } from '../../src/workspace/artifact-store.ts'
 import {
   cleanupPreviewSnapshot,
+  createPreviewPublicationOwnership,
   createPreviewReceipt,
   createPreviewSnapshot,
   publishPreviewSnapshot,
@@ -184,7 +185,7 @@ describe('signed preview state', () => {
       expiresAt: '2026-08-25T00:10:00.000Z',
     })
     await store.writeAtomic(previewHtmlPath, html)
-    const committed = await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt })
+    const committed = await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt, ownership: createPreviewPublicationOwnership() })
     await expect(validateCurrentPreview(store, {
       snapshotInput: input,
       credentialValue: input.credentialValue,
@@ -215,6 +216,11 @@ describe('signed preview state', () => {
     await expect(validateCurrentPreview(store, {
       snapshotInput: input,
       credentialValue: input.credentialValue,
+      now: new Date('2026-08-24T23:59:59.999Z'),
+    })).rejects.toThrow('stale preview')
+    await expect(validateCurrentPreview(store, {
+      snapshotInput: input,
+      credentialValue: input.credentialValue,
       now: new Date(Number.NaN),
     })).rejects.toThrow('stale preview')
 
@@ -234,6 +240,32 @@ describe('signed preview state', () => {
     })).rejects.toThrow('stale preview')
   })
 
+  it('returns fixed safe stale and cancellation errors without causes, paths, or raw signal reasons', async () => {
+    const raw = `raw-provider ${workspace} credential-reference`
+    const failingStore = Object.create(store) as ArtifactStore
+    failingStore.read = () => Promise.reject(new Error(raw))
+    const stale = await validateCurrentPreview(failingStore, {
+      snapshotInput: baseInput(), credentialValue: 'secret-one', now: new Date('2026-08-25T00:05:00.000Z'),
+    }).catch((error: unknown) => error)
+    expect(stale).toBeInstanceOf(Error)
+    expect((stale as Error).message).toBe('stale preview')
+    expect(stale).not.toHaveProperty('cause')
+    expect((stale as Error).stack).toBe('Error: stale preview')
+    expect(String(stale)).not.toContain(raw)
+    expect(String((stale as Error).stack)).not.toContain(workspace)
+
+    const controller = new AbortController()
+    controller.abort(new Error(raw))
+    const cancelled = await validateCurrentPreview(store, {
+      snapshotInput: baseInput(), credentialValue: 'secret-one', now: new Date('2026-08-25T00:05:00.000Z'), signal: controller.signal,
+    }).catch((error: unknown) => error)
+    expect(cancelled).toBeInstanceOf(Error)
+    expect((cancelled as Error).message).toBe('preview validation cancelled')
+    expect(cancelled).not.toHaveProperty('cause')
+    expect((cancelled as Error).stack).toBe('Error: preview validation cancelled')
+    expect(String(cancelled)).not.toContain(raw)
+  })
+
   it('rejects deleted snapshot, receipt, HTML, pointer path changes, and a consistently addressed invalid signature', async () => {
     const input = baseInput()
     const snapshot = createPreviewSnapshot(input)
@@ -244,7 +276,7 @@ describe('signed preview state', () => {
       issuedAt: '2026-08-25T00:00:00.000Z', expiresAt: '2026-08-25T00:10:00.000Z',
     })
     await store.writeAtomic(previewHtmlPath, html)
-    const committed = await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt })
+    const committed = await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt, ownership: createPreviewPublicationOwnership() })
     const snapshotPath = `revisions/${snapshot.revisionId}/previews/snapshots/${snapshot.id}.json`
     const receiptPath = `revisions/${snapshot.revisionId}/previews/receipts/${receipt.id}.json`
     const snapshotBytes = await store.read(snapshotPath)
@@ -280,7 +312,7 @@ describe('signed preview state', () => {
       snapshot, previewHtmlPath, previewHtmlBytes: html, credentialValue: 'wrong-proof-key',
       issuedAt: '2026-08-25T00:00:00.000Z', expiresAt: '2026-08-25T00:10:00.000Z',
     })
-    await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt: invalidSignature })
+    await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt: invalidSignature, ownership: createPreviewPublicationOwnership() })
     await assertStale()
   })
 
@@ -293,7 +325,11 @@ describe('signed preview state', () => {
       snapshot, previewHtmlPath, previewHtmlBytes: html, credentialValue: input.credentialValue,
       issuedAt: '2026-08-25T00:00:00.000Z', expiresAt: '2026-08-25T00:10:00.000Z',
     })
-    const published: PreviewTransaction = { state: 'published', snapshot, receipt }
+    const ownership = createPreviewPublicationOwnership()
+    ownership.html.created = true
+    ownership.snapshot.created = true
+    ownership.receipt.created = true
+    const published: PreviewTransaction = { state: 'published', snapshot, receipt, ownership }
     await store.writeAtomic(previewHtmlPath, html)
     await store.writeAtomic(`revisions/${snapshot.revisionId}/previews/snapshots/${snapshot.id}.json`, canonicalBytes(snapshot))
     await store.writeAtomic(`revisions/${snapshot.revisionId}/previews/receipts/${receipt.id}.json`, canonicalBytes(receipt))
@@ -319,7 +355,7 @@ describe('signed preview state', () => {
       issuedAt: '2026-08-25T00:00:00.000Z', expiresAt: '2026-08-25T00:10:00.000Z',
     })
     await store.writeAtomic(previewHtmlPath, html)
-    await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt })
+    await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt, ownership: createPreviewPublicationOwnership() })
 
     await cleanupPreviewSnapshot(store, { state: 'prepared', snapshot })
     expect(Array.from(await store.read(snapshotPath))).toEqual(Array.from(canonicalBytes(snapshot)))

@@ -22,10 +22,20 @@ export interface ArtifactOutputStage {
   readonly beforeSpawn: (signal: AbortSignal) => Promise<void>
   /** Read and bind one complete non-empty regular staged output within a caller-supplied size limit. */
   read(maxBytes: number, signal?: AbortSignal): Promise<Uint8Array>
-  /** Validate the staged output and atomically publish it to its final artifact path. */
-  commit(signal?: AbortSignal): Promise<void>
+  /**
+   * Validate the staged output and atomically publish it to its final artifact path.
+   * @param signal - Optional cancellation signal.
+   * @param ownership - Per-attempt flag set only when this commit first creates the immutable destination.
+   * @returns Completion after destination publication and private staging cleanup.
+   */
+  commit(signal?: AbortSignal, ownership?: ArtifactPublicationOwnership): Promise<void>
   /** Remove uncommitted staged output without touching a changed or escaping path. */
   cleanup(signal?: AbortSignal): Promise<void>
+}
+
+/** Mutable proof that one immutable artifact path was first created by the current attempt. */
+export interface ArtifactPublicationOwnership {
+  created: boolean
 }
 
 /** Immutable read authorization passed directly to a managed CLI spawn. */
@@ -145,18 +155,27 @@ export class ArtifactStore {
    * @param relative - Artifact-relative destination.
    * @param bytes - Complete expected bytes.
    * @param signal - Optional cancellation signal.
+   * @param ownership - Per-attempt flag updated immediately after first publication, including before later verification failures.
+   * @returns The supplied or newly created ownership flag.
    */
-  async writeIdenticalOrNew(relative: string, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
+  async writeIdenticalOrNew(
+    relative: string,
+    bytes: Uint8Array,
+    signal?: AbortSignal,
+    ownership: ArtifactPublicationOwnership = { created: false },
+  ): Promise<ArtifactPublicationOwnership> {
     try {
       const existing = await this.read(relative, signal)
       if (sha256(existing) !== sha256(bytes)) throw new Error('existing immutable artifact contains different bytes')
-      return
+      return ownership
     } catch (error) {
       if (!(error instanceof Error && 'code' in error && error.code === 'FS_NOT_FOUND')) throw error
     }
     await this.writeAtomic(relative, bytes, signal)
+    ownership.created = true
     const published = await this.read(relative, signal)
     if (sha256(published) !== sha256(bytes)) throw new Error('immutable artifact changed during publication')
+    return ownership
   }
 
   /**
@@ -297,7 +316,7 @@ export class ArtifactStore {
         validated = { sha256: sha256(bytes), version: String(info.version), maxBytes }
         return bytes
       },
-      commit: async (commitSignal?: AbortSignal): Promise<void> => {
+      commit: async (commitSignal?: AbortSignal, ownership: ArtifactPublicationOwnership = { created: false }): Promise<void> => {
         if (state !== 'open') throw new Error('staging output is no longer open')
         let current: FsTarget
         try {
@@ -313,7 +332,7 @@ export class ArtifactStore {
         if (binding !== undefined && (String(info.version) !== binding.version || sha256(bytes) !== binding.sha256)) {
           throw new Error('staged output changed after validation')
         }
-        if (options.immutable === true) await this.writeIdenticalOrNew(destinationRelative, bytes, commitSignal)
+        if (options.immutable === true) await this.writeIdenticalOrNew(destinationRelative, bytes, commitSignal, ownership)
         else await this.writeAtomic(destinationRelative, bytes, commitSignal)
         state = 'committed'
         await cleanup(commitSignal)
