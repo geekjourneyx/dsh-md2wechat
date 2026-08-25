@@ -34,6 +34,19 @@ function createTestFileSystem(cwd: string) {
       const candidate = relative(parent.targetKey, child.targetKey)
       return candidate === '' || (!candidate.startsWith('..') && !isAbsolute(candidate))
     },
+    async stat(target: TestTarget) {
+      try {
+        const info = await stat(target.targetKey)
+        return {
+          version: `${info.mtimeMs}:${info.size}`,
+          type: info.isFile() ? 'file' : info.isDirectory() ? 'directory' : 'other',
+          size: info.size,
+        }
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined
+        throw error
+      }
+    },
     async readBytes(target: TestTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array> {
       signal?.throwIfAborted()
       try {
@@ -93,6 +106,27 @@ describe('ArtifactStore', () => {
     const bytes = Uint8Array.from([0, 255, 128, 10, 65])
     await store.writeAtomic('images/picture.bin', bytes)
     expect(Array.from(await store.read('images/picture.bin'))).toEqual([0, 255, 128, 10, 65])
+  })
+
+  it('authorizes only an existing regular contained artifact as a CLI input path', async () => {
+    await store.writeAtomic('revisions/article.md', new TextEncoder().encode('# Article\n'))
+
+    await expect(store.processPathForRead('revisions/article.md')).resolves.toBe(
+      await realpath(store.resolve('revisions/article.md')),
+    )
+    await expect(store.processPathForRead('revisions/missing.md')).rejects.toThrow('does not exist')
+
+    await mkdir(store.resolve('revisions/directory'), { recursive: true })
+    await expect(store.processPathForRead('revisions/directory')).rejects.toThrow('regular file')
+  })
+
+  it('rejects a CLI input path that escapes the artifact root through a symlink', async () => {
+    const outside = join(temporary, 'outside-input.md')
+    await writeFile(outside, 'outside')
+    await mkdir(dirname(store.resolve('links/input.md')), { recursive: true })
+    await symlink(outside, store.resolve('links/input.md'))
+
+    await expect(store.processPathForRead('links/input.md')).rejects.toThrow('workspace')
   })
 
   it('rejects a canonical path that escapes through a symlinked directory', async () => {

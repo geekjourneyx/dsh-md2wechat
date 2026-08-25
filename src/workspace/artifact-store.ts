@@ -71,6 +71,25 @@ export class ArtifactStore {
   }
 
   /**
+   * Authorize one existing contained regular artifact as read-only CLI input.
+   * @param relative - Artifact-relative input path.
+   * @param signal - Optional cancellation signal.
+   * @returns Canonical path in the filesystem provider's process world.
+   */
+  async processPathForRead(relative: string, signal?: AbortSignal): Promise<string> {
+    const target = await this.resolveContained(relative, signal)
+    const info = await this.fs.stat(target, signal)
+    if (info === undefined) throw new Error('artifact input does not exist')
+    if (info.type !== 'file') throw new Error('artifact input must be a regular file')
+    const current = await this.resolveContained(relative, signal)
+    if (current.targetKey !== target.targetKey) throw new Error('artifact input changed after validation')
+    const currentInfo = await this.fs.stat(current, signal)
+    if (currentInfo === undefined) throw new Error('artifact input does not exist')
+    if (currentInfo.type !== 'file') throw new Error('artifact input must be a regular file')
+    return this.fs.processPath(current)
+  }
+
+  /**
    * Atomically replace one contained artifact with complete bytes.
    * @param relative - Artifact-relative destination.
    * @param bytes - Complete bytes to publish.
