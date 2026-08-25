@@ -50,8 +50,7 @@ export interface ResolvedConfig {
   credentialRefs: Readonly<Record<string, string>>
 }
 
-/** Host-facing configuration schema with an explicit required binary path. */
-export const Config: Schema<Config> = Schema.object({
+const configFields = {
   binaryPath: Schema.string().required(),
   artifactsDir: Schema.string(),
   layoutBaseUrl: Schema.string(),
@@ -62,20 +61,23 @@ export const Config: Schema<Config> = Schema.object({
   foregroundTimeoutMs: Schema.number(),
   imageJobTimeoutMs: Schema.number(),
   credentialRefs: Schema.dict(Schema.string()) as unknown as Schema<Readonly<Record<CredentialEnvironmentName, string>>>,
+}
+
+Schema.extend('dsh-md2wechat-config', (data, schema, options) => {
+  const [resolved] = Schema.resolve(data, Schema.object(schema.dict!), options, true)
+  for (const key of Object.keys(data)) {
+    if (!(key in schema.dict!)) throw new Schema.ValidationError('unknown configuration field', options)
+  }
+  return [resolved]
 })
 
-const configKeys = new Set<keyof Config>([
-  'binaryPath',
-  'artifactsDir',
-  'layoutBaseUrl',
-  'enableWechatWriteTools',
-  'enableFallbackImageTool',
-  'safeReadRetries',
-  'safeReadRetryDelayMs',
-  'foregroundTimeoutMs',
-  'imageJobTimeoutMs',
-  'credentialRefs',
-])
+/** Host-facing configuration schema with an explicit required binary path. */
+export const Config: Schema<Config> = Schema<Config>({
+  type: 'dsh-md2wechat-config',
+  dict: configFields,
+})
+
+const configKeys = new Set<keyof Config>(Object.keys(configFields) as (keyof Config)[])
 
 /**
  * Validate host configuration and apply the plugin's safe defaults.

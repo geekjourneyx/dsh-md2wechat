@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { resolveConfig, type Config } from '../../src/config.ts'
+import { Config as ConfigSchema, resolveConfig, type Config } from '../../src/config.ts'
 
 const valid: Config = { binaryPath: '/opt/md2wechat' }
 
 describe('resolveConfig', () => {
+  it('rejects unknown fields through the exported configuration schema', () => {
+    expect(() => ConfigSchema({ ...valid, unexpected: true } as unknown as Config)).toThrow('unknown configuration field')
+  })
+
   it('rejects a relative binary path', () => {
     expect(() => resolveConfig({ ...valid, binaryPath: 'md2wechat' })).toThrow('absolute path')
   })
