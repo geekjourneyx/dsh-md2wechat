@@ -126,6 +126,33 @@ describe('ArtifactStore', () => {
     await expect(readFile(store.resolve('claims/item.json'), 'utf8')).resolves.toBe(published)
   })
 
+  it('publishes exclusive artifacts only after a complete fsynced private file and cleans interrupted staging', async () => {
+    const bytes = new TextEncoder().encode('complete claim')
+    let observedTemp = ''
+    const interrupted = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat', {
+      async beforeExclusiveLink(paths) {
+        observedTemp = paths.tempPath
+        await expect(readFile(paths.tempPath, 'utf8')).resolves.toBe('complete claim')
+        await expect(readFile(paths.destinationPath)).rejects.toMatchObject({ code: 'ENOENT' })
+        throw new Error('injected interruption before exclusive link')
+      },
+    })
+    await expect(interrupted.createExclusive('claims/interrupted.json', bytes)).rejects.toThrow('injected interruption')
+    await expect(readFile(interrupted.resolve('claims/interrupted.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(observedTemp)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('maps atomic-link conflicts without exposing a partial replacement', async () => {
+    await store.createExclusive('claims/existing.json', new TextEncoder().encode('winner'))
+    const conflicting = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat', {
+      async link() { const error = new Error('link conflict') as Error & { code: string }; error.code = 'EEXIST'; throw error },
+    })
+    await expect(conflicting.createExclusive('claims/new.json', new TextEncoder().encode('candidate')))
+      .rejects.toMatchObject({ code: 'ARTIFACT_EXISTS' })
+    await expect(readFile(conflicting.resolve('claims/new.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(store.resolve('claims/existing.json'), 'utf8')).resolves.toBe('winner')
+  })
+
   it('authorizes and revalidates one unchanged regular contained artifact as CLI input', async () => {
     const bytes = new TextEncoder().encode('# Article\n')
     const hash = createHash('sha256').update(bytes).digest('hex')

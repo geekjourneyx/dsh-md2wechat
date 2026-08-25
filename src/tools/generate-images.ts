@@ -1,4 +1,3 @@
-import { extname } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { JobId, JobOutcome } from '@deepseek-ai/dsh-jobs'
@@ -18,6 +17,7 @@ import {
   loadImagePlan,
   loadVerifiedImageResult,
   releaseImageClaim,
+  validatePlannedImageTarget,
   validateRemoteImageUrl,
 } from '../workspace/images.ts'
 import type {
@@ -25,7 +25,6 @@ import type {
   LoadedImagePlan,
   LoadedImagePlanItem,
   RemoteImageAcquisitionOptions,
-  SupportedImageMime,
 } from '../workspace/images.ts'
 import { appendOperation } from '../workspace/revision.ts'
 import { loadCurrentArticleRevision } from './improve-article.ts'
@@ -41,6 +40,8 @@ declare module '@deepseek-ai/dsh-jobs' {
 const TOOL_NAME = 'md2wechat_generate_images'
 const JOB_KIND = 'md2wechat-image'
 const JOB_OUTPUT_LIMIT_BYTES = 16 * 1024
+const MAX_PLAN_PATHS = 32
+const MAX_BATCH_ITEMS = 128
 const REQUIRED_CREDENTIALS = ['IMAGE_API_KEY', 'WECHAT_APPID', 'WECHAT_SECRET'] as const satisfies readonly CredentialEnvironmentName[]
 
 interface PreparedBatch {
@@ -66,6 +67,7 @@ export interface GenerateImagesToolDependencies {
   now?: () => Date
   claimNonce?: () => string
   claimOwnerIsLive?: (claim: ImageClaim) => boolean | Promise<boolean>
+  reportAuditFailure: (message: string) => void
 }
 
 /** Create the one-approval background fallback image tool. */
@@ -84,6 +86,7 @@ export function createGenerateImagesTool({
   now = () => new Date(),
   claimNonce,
   claimOwnerIsLive,
+  reportAuditFailure,
 }: GenerateImagesToolDependencies) {
   positiveInteger(imageJobTimeoutMs, 'image job timeout')
   positiveInteger(imageMaxBytes, 'maximum image bytes')
@@ -94,6 +97,7 @@ export function createGenerateImagesTool({
   if (typeof store.read !== 'function' || typeof store.createExclusive !== 'function') throw new TypeError('artifact store is required')
   if (typeof credentials.resolve !== 'function') throw new TypeError('credential resolver is required')
   if (typeof approval.request !== 'function') throw new TypeError('approval service is required')
+  if (typeof reportAuditFailure !== 'function') throw new TypeError('image audit failure reporter is required')
   return defineTool({
     name: TOOL_NAME,
     description: 'Use the configured md2wechat image provider only when the DSH Agent has no image-generation capability; generation and WeChat material upload require one-time approval.',
@@ -161,6 +165,7 @@ export function createGenerateImagesTool({
               imageAcquisitionTimeoutMs, acquire, now,
               ...(claimNonce === undefined ? {} : { claimNonce }),
               claimOwnerIsLive: claimOwnerIsLive ?? (claim => defaultClaimOwnerIsLive(jobs, claim, owner, imageJobTimeoutMs)),
+              reportAuditFailure,
             })
           } catch {
             return controller.signal.aborted
@@ -218,6 +223,7 @@ interface RunBatchInput {
   now: () => Date
   claimNonce?: () => string
   claimOwnerIsLive: (claim: ImageClaim) => boolean | Promise<boolean>
+  reportAuditFailure: (message: string) => void
 }
 
 async function runBatch(input: RunBatchInput): Promise<JobOutcome> {
@@ -232,10 +238,8 @@ async function runBatch(input: RunBatchInput): Promise<JobOutcome> {
     itemIds: input.prepared.remaining.map(entry => entry.item.id), createdAt: validNow(input.now).toISOString(),
   })
   const snapshotOwnership: ArtifactPublicationOwnership = { created: false }
-  let snapshotCreated = false
   try {
     await input.store.createExclusive(snapshotPath, snapshot, signal, snapshotOwnership)
-    snapshotCreated = true
     for (const entry of input.prepared.remaining) {
       if (signal.aborted) break
       try {
@@ -249,7 +253,7 @@ async function runBatch(input: RunBatchInput): Promise<JobOutcome> {
   } catch {
     if (!signal.aborted) failed = Math.max(failed, input.prepared.remaining.length - resultPaths.length)
   } finally {
-    if (snapshotCreated) await input.store.removeIfMatching(snapshotPath, sha256(snapshot)).catch(() => undefined)
+    if (snapshotOwnership.created) await input.store.removeIfMatching(snapshotPath, sha256(snapshot)).catch(() => undefined)
   }
   if (signal.aborted) return { status: 'killed', detail: 'cancelled', output: safeJobOutput('killed', input.prepared.remaining.length, resultPaths.length, resultPaths) }
   if (failed > 0 || resultPaths.length !== input.prepared.remaining.length) return { status: 'failed', detail: 'partial failure', output: safeJobOutput('failed', input.prepared.remaining.length, resultPaths.length, resultPaths) }
@@ -281,7 +285,7 @@ async function processImageItem(input: RunBatchInput, plan: LoadedImagePlan, ite
       maxBytes: input.imageMaxBytes, maxRedirects: input.imageMaxRedirects,
       timeoutMs: input.imageAcquisitionTimeoutMs, signal,
     } satisfies RemoteImageAcquisitionOptions)
-    assertTargetExtension(item.targetPath, acquired.mimeType)
+    validatePlannedImageTarget(item.targetPath, acquired.mimeType)
     const result = createPersistedImageResult({
       plan, item, bytes: acquired.bytes, mimeType: acquired.mimeType,
       remoteUrl: projected.originalUrl, mediaId: projected.mediaId, wechatUrl: projected.wechatUrl,
@@ -295,10 +299,14 @@ async function processImageItem(input: RunBatchInput, plan: LoadedImagePlan, ite
       if (targetOwnership.created) await input.store.removeIfMatching(item.targetPath, result.sha256).catch(() => undefined)
       throw error
     }
-    await appendOperation(input.store, input.prepared.current.revision, {
-      operation: item.kind === 'image' ? 'generate_image' : item.kind === 'cover' ? 'generate_cover' : 'generate_infographic', createdAt: result.createdAt,
-      details: { planId: plan.planId, itemId: item.id, resultPath, targetPath: item.targetPath, sha256: result.sha256 },
-    }, [])
+    try {
+      await appendOperation(input.store, input.prepared.current.revision, {
+        operation: item.kind === 'image' ? 'generate_image' : item.kind === 'cover' ? 'generate_cover' : 'generate_infographic', createdAt: result.createdAt,
+        details: { planId: plan.planId, itemId: item.id, resultPath, targetPath: item.targetPath, sha256: result.sha256 },
+      }, [])
+    } catch {
+      try { input.reportAuditFailure('md2wechat image audit record failed after committed result') } catch { /* reporter failures cannot undo committed image bytes */ }
+    }
     return resultPath
   } finally {
     await releaseImageClaim(input.store, ownership).catch(() => undefined)
@@ -326,6 +334,7 @@ async function prepareBatch(store: ArtifactStore, manifestPath: string, planPath
       const result = await loadVerifiedImageResult(store, plan, item, signal)
       if (result === undefined) remaining.push({ plan, item })
       else completedPaths.push(imageResultPath(plan, item))
+      if (remaining.length + completedPaths.length > MAX_BATCH_ITEMS) throw new Error('image generation batch contains too many items')
     }
   }
   const verified = await loadCurrentArticleRevision(store, manifestPath, signal)
@@ -344,7 +353,7 @@ function executionArgv(item: LoadedImagePlanItem, article: string): readonly str
 function expectsArticle(item: LoadedImagePlanItem): boolean { return item.kind !== 'image' || item.preset !== undefined }
 
 function projectImageResponse(response: CliEnvelope, item: LoadedImagePlanItem): { originalUrl: string; mediaId: string; wechatUrl: string } {
-  if (!response.success || response.code !== 'OK' || response.message !== 'Success' || response.schema_version !== 'v1' || response.status !== 'completed' || response.retryable !== false || response.error !== undefined || response.error_details !== undefined) throw new Error('md2wechat image generation did not complete successfully')
+  if (!response.success || response.code !== 'OK' || response.message !== 'Success' || response.schema_version !== 'v1' || response.status !== 'completed' || response.retryable !== false || response.error !== undefined || response.error_details !== undefined || response.next_actions !== undefined) throw new Error('md2wechat image generation did not complete successfully')
   const data = strictRecord(response.data, 'image response data')
   exactKeys(data, ['prompt', 'original_url', 'media_id', 'wechat_url', 'width', 'height'], 'image response data')
   if (data.prompt !== item.prompt) throw new Error('image response prompt does not match the immutable plan')
@@ -355,11 +364,6 @@ function projectImageResponse(response: CliEnvelope, item: LoadedImagePlanItem):
     mediaId: safeOpaque(data.media_id, 'image media ID'),
     wechatUrl: validateRemoteImageUrl(requiredString(data.wechat_url, 'image WeChat URL')),
   }
-}
-
-function assertTargetExtension(path: string, mime: SupportedImageMime): void {
-  const expected = mime === 'image/png' ? '.png' : mime === 'image/jpeg' ? '.jpg' : mime === 'image/gif' ? '.gif' : '.webp'
-  if (extname(path).toLowerCase() !== expected) throw new Error('planned image target extension does not match the downloaded raster type')
 }
 
 async function publishExclusiveOrIdentical(
@@ -380,7 +384,9 @@ async function publishExclusiveOrIdentical(
 }
 
 function safeJobOutput(status: 'completed' | 'failed' | 'killed', total: number, completed: number, resultPaths: readonly string[]): string {
-  return JSON.stringify({ status, total, completed, failed: total - completed, resultPaths })
+  const complete = JSON.stringify({ status, total, completed, failed: total - completed, resultPaths })
+  if (Buffer.byteLength(complete) <= JOB_OUTPUT_LIMIT_BYTES) return complete
+  return JSON.stringify({ status, total, completed, failed: total - completed, resultPathsOmitted: true })
 }
 
 function defaultClaimOwnerIsLive(jobs: Pick<Context['jobs'], 'get'>, claim: ImageClaim, owner: NonNullable<Parameters<Context['jobs']['get']>[1]>, staleAfterMs: number): boolean {
@@ -389,7 +395,7 @@ function defaultClaimOwnerIsLive(jobs: Pick<Context['jobs'], 'get'>, claim: Imag
 }
 
 function assertConfiguredRefs(refs: Readonly<Record<string, string>>): void { for (const name of REQUIRED_CREDENTIALS) if (typeof refs[name] !== 'string' || refs[name]!.length === 0) throw new SafeGenerateImagesError('fallback image credentials are not configured') }
-function validatePlanPaths(value: readonly string[]): readonly string[] { if (!Array.isArray(value) || value.length === 0) throw new SafeGenerateImagesError('at least one image plan path is required'); if (!value.every(path => typeof path === 'string' && path.length > 0)) throw new SafeGenerateImagesError('image plan paths must be non-empty strings'); if (new Set(value).size !== value.length) throw new SafeGenerateImagesError('duplicate image plan paths are not allowed'); return [...value] }
+function validatePlanPaths(value: readonly string[]): readonly string[] { if (!Array.isArray(value) || value.length === 0) throw new SafeGenerateImagesError('at least one image plan path is required'); if (value.length > MAX_PLAN_PATHS) throw new SafeGenerateImagesError('too many image plan paths'); if (!value.every(path => typeof path === 'string' && path.length > 0 && path.length <= 1200)) throw new SafeGenerateImagesError('image plan paths must be bounded non-empty strings'); if (new Set(value).size !== value.length) throw new SafeGenerateImagesError('duplicate image plan paths are not allowed'); return [...value] }
 function safePlanLocations(manifestPath: string, planPaths: readonly string[]): readonly string[] { const safeManifest = /^revisions\/[a-f0-9]{64}\/manifest\.json$/u.test(manifestPath) ? [manifestPath] : []; const safePlans = Array.isArray(planPaths) ? planPaths.filter(path => typeof path === 'string' && /^revisions\/[a-f0-9]{64}\/plans\/[a-f0-9]{64}\.json$/u.test(path)) : []; return [...safeManifest, ...safePlans] }
 function assertKnownArguments(value: object, allowed: readonly string[]): void { const keys = new Set(allowed); for (const key of Object.keys(value)) if (!keys.has(key)) throw new SafeGenerateImagesError(`unknown ${TOOL_NAME} argument`) }
 function strictRecord(value: unknown, field: string): Record<string, unknown> { if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new Error(`${field} must be an object`); return value as Record<string, unknown> }

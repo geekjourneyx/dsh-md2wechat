@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { createPrivateKey } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { createServer } from 'node:https'
 import {
   acquireImageClaim,
   acquireRemoteImage,
@@ -6,6 +9,7 @@ import {
   encodeCanonical,
   isPublicNetworkAddress,
   loadImagePlan,
+  nodePinnedHttpsRequest,
   releaseImageClaim,
   validateRemoteImageUrl,
 } from '../../src/workspace/images.ts'
@@ -30,7 +34,10 @@ describe('image state', () => {
   it.each([
     '127.0.0.1', '0.0.0.0', '10.0.0.1', '172.16.0.1', '192.168.0.1',
     '169.254.1.1', '100.64.0.1', '224.0.0.1', '::1', '::', 'fc00::1',
-    'fe80::1', 'ff00::1', '::ffff:127.0.0.1', '2001:db8::1',
+    'fe80::1', 'ff00::1', '::ffff:127.0.0.1', '::ffff:192.168.1.1', '::ffff:8.8.8.8', '2001:db8::1',
+    '192.31.196.1', '192.52.193.1', '192.88.99.1', '192.175.48.1',
+    '64:ff9b::c0a8:101', '64:ff9b:1::1', '2001::1', '2001:10::1', '2001:20::1', '2002:c0a8:101::1',
+    '2620:4f:8000::1', '3fff::1', '5f00::1',
   ])('rejects non-public address %s', (address) => {
     expect(isPublicNetworkAddress(address)).toBe(false)
   })
@@ -69,6 +76,43 @@ describe('image state', () => {
     expect(resolveCalls).toEqual(['public.example', 'private.example'])
   })
 
+  it('performs no DNS or transport work when the parent is already aborted', async () => {
+    const parent = new AbortController(); parent.abort(new Error('already cancelled'))
+    let resolves = 0; let requests = 0
+    await expect(acquireRemoteImage('https://images.example/file.png', {
+      maxBytes: 64, maxRedirects: 0, timeoutMs: 1000, signal: parent.signal,
+      resolve: async () => { resolves += 1; return ['93.184.216.34'] },
+      request: async () => { requests += 1; return { status: 500, headers: {}, body: new Uint8Array() } },
+    })).rejects.toThrow()
+    expect({ resolves, requests }).toEqual({ resolves: 0, requests: 0 })
+  })
+
+  it('uses the prevalidated address with Node all:true lookup options in the production HTTPS transport', async () => {
+    const [key, cert] = await Promise.all([
+      readFile(new URL('../fixtures/pinned.invalid-key.pk8.b64', import.meta.url), 'utf8'),
+      readFile(new URL('../fixtures/pinned.invalid-cert.pem', import.meta.url), 'utf8'),
+    ])
+    const privateKey = createPrivateKey({ key: Buffer.from(key.trim(), 'base64'), format: 'der', type: 'pkcs8' })
+      .export({ format: 'pem', type: 'pkcs8' })
+    const server = createServer({ key: privateKey, cert }, (_request, response) => {
+      response.writeHead(200, { 'content-length': '2', 'content-type': 'text/plain' })
+      response.end('ok')
+    })
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('local server address unavailable')
+    try {
+      const response = await nodePinnedHttpsRequest({
+        url: `https://pinned.invalid:${address.port}/`, hostname: 'pinned.invalid', port: address.port,
+        path: '/', address: '127.0.0.1', servername: 'pinned.invalid', signal: new AbortController().signal, maxBytes: 64,
+        ca: cert,
+      })
+      expect(response).toMatchObject({ status: 200, body: new TextEncoder().encode('ok') })
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  })
+
   it('strictly loads the canonical Task 5 plan and rejects unknown fields or changed IDs', async () => {
     const revisionId = 'a'.repeat(64)
     const item = {
@@ -85,16 +129,79 @@ describe('image state', () => {
     const items = [item]
     const planId = canonicalImagePlanId(revisionId, items)
     const value = { schemaVersion: 1, planId, revisionId, createdAt: '2026-08-25T00:00:00.000Z', items }
-    const store = { read: async () => encodeCanonical(value) }
+    const store = { readBounded: async () => encodeCanonical(value) }
     const plan = await loadImagePlan(store as never, `revisions/${revisionId}/plans/${planId}.json`, revisionId, `revisions/${revisionId}/article.md`)
     expect(plan.items[0]).toMatchObject({ id: 'hero', prompt: 'rendered', targetPath: `revisions/${revisionId}/images/hero.png` })
     const unknown = { ...value, debug: 'secret' }
-    await expect(loadImagePlan({ read: async () => encodeCanonical(unknown) } as never, plan.path, revisionId, `revisions/${revisionId}/article.md`)).rejects.toThrow('unknown')
+    await expect(loadImagePlan({ readBounded: async () => encodeCanonical(unknown) } as never, plan.path, revisionId, `revisions/${revisionId}/article.md`)).rejects.toThrow('unknown')
+  })
+
+  it('accepts real 3.3.0 cover defaults and uses resolved preset/aspect semantics', async () => {
+    const revisionId = 'c'.repeat(64)
+    const articlePath = `revisions/${revisionId}/article.md`
+    const item = {
+      original: { id: 'cover', kind: 'cover', prompt: 'direction only', targetPath: 'images/cover.png' },
+      targetArtifactPath: `revisions/${revisionId}/images/cover.png`,
+      cliPlan: {
+        mode: 'plan', command: 'generate_cover', execution_owner: 'host_agent', side_effects: false,
+        requires_provider: false, requires_image_api_key: false, prompt: 'Rendered cover prompt', raw_prompt: '', preset: 'cover-default',
+        archetype: 'cover', primary_use_case: 'cover', compatible_use_cases: ['cover'], recommended_aspect_ratios: ['16:9'],
+        default_aspect_ratio: '16:9', article: articlePath, title: 'Fixture', summary: '', keywords: '', style: 'editorial', aspect: '16:9', size: '', model_hint: '', suggested_filename: 'fixture.png', alt_text: 'Fixture',
+      },
+    }
+    const items = [item]; const planId = canonicalImagePlanId(revisionId, items)
+    const plan = await loadImagePlan({ readBounded: async () => encodeCanonical({ schemaVersion: 1, planId, revisionId, createdAt: '2026-08-25T00:00:00.000Z', items }) } as never, `revisions/${revisionId}/plans/${planId}.json`, revisionId, articlePath)
+    expect(plan.items[0]).toMatchObject({ preset: 'cover-default', aspect: '16:9', prompt: 'Rendered cover prompt' })
+  })
+
+  it.each([
+    { id: 'diagram', kind: 'image' as const, originalPreset: 'diagram', resolvedPreset: 'diagram', archetype: 'diagram', aspect: '4:3' },
+    { id: 'info', kind: 'infographic' as const, originalPreset: undefined, resolvedPreset: 'infographic-default', archetype: 'infographic', aspect: '3:4' },
+    { id: 'compatible-cover', kind: 'cover' as const, originalPreset: 'infographic-comparison', resolvedPreset: 'infographic-comparison', archetype: 'infographic', aspect: '16:9', compatible: ['infographic', 'cover'] },
+  ])('accepts real 3.3.0 resolved $kind preset/aspect output', async fixture => {
+    const revisionId = 'e'.repeat(64); const articlePath = `revisions/${revisionId}/article.md`
+    const original = { id: fixture.id, kind: fixture.kind, prompt: 'direction', targetPath: `images/${fixture.id}.png`, ...(fixture.originalPreset === undefined ? {} : { preset: fixture.originalPreset }) }
+    const cliPlan = { mode: 'plan', command: fixture.kind === 'image' ? 'generate_image' : fixture.kind === 'cover' ? 'generate_cover' : 'generate_infographic', execution_owner: 'host_agent', side_effects: false, requires_provider: false, requires_image_api_key: false,
+      prompt: `Rendered ${fixture.kind} prompt`, raw_prompt: '', preset: fixture.resolvedPreset, archetype: fixture.archetype, primary_use_case: fixture.archetype,
+      compatible_use_cases: 'compatible' in fixture ? fixture.compatible : [fixture.archetype], recommended_aspect_ratios: [fixture.aspect], default_aspect_ratio: fixture.aspect,
+      article: articlePath, title: 'Fixture', summary: 'Summary', keywords: '', style: 'editorial', aspect: fixture.aspect, size: '', model_hint: '', suggested_filename: `${fixture.id}.png`, alt_text: 'Fixture' }
+    const items = [{ original, targetArtifactPath: `revisions/${revisionId}/images/${fixture.id}.png`, cliPlan }]; const planId = canonicalImagePlanId(revisionId, items)
+    const plan = await loadImagePlan({ readBounded: async () => encodeCanonical({ schemaVersion: 1, planId, revisionId, createdAt: '2026-08-25T00:00:00.000Z', items }) } as never, `revisions/${revisionId}/plans/${planId}.json`, revisionId, articlePath)
+    expect(plan.items[0]).toMatchObject({ preset: fixture.resolvedPreset, aspect: fixture.aspect, prompt: `Rendered ${fixture.kind} prompt` })
+  })
+
+  it('rejects a bounded plan containing an embedded Unix, Windows, UNC, or file process path without a raw cause', async () => {
+    const revisionId = 'f'.repeat(64); const articlePath = `revisions/${revisionId}/article.md`
+    for (const leaked of [
+      '/Users/private/secret.md', 'argument=/Users/private/secret.md',
+      'C:\\Users\\private\\secret.md', 'argument=C:\\Users\\private\\secret.md',
+      '\\\\server\\share\\secret.md', 'argument=\\\\server\\share\\secret.md',
+      'file:///private/secret.md',
+    ]) {
+      const original = { id: 'hero', kind: 'image', prompt: 'raw', targetPath: 'images/hero.png' }
+      const cliPlan = { mode: 'plan', command: 'generate_image', execution_owner: 'host_agent', side_effects: false, requires_provider: false, requires_image_api_key: false, prompt: `render ${leaked}`, raw_prompt: 'raw', preset: '', archetype: '', primary_use_case: '', compatible_use_cases: ['https://example.com/valid/path'], recommended_aspect_ratios: [], default_aspect_ratio: '', article: '', title: '', summary: '', keywords: '', style: '', aspect: '', size: '', model_hint: '', suggested_filename: '', alt_text: '' }
+      const items = [{ original, targetArtifactPath: `revisions/${revisionId}/images/hero.png`, cliPlan }]; const planId = canonicalImagePlanId(revisionId, items)
+      const error = await loadImagePlan({ readBounded: async () => encodeCanonical({ schemaVersion: 1, planId, revisionId, createdAt: '2026-08-25T00:00:00.000Z', items }) } as never, `revisions/${revisionId}/plans/${planId}.json`, revisionId, articlePath).catch(value => value)
+      expect(String(error)).toContain('path'); expect((error as Error).cause).toBeUndefined()
+    }
+  })
+
+  it('rejects oversized plans and recursively embedded process paths without raw causes', async () => {
+    const revisionId = 'd'.repeat(64); const articlePath = `revisions/${revisionId}/article.md`
+    const original = { id: 'hero', kind: 'image', prompt: 'raw', targetPath: 'images/hero.png' }
+    const cliPlan = { mode: 'plan', command: 'generate_image', execution_owner: 'host_agent', side_effects: false, requires_provider: false, requires_image_api_key: false, prompt: `leak /Users/private/secret.md ${'x'.repeat(1024 * 1024)}`, raw_prompt: 'raw', preset: '', archetype: '', primary_use_case: '', compatible_use_cases: [], recommended_aspect_ratios: [], default_aspect_ratio: '', article: '', title: '', summary: '', keywords: '', style: '', aspect: '', size: '', model_hint: '', suggested_filename: '', alt_text: '' }
+    const items = [{ original, targetArtifactPath: `revisions/${revisionId}/images/hero.png`, cliPlan }]; const planId = canonicalImagePlanId(revisionId, items)
+    const bytes = encodeCanonical({ schemaVersion: 1, planId, revisionId, createdAt: '2026-08-25T00:00:00.000Z', items })
+    const error = await loadImagePlan({ readBounded: async () => bytes } as never, `revisions/${revisionId}/plans/${planId}.json`, revisionId, articlePath).catch(value => value)
+    expect(error).toBeInstanceOf(Error)
+    expect(String(error)).toMatch(/size|path|limit/iu)
+    expect((error as Error).cause).toBeUndefined()
   })
 
   it('creates one exclusive claim across stores and releases only matching ownership', async () => {
     const files = new Map<string, Uint8Array>()
     const fakeStore = () => ({
+      canonicalIdentity: async (path: string) => path,
       async createExclusive(path: string, bytes: Uint8Array) {
         if (files.has(path)) { const error = new Error('exists') as Error & { code: string }; error.code = 'ARTIFACT_EXISTS'; throw error }
         files.set(path, bytes)
@@ -124,6 +231,7 @@ describe('image state', () => {
   it('reaps a dead owner after exact revalidation and an old nonce cannot release the replacement', async () => {
     const files = new Map<string, Uint8Array>()
     const store = {
+      canonicalIdentity: async (path: string) => path,
       async createExclusive(path: string, bytes: Uint8Array) { if (files.has(path)) { const error = new Error('exists') as Error & { code: string }; error.code = 'ARTIFACT_EXISTS'; throw error }; files.set(path, bytes); return { created: true } },
       async read(path: string) { return files.get(path)! },
       async removeIfMatching(path: string, expected: string) { const bytes = files.get(path); if (bytes !== undefined && (await import('node:crypto')).createHash('sha256').update(bytes).digest('hex') === expected) files.delete(path) },
@@ -132,11 +240,26 @@ describe('image state', () => {
     const item = { id: 'hero', targetPath: `revisions/${'a'.repeat(64)}/images/hero.png` } as never
     const common = { sessionId: 'session', now: new Date('2026-08-25T00:00:00.000Z'), staleAfterMs: 1000 }
     const old = await acquireImageClaim(store as never, plan, item, { ...common, jobId: 'md2wechat-image-1', ownerIsLive: async () => false, nonce: 'old' })
+    files.set(old.path, new TextEncoder().encode('{corrupt claim'))
     const replacement = await acquireImageClaim(store as never, plan, item, { ...common, jobId: 'md2wechat-image-2', ownerIsLive: async () => false, nonce: 'new' })
     await releaseImageClaim(store as never, old)
     expect(files.size).toBe(1)
     await releaseImageClaim(store as never, replacement)
     expect(files.size).toBe(0)
+  })
+
+  it('excludes the same canonical target across different plans', async () => {
+    const files = new Map<string, Uint8Array>()
+    const store = {
+      canonicalIdentity: async () => '/canonical/revisions/images/shared.png',
+      async createExclusive(path: string, bytes: Uint8Array) { if (files.has(path)) { const error = new Error('exists') as Error & { code: string }; error.code = 'ARTIFACT_EXISTS'; throw error }; files.set(path, bytes); return { created: true } },
+      async read(path: string) { return files.get(path)! },
+      async removeIfMatching() {},
+    }
+    const item = { id: 'hero', targetPath: `revisions/${'a'.repeat(64)}/images/shared.png` } as never
+    const first = await acquireImageClaim(store as never, { revisionId: 'a'.repeat(64), planId: '1'.repeat(64) } as never, item, { jobId: 'md2wechat-image-1', sessionId: 's', now: new Date(), staleAfterMs: 1000, ownerIsLive: async () => true, nonce: 'first' })
+    await expect(acquireImageClaim(store as never, { revisionId: 'a'.repeat(64), planId: '2'.repeat(64) } as never, item, { jobId: 'md2wechat-image-2', sessionId: 's', now: new Date(), staleAfterMs: 1000, ownerIsLive: async () => true, nonce: 'second' })).rejects.toThrow('claimed')
+    expect(first.path).toContain('image-claims')
   })
 
   it.each([

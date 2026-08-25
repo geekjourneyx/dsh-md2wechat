@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { open, mkdir, rename, rm, rmdir } from 'node:fs/promises'
+import { open, link, mkdir, rename, rm, rmdir } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
@@ -10,8 +10,10 @@ const windowsDeviceName = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/iu
 /** Native publication hooks used only to inject storage-boundary failures in tests. */
 export interface ArtifactStoreInternals {
   rename?: (source: string, destination: string) => Promise<void>
+  link?: (source: string, destination: string) => Promise<void>
   beforeNativeStage?: (paths: { destinationPath: string; directoryPath: string }) => void | Promise<void>
   beforeNativeCommit?: (paths: { destinationPath: string; tempPath: string }) => void | Promise<void>
+  beforeExclusiveLink?: (paths: { destinationPath: string; tempPath: string }) => void | Promise<void>
 }
 
 /** Private external-process output with explicit publication and cleanup. */
@@ -96,6 +98,21 @@ export class ArtifactStore {
   async read(relative: string, signal?: AbortSignal): Promise<Uint8Array> {
     const target = await this.resolveContained(relative, signal)
     return this.fs.readBytes(target, signal, MAX_ARTIFACT_BYTES)
+  }
+
+  /**
+   * Read one contained artifact without allowing the filesystem provider to return more than a caller-owned limit.
+   * @param relative - Artifact-relative path.
+   * @param maxBytes - Positive byte limit no larger than the artifact-store maximum.
+   * @param signal - Optional cancellation signal.
+   * @returns Complete artifact bytes within the requested limit.
+   */
+  async readBounded(relative: string, maxBytes: number, signal?: AbortSignal): Promise<Uint8Array> {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_ARTIFACT_BYTES) throw new TypeError('artifact read limit is invalid')
+    const target = await this.resolveContained(relative, signal)
+    const info = await this.fs.stat(target, signal)
+    if (info?.size !== undefined && info.size > maxBytes) throw new Error('artifact exceeds the requested read limit')
+    return this.fs.readBytes(target, signal, maxBytes)
   }
 
   /**
@@ -195,35 +212,52 @@ export class ArtifactStore {
     signal?.throwIfAborted()
     const target = await this.resolveContained(relative, signal)
     const destination = this.fs.processPath(target)
+    const tempDirectoryRelative = `.exclusive/${randomUUID()}`
+    const tempRelative = `${tempDirectoryRelative}/payload`
+    const tempTarget = await this.resolveContained(tempRelative, signal)
+    const tempParent = await this.resolveContained(tempDirectoryRelative, signal)
     await mkdir(dirname(destination), { recursive: true })
+    await mkdir(this.fs.processPath(tempParent), { recursive: true, mode: 0o700 })
     const binding = await this.bindPublication(target, relative, signal)
+    const boundTempParent = await this.revalidateContained(tempDirectoryRelative, tempParent, signal, 'exclusive temporary directory changed before write')
+    const boundTemp = await this.revalidateContained(tempRelative, tempTarget, signal, 'exclusive temporary file changed before write')
     let handle: Awaited<ReturnType<typeof open>> | undefined
+    let primary: unknown
     try {
-      handle = await open(this.fs.processPath(binding.target), 'wx', 0o600)
-      ownership.created = true
+      handle = await open(this.fs.processPath(boundTemp), 'wx', 0o600)
       await handle.writeFile(bytes, signal === undefined ? undefined : { signal })
       await handle.sync()
       await handle.close()
       handle = undefined
+      signal?.throwIfAborted()
+      await this.internals.beforeExclusiveLink?.({ destinationPath: this.fs.processPath(binding.target), tempPath: this.fs.processPath(boundTemp) })
       const current = await this.revalidateBinding(binding, signal)
+      const currentTemp = await this.revalidateTemp(this.fs.processPath(boundTemp), boundTemp, boundTempParent, tempRelative, signal)
+      try {
+        await (this.internals.link ?? link)(this.fs.processPath(currentTemp), this.fs.processPath(current.target))
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
+          const exists = new Error('exclusive artifact already exists') as Error & { code: string }
+          exists.code = 'ARTIFACT_EXISTS'
+          throw exists
+        }
+        throw error
+      }
+      ownership.created = true
       const info = await this.fs.stat(current.target, signal)
       if (info?.type !== 'file') throw new Error('exclusive artifact is not a regular file after creation')
       const currentBytes = await this.fs.readBytes(current.target, signal, MAX_ARTIFACT_BYTES)
       if (sha256(currentBytes) !== sha256(bytes)) throw new Error('exclusive artifact changed during creation')
-      return ownership
     } catch (error) {
-      let failure: unknown = error
-      if (handle !== undefined) failure = await closeAfterFailure(handle, failure)
-      if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
-        const exists = new Error('exclusive artifact already exists') as Error & { code: string }
-        exists.code = 'ARTIFACT_EXISTS'
-        throw exists
-      }
-      // A failed write can no longer prove that the path still names the inode
-      // created by this attempt. Preserve a safe orphan instead of deleting a
-      // same-path replacement owned by another process.
-      throw failure
+      primary = handle === undefined ? error : await closeAfterFailure(handle, error)
     }
+    try {
+      await this.cleanupStage(tempRelative, boundTemp, tempDirectoryRelative, boundTempParent)
+    } catch (cleanupError) {
+      if (primary === undefined) primary = cleanupError
+    }
+    if (primary !== undefined) throw primary
+    return ownership
   }
 
   /**

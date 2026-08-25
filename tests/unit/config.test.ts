@@ -28,6 +28,10 @@ describe('resolveConfig', () => {
     expect(() => resolveConfig({ ...valid, [field]: value })).toThrow('integer')
   })
 
+  it('caps image acquisition below the artifact-store maximum', () => {
+    expect(() => resolveConfig({ ...valid, imageMaxBytes: 64 * 1024 * 1024 + 1 })).toThrow('maximum')
+  })
+
   it('rejects unsupported credential environment names', () => {
     expect(() => resolveConfig({
       ...valid,

@@ -10,6 +10,10 @@ const encoder = new TextEncoder()
 const decoder = new TextDecoder('utf-8', { fatal: true })
 const planPathPattern = /^revisions\/([a-f0-9]{64})\/plans\/([a-f0-9]{64})\.json$/u
 const HASH_PATTERN = /^[a-f0-9]{64}$/u
+const MAX_PLAN_BYTES = 1024 * 1024
+const MAX_PLAN_ITEMS = 128
+const MAX_PLAN_ARRAY_ITEMS = 128
+const MAX_PLAN_STRING_BYTES = 16 * 1024
 
 /** One image operation authenticated by an immutable plan file. */
 export interface ImagePlanItem {
@@ -101,6 +105,7 @@ export interface PinnedHttpsRequest {
   readonly servername: string
   readonly signal: AbortSignal
   readonly maxBytes: number
+  readonly ca?: string | Buffer
 }
 
 /** Minimal response returned by an injectable pinned HTTPS transport. */
@@ -141,11 +146,14 @@ export async function loadImagePlan(
   let parsed: unknown
   let planBytes: Uint8Array
   try {
-    planBytes = await store.read(planPath, signal)
+    planBytes = await store.readBounded(planPath, MAX_PLAN_BYTES, signal)
+    if (planBytes.byteLength > MAX_PLAN_BYTES) throw new Error('image plan exceeds the one-megabyte input limit')
     parsed = JSON.parse(decoder.decode(planBytes))
   } catch (error) {
-    throw new Error('image plan is not valid UTF-8 JSON', { cause: error })
+    if (error instanceof SyntaxError || error instanceof TypeError) throw new Error('image plan is not valid UTF-8 JSON')
+    throw new Error('image plan exceeds the one-megabyte input limit or cannot be read safely')
   }
+  if (sha256(planBytes) !== sha256(encodeCanonical(parsed))) throw new Error('image plan must use canonical JSON encoding')
   const root = record(parsed, 'image plan')
   exactKeys(root, ['schemaVersion', 'planId', 'revisionId', 'createdAt', 'items'], 'image plan')
   literal(root.schemaVersion, 1, 'image plan schemaVersion')
@@ -156,6 +164,7 @@ export async function loadImagePlan(
   const createdAt = canonicalTimestamp(root.createdAt, 'image plan createdAt')
   const rawItems = array(root.items, 'image plan items')
   if (rawItems.length === 0) throw new Error('image plan must contain at least one item')
+  if (rawItems.length > MAX_PLAN_ITEMS) throw new Error('image plan contains too many items')
   const ids = new Set<string>()
   const targets = new Set<string>()
   const canonicalItems: JsonValue[] = []
@@ -179,6 +188,7 @@ export async function loadImagePlan(
     validateArtifactRelativePath(localTarget)
     const targetPath = boundedText(item.targetArtifactPath, `image plan item ${index} targetArtifactPath`, 1200)
     if (targetPath !== `revisions/${revisionId}/${localTarget}`) throw new Error('image plan target path does not match its revision-local target')
+    validatePlannedImageTarget(targetPath)
     const targetAlias = targetPath.normalize('NFC').toLowerCase()
     if ([...targets].some(existing => targetAlias === existing || targetAlias.startsWith(`${existing}/`) || existing.startsWith(`${targetAlias}/`))) throw new Error('image plan contains colliding target aliases')
     targets.add(targetAlias)
@@ -189,14 +199,15 @@ export async function loadImagePlan(
       ...(preset === undefined ? {} : { preset }),
       ...(aspect === undefined ? {} : { aspect }),
     }, index)
+    validateProviderVisibleValue(cliPlan, `image plan item ${index} cliPlan`)
     const canonicalOriginal: Record<string, JsonValue> = { id, kind, prompt: originalPrompt, targetPath: localTarget }
     if (preset !== undefined) canonicalOriginal.preset = preset
     if (aspect !== undefined) canonicalOriginal.aspect = aspect
     canonicalItems.push({ original: canonicalOriginal, targetArtifactPath: targetPath, cliPlan })
-    return {
-      id, kind, prompt: stringValue(cliPlan.prompt, 'image plan CLI prompt'), targetPath,
-      ...(preset === undefined ? {} : { preset }), ...(aspect === undefined ? {} : { aspect }), cliPlan,
-    }
+    const resolvedPreset = boundedPlanString(cliPlan.preset, 'image plan CLI preset')
+    const resolvedAspect = boundedPlanString(cliPlan.aspect, 'image plan CLI aspect')
+    return { id, kind, prompt: boundedPlanString(cliPlan.prompt, 'image plan CLI prompt', false), targetPath,
+      ...(resolvedPreset === '' ? {} : { preset: resolvedPreset }), ...(resolvedAspect === '' ? {} : { aspect: resolvedAspect }), cliPlan }
   })
   if (canonicalImagePlanId(revisionId, canonicalItems) !== planId) throw new Error('image plan ID does not match its canonical payload')
   return { schemaVersion: 1, planId, revisionId, createdAt, path: planPath, contentSha256: sha256(planBytes), items, canonicalItems }
@@ -220,6 +231,7 @@ export async function loadVerifiedImageResult(
   let value: unknown
   try { value = JSON.parse(decoder.decode(bytes)) } catch { throw new Error('image result is corrupt') }
   const result = validatePersistedImageResult(value, plan, item)
+  validatePlannedImageTarget(item.targetPath, result.contentType)
   let target: Uint8Array
   try { target = await store.read(item.targetPath, signal) } catch { throw new Error('completed image bytes are missing') }
   if (target.byteLength !== result.byteSize || sha256(target) !== result.sha256) throw new Error('completed image bytes do not match the immutable result')
@@ -233,8 +245,9 @@ export function imageResultPath(plan: Pick<LoadedImagePlan, 'revisionId' | 'plan
 }
 
 /** Artifact-relative exclusive claim path for one plan item. */
-export function imageClaimPath(plan: Pick<LoadedImagePlan, 'revisionId' | 'planId'>, item: Pick<ImagePlanItem, 'id'>): string {
-  return `revisions/${plan.revisionId}/image-claims/${plan.planId}/${item.id}.json`
+export function imageClaimPath(revisionId: string, targetIdentityHash: string): string {
+  if (!HASH_PATTERN.test(revisionId) || !HASH_PATTERN.test(targetIdentityHash)) throw new TypeError('image claim identity is invalid')
+  return `revisions/${revisionId}/image-claims/targets/${targetIdentityHash}.json`
 }
 
 /** Atomically claim one image item, optionally reaping an exactly revalidated stale owner. */
@@ -246,7 +259,8 @@ export async function acquireImageClaim(
   signal?: AbortSignal,
 ): Promise<ImageClaimOwnership> {
   if (!Number.isSafeInteger(input.staleAfterMs) || input.staleAfterMs < 1) throw new TypeError('claim stale timeout must be a positive safe integer')
-  const path = imageClaimPath(plan, item)
+  const targetIdentity = await store.canonicalIdentity(item.targetPath, signal)
+  const path = imageClaimPath(plan.revisionId, sha256(encoder.encode(targetIdentity)))
   const claim: ImageClaim = {
     schemaVersion: 1, planId: plan.planId, itemId: item.id, targetPath: item.targetPath,
     jobId: boundedText(String(input.jobId), 'claim job ID', 128),
@@ -261,9 +275,26 @@ export async function acquireImageClaim(
       await store.createExclusive(path, bytes, signal, ownership)
       return { path, claim, sha256: sha256(bytes) }
     } catch (error) {
+      if (ownership.created && !isExists(error)) {
+        await store.removeIfMatching(path, sha256(bytes)).catch(() => undefined)
+        throw error
+      }
       if (!isExists(error)) throw error
       const existingBytes = await store.read(path, signal)
-      const existing = validateClaim(JSON.parse(decoder.decode(existingBytes)), plan, item)
+      let existing: ImageClaim
+      try { existing = validateClaim(JSON.parse(decoder.decode(existingBytes))) } catch {
+        await store.removeIfMatching(path, sha256(existingBytes), signal)
+        continue
+      }
+      let existingIdentity: string
+      try { existingIdentity = await store.canonicalIdentity(existing.targetPath, signal) } catch {
+        await store.removeIfMatching(path, sha256(existingBytes), signal)
+        continue
+      }
+      if (existingIdentity !== targetIdentity) {
+        await store.removeIfMatching(path, sha256(existingBytes), signal)
+        continue
+      }
       if (await input.ownerIsLive(existing)) throw new Error('image item is already claimed by a live job')
       await store.removeIfMatching(path, sha256(existingBytes), signal)
     }
@@ -295,16 +326,16 @@ export function isPublicNetworkAddress(address: string): boolean {
   const bytes = parseIpv6(address)
   if (bytes === undefined) return false
   if (bytes.slice(0, 10).every(value => value === 0) && bytes[10] === 0xff && bytes[11] === 0xff) {
-    return isPublicIpv4(`${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`)
+    return false
   }
   if (bytes.every(value => value === 0) || bytes.slice(0, 15).every(value => value === 0) && bytes[15] === 1) return false
   if ((bytes[0]! & 0xfe) === 0xfc || bytes[0] === 0xff || bytes[0] === 0xfe && (bytes[1]! & 0xc0) === 0x80) return false
-  if (bytes[0] === 0x00 && bytes[1] === 0x64 && bytes[2] === 0xff && bytes[3] === 0x9b && bytes[4] === 0x00 && bytes[5] === 0x01) return false
+  if (bytes[0] === 0x00 && bytes[1] === 0x64 && bytes[2] === 0xff && bytes[3] === 0x9b) return false
   if (bytes[0] === 0x01 && bytes.slice(1, 8).every(value => value === 0)) return false
-  if (bytes[0] === 0x20 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00) return false
-  if (bytes[0] === 0x20 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x02) return false
+  if (bytes[0] === 0x20 && bytes[1] === 0x01 && (bytes[2]! & 0xfe) === 0) return false
   if (bytes[0] === 0x20 && bytes[1] === 0x02) return false
   if (bytes[0] === 0x20 && bytes[1] === 0x01 && bytes[2] === 0x0d && bytes[3] === 0xb8) return false
+  if (bytes[0] === 0x26 && bytes[1] === 0x20 && bytes[2] === 0x00 && bytes[3] === 0x4f && bytes[4] === 0x80 && bytes[5] === 0x00) return false
   if (bytes[0] === 0x3f && (bytes[1]! & 0xf0) === 0xf0) return false
   if (bytes[0] === 0x5f) return false
   return (bytes[0]! & 0xe0) === 0x20
@@ -365,6 +396,13 @@ export function createPersistedImageResult(input: {
   }
 }
 
+/** Validate a planned target's canonical raster extension, optionally against a MIME type. */
+export function validatePlannedImageTarget(path: string, mimeType?: SupportedImageMime): void {
+  const extension = path.slice(path.lastIndexOf('.')).toLowerCase()
+  if (!['.png', '.jpg', '.gif', '.webp'].includes(extension)) throw new Error('planned image target must use .png, .jpg, .gif, or .webp')
+  if (mimeType !== undefined && extension !== extensionForMime(mimeType)) throw new Error('planned image target extension does not match its content type')
+}
+
 /** Encode JSON in the repository's canonical key order with one trailing newline. */
 export function encodeCanonical(value: unknown): Uint8Array {
   return encoder.encode(`${canonicalJson(value)}\n`)
@@ -380,14 +418,23 @@ function validateCliPlan(value: unknown, expected: { kind: ImagePlanItem['kind']
   literal(cli.side_effects, false, 'image CLI plan side effects')
   literal(cli.requires_provider, false, 'image CLI plan provider requirement')
   literal(cli.requires_image_api_key, false, 'image CLI plan key requirement')
-  const prompt = boundedText(cli.prompt, 'image CLI plan prompt', 16_384)
-  const article = stringValue(cli.article, 'image CLI plan article')
+  const prompt = boundedPlanString(cli.prompt, 'image CLI plan prompt', false)
+  const article = boundedPlanString(cli.article, 'image CLI plan article')
   const expectsArticle = expected.kind !== 'image' || expected.preset !== undefined
   if (article !== (expectsArticle ? expected.expectedArticlePath : '')) throw new Error('image CLI plan article binding is invalid')
-  if (stringValue(cli.preset, 'image CLI plan preset') !== (expected.preset ?? '')) throw new Error('image CLI plan preset does not match the requested preset')
-  if (stringValue(cli.aspect, 'image CLI plan aspect') !== (expected.aspect ?? '')) throw new Error('image CLI plan aspect does not match the requested aspect')
-  for (const key of ['raw_prompt', 'archetype', 'primary_use_case', 'default_aspect_ratio', 'title', 'summary', 'keywords', 'style', 'size', 'model_hint', 'suggested_filename', 'alt_text']) stringValue(cli[key], `image CLI plan ${key}`)
-  stringArray(cli.compatible_use_cases, 'image CLI plan compatible_use_cases')
+  const resolvedPreset = boundedPlanString(cli.preset, 'image CLI plan preset')
+  if (expected.kind === 'image' && expected.preset === undefined && resolvedPreset !== '') throw new Error('raw image CLI plan preset must be empty')
+  if ((expected.kind !== 'image' || expected.preset !== undefined) && resolvedPreset === '') throw new Error('preset image CLI plan must contain its resolved preset')
+  const resolvedAspect = boundedPlanString(cli.aspect, 'image CLI plan aspect')
+  boundedPlanString(cli.default_aspect_ratio, 'image CLI plan default_aspect_ratio')
+  if (expected.kind === 'image' && resolvedPreset === '' && resolvedAspect !== '') throw new Error('raw image CLI plan aspect must be empty')
+  const archetype = boundedPlanString(cli.archetype, 'image CLI plan archetype')
+  const primaryUseCase = boundedPlanString(cli.primary_use_case, 'image CLI plan primary_use_case')
+  const compatibleUseCases = stringArray(cli.compatible_use_cases, 'image CLI plan compatible_use_cases')
+  if (expected.kind !== 'image' && ![archetype, primaryUseCase, ...compatibleUseCases].some(value => value.toLowerCase() === expected.kind)) {
+    throw new Error(`${expected.kind} CLI plan must resolve a compatible preset`)
+  }
+  for (const key of ['raw_prompt', 'title', 'summary', 'keywords', 'style', 'size', 'model_hint', 'suggested_filename', 'alt_text']) boundedPlanString(cli[key], `image CLI plan ${key}`)
   stringArray(cli.recommended_aspect_ratios, 'image CLI plan recommended_aspect_ratios')
   return { ...cli, prompt }
 }
@@ -414,13 +461,16 @@ function validatePersistedImageResult(value: unknown, plan: LoadedImagePlan, ite
   }
 }
 
-function validateClaim(value: unknown, plan: LoadedImagePlan, item: LoadedImagePlanItem): ImageClaim {
+function validateClaim(value: unknown): ImageClaim {
   const claim = record(value, 'image claim')
   exactKeys(claim, ['schemaVersion', 'planId', 'itemId', 'targetPath', 'jobId', 'sessionId', 'createdAt', 'nonce'], 'image claim')
+  const itemId = boundedText(claim.itemId, 'image claim itemId', 128)
+  validateArtifactId(itemId)
+  const targetPath = boundedText(claim.targetPath, 'image claim targetPath', 1200)
+  validateArtifactRelativePath(targetPath)
   return {
     schemaVersion: literal(claim.schemaVersion, 1, 'image claim schemaVersion'),
-    planId: literal(claim.planId, plan.planId, 'image claim planId'), itemId: literal(claim.itemId, item.id, 'image claim itemId'),
-    targetPath: literal(claim.targetPath, item.targetPath, 'image claim targetPath'),
+    planId: hash(claim.planId, 'image claim planId'), itemId, targetPath,
     jobId: boundedText(claim.jobId, 'image claim jobId', 128), sessionId: boundedText(claim.sessionId, 'image claim sessionId', 256),
     createdAt: canonicalTimestamp(claim.createdAt, 'image claim createdAt'), nonce: boundedText(claim.nonce, 'image claim nonce', 128),
   }
@@ -438,7 +488,8 @@ function isPublicIpv4(address: string): boolean {
   const value = ((parts[0]! * 0x1000000) + (parts[1]! << 16) + (parts[2]! << 8) + parts[3]!) >>> 0
   return ![
     [0x00000000, 8], [0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8], [0xa9fe0000, 16],
-    [0xac100000, 12], [0xc0000000, 24], [0xc0000200, 24], [0xc0a80000, 16], [0xc6120000, 15],
+    [0xac100000, 12], [0xc0000000, 24], [0xc0000200, 24], [0xc01fc400, 24], [0xc034c100, 24],
+    [0xc0586300, 24], [0xc0a80000, 16], [0xc0af3000, 24], [0xc6120000, 15],
     [0xc6336400, 24], [0xcb007100, 24], [0xe0000000, 4], [0xf0000000, 4],
   ].some(([network, prefix]) => inIpv4Range(value, network!, prefix!))
 }
@@ -477,12 +528,27 @@ async function resolveAddresses(hostname: string, signal: AbortSignal): Promise<
   return answers.map(answer => answer.address)
 }
 
-async function nodePinnedHttpsRequest(options: PinnedHttpsRequest): Promise<PinnedHttpsResponse> {
+export async function nodePinnedHttpsRequest(options: PinnedHttpsRequest): Promise<PinnedHttpsResponse> {
   return new Promise((resolve, reject) => {
     const request = httpsRequest({
       protocol: 'https:', hostname: options.hostname, port: options.port, path: options.path,
       method: 'GET', servername: options.servername, headers: { host: options.hostname, 'accept-encoding': 'identity' },
-      lookup: (_hostname, _lookupOptions, callback) => callback(null, options.address, isIP(options.address) as 4 | 6),
+      lookup: (_hostname, lookupOptions, callback) => {
+        const family = isIP(options.address) as 4 | 6
+        const requestedFamily = typeof lookupOptions === 'object' ? lookupOptions.family : lookupOptions
+        if ((requestedFamily === 4 || requestedFamily === 6) && requestedFamily !== family) {
+          const mismatch = new Error('pinned address does not match the requested address family') as NodeJS.ErrnoException
+          mismatch.code = 'EAI_ADDRFAMILY'
+          callback(mismatch, options.address, family)
+          return
+        }
+        if (typeof lookupOptions === 'object' && lookupOptions.all === true) {
+          ;(callback as (error: null, addresses: readonly { address: string; family: 4 | 6 }[]) => void)(null, [{ address: options.address, family }])
+        } else {
+          ;(callback as (error: null, address: string, family: 4 | 6) => void)(null, options.address, family)
+        }
+      },
+      ...(options.ca === undefined ? {} : { ca: options.ca }),
       signal: options.signal,
     }, response => {
       const chunks: Uint8Array[] = []
@@ -509,7 +575,8 @@ function createDeadline(parent: AbortSignal | undefined, timeoutMs: number): { s
   const timer = setTimeout(() => controller.abort(new Error('image acquisition timed out')), timeoutMs)
   timer.unref()
   const abort = (): void => controller.abort(parent?.reason)
-  parent?.addEventListener('abort', abort, { once: true })
+  if (parent?.aborted) abort()
+  else parent?.addEventListener('abort', abort, { once: true })
   return { signal: controller.signal, [Symbol.dispose]() { clearTimeout(timer); parent?.removeEventListener('abort', abort) } }
 }
 
@@ -542,7 +609,7 @@ function canonicalTimestamp(value: unknown, field: string): string { const text 
 function validDate(value: Date, field: string): Date { if (!(value instanceof Date) || Number.isNaN(value.getTime())) throw new Error(`${field} is invalid`); return value }
 function record(value: unknown, field: string): Record<string, unknown> { if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new Error(`${field} must be an object`); return value as Record<string, unknown> }
 function array(value: unknown, field: string): readonly unknown[] { if (!Array.isArray(value)) throw new Error(`${field} must be an array`); return value }
-function stringArray(value: unknown, field: string): readonly string[] { if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) throw new Error(`${field} must contain only strings`); return value }
+function stringArray(value: unknown, field: string): readonly string[] { if (!Array.isArray(value) || value.length > MAX_PLAN_ARRAY_ITEMS || !value.every(item => typeof item === 'string')) throw new Error(`${field} must contain a bounded string array`); return value.map((item, index) => boundedPlanString(item, `${field} item ${index}`)) }
 function stringValue(value: unknown, field: string): string { if (typeof value !== 'string') throw new Error(`${field} must be a string`); return value }
 function boundedText(value: unknown, field: string, limit: number): string { const text = stringValue(value, field); if (text.trim().length === 0 || encoder.encode(text).byteLength > limit || containsControl(text)) throw new Error(`${field} is invalid`); return text }
 function optionalBoundedText(value: unknown, field: string, limit: number): string | undefined { return value === undefined ? undefined : boundedText(value, field, limit) }
@@ -558,3 +625,18 @@ function sha256(bytes: Uint8Array): string { return createHash('sha256').update(
 function isMissing(error: unknown): boolean { return error instanceof Error && 'code' in error && (error.code === 'FS_NOT_FOUND' || error.code === 'ENOENT') }
 function isExists(error: unknown): boolean { return error instanceof Error && 'code' in error && (error.code === 'ARTIFACT_EXISTS' || error.code === 'EEXIST') }
 function containsControl(value: string): boolean { return [...value].some(character => { const code = character.codePointAt(0)!; return code <= 0x1f || code === 0x7f }) }
+function boundedPlanString(value: unknown, field: string, allowEmpty = true): string { const text = stringValue(value, field); if ((!allowEmpty && text.trim().length === 0) || encoder.encode(text).byteLength > MAX_PLAN_STRING_BYTES || containsUnsafePlanControl(text)) throw new Error(`${field} exceeds its safe string limit`); return text }
+function validateProviderVisibleValue(value: JsonValue, field: string): void {
+  if (typeof value === 'string') { if (containsProcessPath(value)) throw new Error(`${field} contains an absolute or process path`); return }
+  if (Array.isArray(value)) { if (value.length > MAX_PLAN_ARRAY_ITEMS) throw new Error(`${field} contains too many array values`); value.forEach((item, index) => validateProviderVisibleValue(item, `${field}[${index}]`)); return }
+  if (value !== null && typeof value === 'object') for (const [key, item] of Object.entries(value)) validateProviderVisibleValue(item, `${field}.${key}`)
+}
+function containsProcessPath(value: string): boolean {
+  const withoutUrls = value.replace(/https:\/\/[^\s"'<>]+/giu, '')
+  return /(?:^|[\s("'`=,:;[\]{}<>])\/(?!\/)[^\s]+/u.test(withoutUrls)
+    || /(?:^|[\s("'`=,:;[\]{}<>])[A-Za-z]:[\\/][^\s]+/u.test(withoutUrls)
+    || /(?:^|[\s("'`=,:;[\]{}<>])(?:\\\\|\/\/)[^\s\\/]+[\\/][^\s]+/u.test(withoutUrls)
+    || /(?:^|[\s("'`=,:;[\]{}<>])~[\\/][^\s]+/u.test(withoutUrls)
+    || /file:\/\//iu.test(withoutUrls)
+}
+function containsUnsafePlanControl(value: string): boolean { return [...value].some(character => { const code = character.codePointAt(0)!; return code <= 0x08 || code === 0x0b || code === 0x0c || code >= 0x0e && code <= 0x1f || code === 0x7f }) }
