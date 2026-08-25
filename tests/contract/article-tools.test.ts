@@ -118,9 +118,33 @@ function validCliResponse(argv: readonly string[]): CliEnvelope {
     case 'advise':
       return envelope({ code: 'ADVISE_COMPLETED', data: {
         schema_version: 'v1', command: 'advise', source: article, decision: 'enhance_minimally',
-        article: { type: 'essay', confidence: 'high', stats: {}, signals: [], uncertainties: [] },
-        actions: [{ command_hint: `md2wechat title suggest ${article} --json`, command_args: ['md2wechat', 'title', 'suggest', article, '--json'] }],
-        layout: { max_modules: 3, recommended: [], rejected: [] }, micro_edits: [], do_not_do: [],
+        article: {
+          type: 'essay', confidence: 'high',
+          stats: {
+            word_count: 3, h1_count: 1, h2_count: 0, paragraph_count: 1,
+            image_count: 0, blockquote_count: 0, ordered_list_count: 0,
+          },
+          signals: ['clear structure'], uncertainties: [],
+        },
+        actions: [{
+          tool: 'title', state: 'recommended', reason: 'Strengthen the title',
+          evidence: [{ code: 'TITLE_GENERIC', message: 'The title can be more specific', location: { line: 1, section: 'title' } }],
+          command_hint: `md2wechat title suggest ${article} --json`,
+          command_args: ['md2wechat', 'title', 'suggest', article, '--json'], requires_confirmation: false,
+        }],
+        layout: {
+          max_modules: 3,
+          recommended: [{
+            name: 'summary', state: 'recommended', reason: 'Clarifies the takeaway',
+            evidence: [{ code: 'SUMMARY_HELPFUL', message: 'The article has one core point' }],
+          }],
+          rejected: [],
+        },
+        micro_edits: [{
+          kind: 'tighten', reason: 'Remove filler',
+          evidence: [{ code: 'FILLER', message: 'One sentence is verbose' }], requires_confirmation: false,
+        }],
+        do_not_do: ['Do not change the argument'],
       } })
     case 'title':
       return envelope({ code: 'TITLE_SUGGEST_REQUEST_READY', status: 'action_required', data: {
@@ -470,6 +494,62 @@ describe('article preparation tools', () => {
     await isolated.dispose()
   })
 
+  it.each([
+    ['advise top-level secret', 'advise', (response: CliEnvelope) => ({
+      ...response, data: { ...response.data, api_key: 'sk-secret-advice' },
+    })],
+    ['advise nested absolute path', 'advise', (response: CliEnvelope) => ({
+      ...response,
+      data: {
+        ...response.data,
+        article: {
+          ...((response.data?.article ?? {}) as Record<string, unknown>),
+          stats: {
+            ...(((response.data?.article as Record<string, unknown> | undefined)?.stats ?? {}) as Record<string, unknown>),
+            workspace_path: '/private/secret/article.md',
+          },
+        },
+      },
+    })],
+    ['advise malformed nested location', 'advise', (response: CliEnvelope) => ({
+      ...response,
+      data: {
+        ...response.data,
+        actions: [{
+          tool: 'title', state: 'recommended', reason: 'Strengthen the title',
+          evidence: [{ code: 'TITLE_GENERIC', message: 'Specificity needed', location: { line: 'first' } }],
+          requires_confirmation: false,
+        }],
+      },
+    })],
+    ['title arbitrary path', 'title', (response: CliEnvelope) => ({
+      ...response, data: { ...response.data, debug_path: '/private/secret/title.md' },
+    })],
+    ['humanize nested secret', 'humanize', (response: CliEnvelope) => ({
+      ...response,
+      data: {
+        ...response.data,
+        request: { ...((response.data?.request ?? {}) as Record<string, unknown>), api_key: 'sk-secret-humanize' },
+      },
+    })],
+    ['writer unsupported cover field', 'writer_style', (response: CliEnvelope) => ({
+      ...response, data: { ...response.data, cover_prompt: '/private/secret/cover.png' },
+    })],
+  ] as const)('rejects unknown or malformed canonical projection fields: %s', async (_case, operation, mutate) => {
+    const manifestPath = await startFixtureArticle()
+    const gateway = new FakeGateway(argv => mutate(validCliResponse(argv)))
+    const isolated = await setupToolContext()
+    isolated.ctx.tools.register(createImproveArticleTool({ gateway, store }))
+
+    const result = await execute(isolated.ctx, 'md2wechat_improve_article', { manifestPath, operation })
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result)).not.toContain('sk-secret')
+    expect(JSON.stringify(result)).not.toContain('/private/secret')
+    await expect(store.read(manifestPath.replace('manifest.json', 'operations.jsonl')))
+      .rejects.toMatchObject({ code: 'FS_NOT_FOUND' })
+    await isolated.dispose()
+  })
+
   it('persists stable side-effect-free image plans with exact argv for every kind and preset mode', async () => {
     const manifestPath = await startFixtureArticle()
     const gateway = new FakeGateway()
@@ -572,6 +652,10 @@ describe('article preparation tools', () => {
       [{ ...base, targetPath: 'images/control\u0001.png' }],
       [{ ...base, targetPath: 'images/CON.png' }],
       [{ ...base, id: 'bad/id' }],
+      [{ ...base, id: 'bad\nid' }],
+      [{ ...base, id: 'bad\u0001id' }],
+      [{ ...base, id: 'bad\u001fid' }],
+      [{ ...base, id: 'bad\u007fid' }],
     ]) {
       const result = await execute(ctx, 'md2wechat_plan_images', { manifestPath, images })
       expect(result.isError).toBe(true)
@@ -625,6 +709,32 @@ describe('article preparation tools', () => {
       images: [{ id: 'hero', kind: 'image', prompt: 'Hero', targetPath: 'images/hero.png' }],
     })
     expect(result.isError).toBe(true)
+    const revisionId = manifestPath.split('/')[1]!
+    await expect(store.read(`revisions/${revisionId}/plans`)).rejects.toThrow()
+  })
+
+  it('rejects unknown image-plan response fields without leaking or persisting them', async () => {
+    const manifestPath = await startFixtureArticle()
+    const gateway = new FakeGateway(argv => {
+      const response = validCliResponse(argv)
+      return {
+        ...response,
+        data: {
+          ...response.data,
+          api_key: 'sk-secret-image',
+          workspace_path: '/private/secret/image.png',
+        },
+      }
+    })
+    ctx.tools.register(createPlanImagesTool({ gateway, store }))
+
+    const result = await execute(ctx, 'md2wechat_plan_images', {
+      manifestPath,
+      images: [{ id: 'hero', kind: 'image', prompt: 'Hero', targetPath: 'images/hero.png' }],
+    })
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result)).not.toContain('sk-secret-image')
+    expect(JSON.stringify(result)).not.toContain('/private/secret/image.png')
     const revisionId = manifestPath.split('/')[1]!
     await expect(store.read(`revisions/${revisionId}/plans`)).rejects.toThrow()
   })

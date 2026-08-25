@@ -135,7 +135,9 @@ function normalizeImages(images: readonly ImageInput[], revisionId: string): Nor
   return images.map(image => {
     const id = image.id.normalize('NFC')
     validateArtifactId(id)
-    if (/[<>"|?*]/u.test(id)) throw new Error('image ID contains a non-portable Windows character')
+    if (/[<>"|?*]/u.test(id) || containsPortableControl(id)) {
+      throw new Error('image ID contains a non-portable Windows or control character')
+    }
     const portableId = id.toLowerCase()
     if (ids.has(portableId)) throw new Error(`duplicate portable image ID ${id}`)
     ids.add(portableId)
@@ -165,10 +167,7 @@ function normalizeTargetPath(input: string): string {
     throw new Error('image target must stay beneath the revision-local images/ directory')
   }
   for (const component of normalized.split('/')) {
-    if (/[<>"|?*]/u.test(component) || [...component].some(character => {
-      const codePoint = character.codePointAt(0)!
-      return codePoint <= 0x1f || codePoint === 0x7f
-    })) {
+    if (/[<>"|?*]/u.test(component) || containsPortableControl(component)) {
       throw new Error('image target contains a non-portable Windows or control character')
     }
   }
@@ -206,27 +205,47 @@ function validateCliPlan(
     throw new Error('md2wechat image planning did not return IMAGE_PLAN_READY/action_required')
   }
   const data = requiredRecord(response.data, 'image plan data')
+  assertExactKeys(data, [
+    'mode', 'command', 'execution_owner', 'side_effects', 'requires_provider', 'requires_image_api_key',
+    'prompt', 'raw_prompt', 'preset', 'archetype', 'primary_use_case', 'compatible_use_cases',
+    'recommended_aspect_ratios', 'default_aspect_ratio', 'article', 'title', 'summary', 'keywords',
+    'style', 'aspect', 'size', 'model_hint', 'suggested_filename', 'alt_text',
+  ], 'image plan data')
   const expectedCommand = image.kind === 'image' ? 'generate_image' : image.kind === 'cover' ? 'generate_cover' : 'generate_infographic'
-  requireLiteral(data.mode, 'plan', 'image plan mode')
-  requireLiteral(data.command, expectedCommand, 'image plan command')
-  requireLiteral(data.execution_owner, 'host_agent', 'image plan execution_owner')
-  requireLiteral(data.side_effects, false, 'image plan side_effects')
-  requireLiteral(data.requires_provider, false, 'image plan requires_provider')
-  requireLiteral(data.requires_image_api_key, false, 'image plan requires_image_api_key')
-  requiredNonEmptyString(data.prompt, 'image plan prompt')
-  for (const field of [
-    'raw_prompt', 'preset', 'archetype', 'primary_use_case', 'default_aspect_ratio', 'article',
-    'title', 'summary', 'keywords', 'style', 'aspect', 'size', 'model_hint', 'suggested_filename', 'alt_text',
-  ] as const) requiredString(data[field], `image plan ${field}`)
-  requiredStringArray(data.compatible_use_cases, 'image plan compatible_use_cases')
-  requiredStringArray(data.recommended_aspect_ratios, 'image plan recommended_aspect_ratios')
-  const article = data.article as string
+  const article = requiredString(data.article, 'image plan article')
   const expectsArticle = image.kind !== 'image' || image.preset !== undefined
   if ((expectsArticle && article !== current.articleAuthorization.processPath)
     || (!expectsArticle && article !== '')) {
     throw new Error('image plan article does not match the authorized article input')
   }
-  return { ...data, article: current.articlePath }
+  return {
+    mode: requireLiteral(data.mode, 'plan', 'image plan mode'),
+    command: requireLiteral(data.command, expectedCommand, 'image plan command'),
+    execution_owner: requireLiteral(data.execution_owner, 'host_agent', 'image plan execution_owner'),
+    side_effects: requireLiteral(data.side_effects, false, 'image plan side_effects'),
+    requires_provider: requireLiteral(data.requires_provider, false, 'image plan requires_provider'),
+    requires_image_api_key: requireLiteral(data.requires_image_api_key, false, 'image plan requires_image_api_key'),
+    prompt: projectedNonEmptyString(data.prompt, 'image plan prompt', current),
+    raw_prompt: projectedString(data.raw_prompt, 'image plan raw_prompt', current),
+    preset: projectedString(data.preset, 'image plan preset', current),
+    archetype: projectedString(data.archetype, 'image plan archetype', current),
+    primary_use_case: projectedString(data.primary_use_case, 'image plan primary_use_case', current),
+    compatible_use_cases: projectedStringArray(data.compatible_use_cases, 'image plan compatible_use_cases', current),
+    recommended_aspect_ratios: projectedStringArray(
+      data.recommended_aspect_ratios, 'image plan recommended_aspect_ratios', current,
+    ),
+    default_aspect_ratio: projectedString(data.default_aspect_ratio, 'image plan default_aspect_ratio', current),
+    article: expectsArticle ? current.articlePath : '',
+    title: projectedString(data.title, 'image plan title', current),
+    summary: projectedString(data.summary, 'image plan summary', current),
+    keywords: projectedString(data.keywords, 'image plan keywords', current),
+    style: projectedString(data.style, 'image plan style', current),
+    aspect: projectedString(data.aspect, 'image plan aspect', current),
+    size: projectedString(data.size, 'image plan size', current),
+    model_hint: projectedString(data.model_hint, 'image plan model_hint', current),
+    suggested_filename: projectedString(data.suggested_filename, 'image plan suggested_filename', current),
+    alt_text: projectedString(data.alt_text, 'image plan alt_text', current),
+  }
 }
 
 async function writeStablePlan(
@@ -330,6 +349,47 @@ function requiredStringArray(value: unknown, field: string): readonly string[] {
 function requireLiteral<T extends string | boolean>(value: unknown, expected: T, field: string): T {
   if (value !== expected) throw new Error(`${field} must be ${String(expected)}`)
   return expected
+}
+
+function assertExactKeys(value: Readonly<Record<string, JsonValue>>, allowed: readonly string[], field: string): void {
+  const allowedKeys = new Set(allowed)
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) throw new Error(`${field} contains unknown field ${key}`)
+  }
+}
+
+function containsPortableControl(value: string): boolean {
+  return [...value].some(character => {
+    const codePoint = character.codePointAt(0)!
+    return codePoint <= 0x1f || codePoint === 0x7f
+  })
+}
+
+function projectedString(
+  value: unknown,
+  field: string,
+  current: Awaited<ReturnType<typeof loadCurrentArticleRevision>>,
+): string {
+  return requiredString(value, field)
+    .replaceAll(current.articleAuthorization.processPath, current.articlePath)
+}
+
+function projectedNonEmptyString(
+  value: unknown,
+  field: string,
+  current: Awaited<ReturnType<typeof loadCurrentArticleRevision>>,
+): string {
+  return requiredNonEmptyString(value, field)
+    .replaceAll(current.articleAuthorization.processPath, current.articlePath)
+}
+
+function projectedStringArray(
+  value: unknown,
+  field: string,
+  current: Awaited<ReturnType<typeof loadCurrentArticleRevision>>,
+): string[] {
+  return requiredStringArray(value, field)
+    .map(item => item.replaceAll(current.articleAuthorization.processPath, current.articlePath))
 }
 
 function renderPlanItems(planPath: string, items: readonly JsonValue[]): string {

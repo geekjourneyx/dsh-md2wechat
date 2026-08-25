@@ -158,55 +158,190 @@ function projectImprovementResponse(
 
 function projectAdvise(data: Readonly<Record<string, unknown>> | undefined, current: CurrentArticleRevision): JsonValue {
   const value = requiredRecord(data, 'advise data')
-  requireLiteral(value.schema_version, 'v1', 'advise schema_version')
-  requireLiteral(value.command, 'advise', 'advise command')
+  assertExactKeys(value, [
+    'schema_version', 'command', 'source', 'decision', 'article', 'actions', 'layout', 'micro_edits', 'do_not_do',
+  ], 'advise data')
   requireLiteral(value.source, current.articleAuthorization.processPath, 'advise source')
-  requiredNonEmptyString(value.decision, 'advise decision')
-  requiredRecord(value.article, 'advise article')
-  requiredArray(value.actions, 'advise actions')
-  requiredRecord(value.layout, 'advise layout')
-  requiredArray(value.micro_edits, 'advise micro_edits')
-  requiredArray(value.do_not_do, 'advise do_not_do')
-  return replaceMachinePath(value, current.articleAuthorization.processPath, current.articlePath)
+  return {
+    schema_version: requireLiteral(value.schema_version, 'v1', 'advise schema_version'),
+    command: requireLiteral(value.command, 'advise', 'advise command'),
+    source: current.articlePath,
+    decision: projectedNonEmptyString(value.decision, 'advise decision', current),
+    article: projectAdviseArticle(value.article, current),
+    actions: requiredArray(value.actions, 'advise actions').map((item, index) => projectAdviseAction(item, index, current)),
+    layout: projectAdviseLayout(value.layout, current),
+    micro_edits: requiredArray(value.micro_edits, 'advise micro_edits')
+      .map((item, index) => projectAdviseMicroEdit(item, index, current)),
+    do_not_do: projectedStringArray(value.do_not_do, 'advise do_not_do', current),
+  }
 }
 
 function projectTitle(data: Readonly<Record<string, unknown>> | undefined, current: CurrentArticleRevision): JsonValue {
   const value = requiredRecord(data, 'title data')
-  requireLiteral(value.action, 'ai_title_suggestion_request', 'title action')
-  requireLiteral(value.execution_owner, 'host_agent', 'title execution_owner')
-  requireLiteral(value.prompt_kind, 'title', 'title prompt_kind')
-  requiredNonEmptyString(value.prompt_name, 'title prompt_name')
-  requiredNonEmptyString(value.prompt, 'title prompt')
+  assertExactKeys(value, [
+    'action', 'execution_owner', 'prompt_kind', 'prompt_name', 'prompt', 'article_title', 'article_chars',
+    'target_reader', 'title_count', 'max_title_chars', 'hook_level', 'hook_level_label', 'side_effects',
+    'requires_external_model', 'recommendation_only', 'article_path',
+  ], 'title data')
   requireLiteral(value.article_path, current.articleAuthorization.processPath, 'title article_path')
-  requiredInteger(value.article_chars, 'title article_chars')
-  requiredNonEmptyString(value.target_reader, 'title target_reader')
-  requiredInteger(value.title_count, 'title title_count')
-  requiredInteger(value.max_title_chars, 'title max_title_chars')
-  requiredInteger(value.hook_level, 'title hook_level')
-  requiredNonEmptyString(value.hook_level_label, 'title hook_level_label')
-  requireLiteral(value.side_effects, false, 'title side_effects')
-  requireLiteral(value.requires_external_model, true, 'title requires_external_model')
-  requireLiteral(value.recommendation_only, true, 'title recommendation_only')
-  return replaceMachinePath(value, current.articleAuthorization.processPath, current.articlePath)
+  const articleTitle = hasOwn(value, 'article_title')
+    ? projectedString(value.article_title, 'title article_title', current)
+    : undefined
+  return {
+    action: requireLiteral(value.action, 'ai_title_suggestion_request', 'title action'),
+    execution_owner: requireLiteral(value.execution_owner, 'host_agent', 'title execution_owner'),
+    prompt_kind: requireLiteral(value.prompt_kind, 'title', 'title prompt_kind'),
+    prompt_name: projectedNonEmptyString(value.prompt_name, 'title prompt_name', current),
+    prompt: projectedNonEmptyString(value.prompt, 'title prompt', current),
+    ...(articleTitle === undefined ? {} : { article_title: articleTitle }),
+    article_chars: requiredInteger(value.article_chars, 'title article_chars'),
+    target_reader: projectedNonEmptyString(value.target_reader, 'title target_reader', current),
+    title_count: requiredInteger(value.title_count, 'title title_count'),
+    max_title_chars: requiredInteger(value.max_title_chars, 'title max_title_chars'),
+    hook_level: requiredInteger(value.hook_level, 'title hook_level'),
+    hook_level_label: projectedNonEmptyString(value.hook_level_label, 'title hook_level_label', current),
+    side_effects: requireLiteral(value.side_effects, false, 'title side_effects'),
+    requires_external_model: requireLiteral(value.requires_external_model, true, 'title requires_external_model'),
+    recommendation_only: requireLiteral(value.recommendation_only, true, 'title recommendation_only'),
+    article_path: current.articlePath,
+  }
 }
 
 function projectHumanize(data: Readonly<Record<string, unknown>> | undefined, current: CurrentArticleRevision): JsonValue {
   const value = requiredRecord(data, 'humanize data')
-  requireLiteral(value.action, 'humanize_request', 'humanize action')
+  assertExactKeys(value, ['action', 'request'], 'humanize data')
   const request = requiredRecord(value.request, 'humanize request')
-  requiredNonEmptyString(request.prompt, 'humanize prompt')
-  requiredNonEmptyString(request.content, 'humanize content')
-  requiredNonEmptyString(request.intensity, 'humanize intensity')
-  return replaceMachinePath(value, current.articleAuthorization.processPath, current.articlePath)
+  assertExactKeys(request, ['content', 'intensity', 'prompt'], 'humanize request')
+  return {
+    action: requireLiteral(value.action, 'humanize_request', 'humanize action'),
+    request: {
+      content: projectedNonEmptyString(request.content, 'humanize content', current),
+      intensity: projectedNonEmptyString(request.intensity, 'humanize intensity', current),
+      prompt: projectedNonEmptyString(request.prompt, 'humanize prompt', current),
+    },
+  }
 }
 
 function projectWriterStyle(data: Readonly<Record<string, unknown>> | undefined, current: CurrentArticleRevision): JsonValue {
   const value = requiredRecord(data, 'writer-style data')
-  requireLiteral(value.mode, 'ai', 'writer-style mode')
-  requireLiteral(value.action, 'ai_write_request', 'writer-style action')
-  requiredNonEmptyString(value.style, 'writer-style style')
-  requiredNonEmptyString(value.prompt, 'writer-style prompt')
-  return replaceMachinePath(value, current.articleAuthorization.processPath, current.articlePath)
+  assertExactKeys(value, ['mode', 'action', 'style', 'prompt'], 'writer-style data')
+  return {
+    mode: requireLiteral(value.mode, 'ai', 'writer-style mode'),
+    action: requireLiteral(value.action, 'ai_write_request', 'writer-style action'),
+    style: projectedNonEmptyString(value.style, 'writer-style style', current),
+    prompt: projectedNonEmptyString(value.prompt, 'writer-style prompt', current),
+  }
+}
+
+function projectAdviseArticle(value: unknown, current: CurrentArticleRevision): JsonValue {
+  const article = requiredRecord(value, 'advise article')
+  assertExactKeys(article, ['type', 'confidence', 'stats', 'signals', 'uncertainties'], 'advise article')
+  const stats = requiredRecord(article.stats, 'advise article stats')
+  assertExactKeys(stats, [
+    'word_count', 'h1_count', 'h2_count', 'paragraph_count', 'image_count', 'blockquote_count', 'ordered_list_count',
+  ], 'advise article stats')
+  return {
+    type: projectedNonEmptyString(article.type, 'advise article type', current),
+    confidence: projectedNonEmptyString(article.confidence, 'advise article confidence', current),
+    stats: {
+      word_count: requiredInteger(stats.word_count, 'advise word_count'),
+      h1_count: requiredInteger(stats.h1_count, 'advise h1_count'),
+      h2_count: requiredInteger(stats.h2_count, 'advise h2_count'),
+      paragraph_count: requiredInteger(stats.paragraph_count, 'advise paragraph_count'),
+      image_count: requiredInteger(stats.image_count, 'advise image_count'),
+      blockquote_count: requiredInteger(stats.blockquote_count, 'advise blockquote_count'),
+      ordered_list_count: requiredInteger(stats.ordered_list_count, 'advise ordered_list_count'),
+    },
+    signals: projectedStringArray(article.signals, 'advise article signals', current),
+    uncertainties: projectedStringArray(article.uncertainties, 'advise article uncertainties', current),
+  }
+}
+
+function projectAdviseAction(value: JsonValue, index: number, current: CurrentArticleRevision): JsonValue {
+  const field = `advise action ${index}`
+  const action = requiredRecord(value, field)
+  assertExactKeys(action, [
+    'tool', 'state', 'reason', 'evidence', 'command_hint', 'command_args', 'requires_confirmation',
+  ], field)
+  const commandHint = hasOwn(action, 'command_hint')
+    ? projectedString(action.command_hint, `${field} command_hint`, current)
+    : undefined
+  const commandArgs = hasOwn(action, 'command_args')
+    ? projectedStringArray(action.command_args, `${field} command_args`, current)
+    : undefined
+  return {
+    tool: projectedNonEmptyString(action.tool, `${field} tool`, current),
+    state: projectedNonEmptyString(action.state, `${field} state`, current),
+    reason: projectedNonEmptyString(action.reason, `${field} reason`, current),
+    evidence: requiredArray(action.evidence, `${field} evidence`)
+      .map((item, evidenceIndex) => projectAdviseEvidence(item, `${field} evidence ${evidenceIndex}`, current)),
+    ...(commandHint === undefined ? {} : { command_hint: commandHint }),
+    ...(commandArgs === undefined ? {} : { command_args: commandArgs }),
+    requires_confirmation: requiredBoolean(action.requires_confirmation, `${field} requires_confirmation`),
+  }
+}
+
+function projectAdviseEvidence(value: JsonValue, field: string, current: CurrentArticleRevision): JsonValue {
+  const evidence = requiredRecord(value, field)
+  assertExactKeys(evidence, ['code', 'message', 'location'], field)
+  const location = hasOwn(evidence, 'location')
+    ? projectAdviseLocation(evidence.location, `${field} location`, current)
+    : undefined
+  return {
+    code: projectedNonEmptyString(evidence.code, `${field} code`, current),
+    message: projectedNonEmptyString(evidence.message, `${field} message`, current),
+    ...(location === undefined ? {} : { location }),
+  }
+}
+
+function projectAdviseLocation(value: unknown, field: string, current: CurrentArticleRevision): JsonValue {
+  const location = requiredRecord(value, field)
+  assertExactKeys(location, ['line', 'section'], field)
+  const line = hasOwn(location, 'line') ? requiredInteger(location.line, `${field} line`) : undefined
+  const section = hasOwn(location, 'section')
+    ? projectedString(location.section, `${field} section`, current)
+    : undefined
+  return {
+    ...(line === undefined ? {} : { line }),
+    ...(section === undefined ? {} : { section }),
+  }
+}
+
+function projectAdviseLayout(value: unknown, current: CurrentArticleRevision): JsonValue {
+  const layout = requiredRecord(value, 'advise layout')
+  assertExactKeys(layout, ['max_modules', 'recommended', 'rejected'], 'advise layout')
+  return {
+    max_modules: requiredInteger(layout.max_modules, 'advise layout max_modules'),
+    recommended: requiredArray(layout.recommended, 'advise recommended modules')
+      .map((item, index) => projectAdviseModule(item, `advise recommended module ${index}`, current)),
+    rejected: requiredArray(layout.rejected, 'advise rejected modules')
+      .map((item, index) => projectAdviseModule(item, `advise rejected module ${index}`, current)),
+  }
+}
+
+function projectAdviseModule(value: JsonValue, field: string, current: CurrentArticleRevision): JsonValue {
+  const module = requiredRecord(value, field)
+  assertExactKeys(module, ['name', 'state', 'reason', 'evidence'], field)
+  return {
+    name: projectedNonEmptyString(module.name, `${field} name`, current),
+    state: projectedNonEmptyString(module.state, `${field} state`, current),
+    reason: projectedNonEmptyString(module.reason, `${field} reason`, current),
+    evidence: requiredArray(module.evidence, `${field} evidence`)
+      .map((item, index) => projectAdviseEvidence(item, `${field} evidence ${index}`, current)),
+  }
+}
+
+function projectAdviseMicroEdit(value: JsonValue, index: number, current: CurrentArticleRevision): JsonValue {
+  const field = `advise micro edit ${index}`
+  const edit = requiredRecord(value, field)
+  assertExactKeys(edit, ['kind', 'reason', 'evidence', 'requires_confirmation'], field)
+  return {
+    kind: projectedNonEmptyString(edit.kind, `${field} kind`, current),
+    reason: projectedNonEmptyString(edit.reason, `${field} reason`, current),
+    evidence: requiredArray(edit.evidence, `${field} evidence`)
+      .map((item, evidenceIndex) => projectAdviseEvidence(item, `${field} evidence ${evidenceIndex}`, current)),
+    requires_confirmation: requiredBoolean(edit.requires_confirmation, `${field} requires_confirmation`),
+  }
 }
 
 function assertEnvelope(response: CliEnvelope, code: string, status: CliEnvelope['status']): void {
@@ -245,6 +380,23 @@ function requiredNonEmptyString(value: unknown, field: string): string {
   return value
 }
 
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== 'string') throw new Error(`${field} must be a string`)
+  return value
+}
+
+function requiredStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) {
+    throw new Error(`${field} must contain only strings`)
+  }
+  return value
+}
+
+function requiredBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== 'boolean') throw new Error(`${field} must be a boolean`)
+  return value
+}
+
 function requiredInteger(value: unknown, field: string): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) throw new Error(`${field} must be a non-negative integer`)
   return value
@@ -255,13 +407,30 @@ function requireLiteral<T extends string | boolean>(value: unknown, expected: T,
   return expected
 }
 
-function replaceMachinePath(value: JsonValue, machinePath: string, artifactPath: string): JsonValue {
-  if (typeof value === 'string') return value.replaceAll(machinePath, artifactPath)
-  if (Array.isArray(value)) return value.map(item => replaceMachinePath(item, machinePath, artifactPath))
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replaceMachinePath(item, machinePath, artifactPath)]))
+function assertExactKeys(value: Readonly<Record<string, JsonValue>>, allowed: readonly string[], field: string): void {
+  const allowedKeys = new Set(allowed)
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) throw new Error(`${field} contains unknown field ${key}`)
   }
-  return value
+}
+
+function hasOwn(value: Readonly<Record<string, JsonValue>>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key)
+}
+
+function projectedString(value: unknown, field: string, current: CurrentArticleRevision): string {
+  return requiredString(value, field)
+    .replaceAll(current.articleAuthorization.processPath, current.articlePath)
+}
+
+function projectedNonEmptyString(value: unknown, field: string, current: CurrentArticleRevision): string {
+  return requiredNonEmptyString(value, field)
+    .replaceAll(current.articleAuthorization.processPath, current.articlePath)
+}
+
+function projectedStringArray(value: unknown, field: string, current: CurrentArticleRevision): string[] {
+  return requiredStringArray(value, field)
+    .map(item => item.replaceAll(current.articleAuthorization.processPath, current.articlePath))
 }
 
 function improvementArgv(
