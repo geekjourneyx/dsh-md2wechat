@@ -51,8 +51,9 @@ function processExists(pid: number): boolean {
   }
 }
 
-async function waitForPids(pidFile: string): Promise<number[]> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+async function waitForPids(pidFile: string, timeoutMs = 1_000): Promise<number[]> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
     try {
       const values = (await readFile(pidFile, 'utf8')).trim().split('\n').map(Number)
       if (values.length >= 2) return values
@@ -122,10 +123,14 @@ describe('CLI gateway', () => {
         FAKE_MD2WECHAT_BEHAVIOR: 'sleep',
         FAKE_MD2WECHAT_PID_FILE: pidFile,
       },
-      timeoutMs: 50,
+      timeoutMs: 1_000,
     })
-    const pids = await waitForPids(pidFile)
-    await expect(running).rejects.toThrow('timed out')
+    const rejection = running.then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    const pids = await waitForPids(pidFile, 800)
+    expect(await rejection).toMatchObject({ message: expect.stringContaining('timed out') })
     expect(pids.every(pid => !processExists(pid))).toBe(true)
   })
 
