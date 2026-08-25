@@ -61,4 +61,33 @@ describe('repository boundary', () => {
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('package/.superpowers/task.md')
   })
+
+  it('rejects a platform package directory included in a package archive', async () => {
+    const root = await temporaryRoot()
+    const packageRoot = join(root, 'package')
+    await mkdir(join(packageRoot, 'md2wechat-darwin-arm64'), { recursive: true })
+    await writeFile(join(packageRoot, 'md2wechat-darwin-arm64', 'README.md'), '')
+    const archive = join(root, 'plugin.tgz')
+    execFileSync('tar', ['-czf', archive, 'package'], {
+      cwd: root,
+      env: { ...process.env, LC_ALL: 'C' },
+    })
+    const result = check(archive)
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('package/md2wechat-darwin-arm64/')
+  })
+
+  it('rejects an empty orchestration workspace included in a package archive', async () => {
+    const root = await temporaryRoot()
+    const packageRoot = join(root, 'package')
+    await mkdir(join(packageRoot, '.superpowers'), { recursive: true })
+    const archive = join(root, 'plugin.tgz')
+    execFileSync('tar', ['-czf', archive, 'package'], {
+      cwd: root,
+      env: { ...process.env, LC_ALL: 'C' },
+    })
+    const result = check(archive)
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('package/.superpowers/')
+  })
 })

@@ -84,13 +84,14 @@ function inspectArchive(archive, violations) {
 
   for (const entry of listing.split('\n')) {
     const path = entry.replace(/^\.\//u, '')
-    if (path === '' || path.endsWith('/')) continue
+    if (path === '') continue
     const packagedPath = path.startsWith('package/') ? path.slice('package/'.length) : path
     const reason = forbiddenReason(packagedPath)
     if (reason !== undefined) record(violations, path, reason)
     if (packagedPath === '.superpowers' || packagedPath.startsWith('.superpowers/')) {
       record(violations, path, 'orchestration workspace must not be packed')
     }
+    if (path.endsWith('/')) continue
   }
 }
 
