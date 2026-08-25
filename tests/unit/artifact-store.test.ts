@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rename, stat, symlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -76,7 +76,14 @@ describe('ArtifactStore', () => {
     'nested/./dot.md',
     'nul\0byte.md',
     'CON',
+    'CON:stream',
+    'CON .txt',
+    'NUL::$DATA',
     'aux.txt',
+    'aux ',
+    'file.txt:secret',
+    'trailing.',
+    'nested/trailing. ',
     'nested/LPT9.json',
   ])('rejects unsafe relative artifact path %j', (relative) => {
     expect(() => store.resolve(relative)).toThrow()
@@ -120,6 +127,50 @@ describe('ArtifactStore', () => {
     await expect(readFile(store.resolve('article.md'), 'utf8')).resolves.toBe('old article')
   })
 
+  it('revalidates a contained directory replaced by an outside symlink before staging', async () => {
+    await store.writeAtomic('race/article.md', new TextEncoder().encode('old article'))
+    const raceDirectory = dirname(store.resolve('race/article.md'))
+    const movedDirectory = join(workspace, 'race-before-stage-backup')
+    const outside = join(temporary, 'outside-before-stage')
+    await mkdir(outside)
+    const racing = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat', {
+      async beforeNativeStage() {
+        await rename(raceDirectory, movedDirectory)
+        await symlink(outside, raceDirectory)
+      },
+    })
+
+    await expect(racing.writeAtomic('race/article.md', new TextEncoder().encode('new article')))
+      .rejects.toThrow('changed')
+    await expect(readFile(join(movedDirectory, 'article.md'), 'utf8')).resolves.toBe('old article')
+    await expect(readFile(join(outside, 'article.md'))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await import('node:fs/promises').then(fs => fs.readdir(outside))).toEqual([])
+  })
+
+  it('revalidates target and temp identities before commit without cleaning through a replacement symlink', async () => {
+    await store.writeAtomic('race/article.md', new TextEncoder().encode('old article'))
+    const raceDirectory = dirname(store.resolve('race/article.md'))
+    const movedDirectory = join(workspace, 'race-before-commit-backup')
+    const outside = join(temporary, 'outside-before-commit')
+    await mkdir(outside)
+    let outsideTemp = ''
+    const racing = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat', {
+      async beforeNativeCommit(paths) {
+        await rename(raceDirectory, movedDirectory)
+        await symlink(outside, raceDirectory)
+        outsideTemp = join(outside, basename(paths.tempPath))
+        await writeFile(outsideTemp, 'outside sentinel')
+        await writeFile(join(outside, 'article.md'), 'outside final')
+      },
+    })
+
+    await expect(racing.writeAtomic('race/article.md', new TextEncoder().encode('new article')))
+      .rejects.toThrow('changed')
+    await expect(readFile(join(movedDirectory, 'article.md'), 'utf8')).resolves.toBe('old article')
+    await expect(readFile(outsideTemp, 'utf8')).resolves.toBe('outside sentinel')
+    await expect(readFile(join(outside, 'article.md'), 'utf8')).resolves.toBe('outside final')
+  })
+
   it('copies bytes in and out only across explicit absolute external paths', async () => {
     const input = join(temporary, 'input.bin')
     const output = join(temporary, 'output.bin')
@@ -137,5 +188,51 @@ describe('ArtifactStore', () => {
   it('rejects copying a canonical source onto itself', async () => {
     await store.writeAtomic('article.md', new TextEncoder().encode('article'))
     await expect(store.copyOut('article.md', store.resolve('article.md'))).rejects.toThrow('same')
+  })
+
+  it('stages private CLI output and atomically commits it to the final artifact', async () => {
+    const staged = await store.stageOutput('preview/article.html')
+    expect((await stat(dirname(staged.processPath))).mode & 0o777).toBe(0o700)
+    await writeFile(staged.processPath, Uint8Array.from([0, 255, 65]))
+
+    await staged.commit()
+
+    expect(Array.from(await store.read('preview/article.html'))).toEqual([0, 255, 65])
+    await expect(readFile(staged.processPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('cleans an uncommitted CLI output without publishing its final artifact', async () => {
+    const staged = await store.stageOutput('preview/article.html')
+    await writeFile(staged.processPath, 'uncommitted')
+
+    await staged.cleanup()
+    await staged.cleanup()
+
+    await expect(store.read('preview/article.html')).rejects.toMatchObject({ code: 'FS_NOT_FOUND' })
+    await expect(readFile(staged.processPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('rejects staged CLI output replaced by an escaping symlink', async () => {
+    const outside = join(temporary, 'outside-stage.html')
+    await writeFile(outside, 'outside')
+    const staged = await store.stageOutput('preview/article.html')
+    await symlink(outside, staged.processPath)
+
+    await expect(staged.commit()).rejects.toThrow('staging')
+    await expect(staged.cleanup()).rejects.toThrow()
+    await expect(readFile(outside, 'utf8')).resolves.toBe('outside')
+    await expect(store.read('preview/article.html')).rejects.toMatchObject({ code: 'FS_NOT_FOUND' })
+  })
+
+  it('retains staged CLI output when final atomic publication fails', async () => {
+    const rename = vi.fn(async () => { throw new Error('injected final publication failure') })
+    const failing = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat', { rename })
+    const staged = await failing.stageOutput('preview/article.html')
+    await writeFile(staged.processPath, 'retryable output')
+
+    await expect(staged.commit()).rejects.toThrow('injected final publication failure')
+    await expect(readFile(staged.processPath, 'utf8')).resolves.toBe('retryable output')
+    await expect(store.read('preview/article.html')).rejects.toMatchObject({ code: 'FS_NOT_FOUND' })
+    await staged.cleanup()
   })
 })

@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
+import { isAbsolute, join, relative, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { afterEach, describe, expect, it } from 'vitest'
 import { domainResult, genericCall, genericResult } from '../../src/tools/shared.ts'
 import { ArtifactStore } from '../../src/workspace/artifact-store.ts'
 import {
@@ -60,9 +63,19 @@ describe('article revisions', () => {
 })
 
 describe('operation records', () => {
+  const temporaryDirectories: string[] = []
+
+  afterEach(async () => {
+    await Promise.all(temporaryDirectories.splice(0).map(path =>
+      import('node:fs/promises').then(fs => fs.rm(path, { recursive: true, force: true }))))
+  })
+
   it('appends canonical redacted JSON lines with monotonic sequence numbers', async () => {
     const files = new Map<string, Uint8Array>()
     const store = {
+      async canonicalIdentity(path: string): Promise<string> {
+        return `memory-root/${path}`
+      },
       async read(path: string): Promise<Uint8Array> {
         const bytes = files.get(path)
         if (bytes !== undefined) return bytes
@@ -94,6 +107,58 @@ describe('operation records', () => {
     expect(lines[0]).toBe('{"createdAt":"2026-08-25T00:00:01.000Z","details":{"a":1,"apiKey":"[REDACTED]","note":"credential=[REDACTED]","z":2},"operation":"advise","revisionId":"' + revision.id + '","schemaVersion":1,"sequence":1}')
     expect(JSON.parse(lines[1]!)).toMatchObject({ sequence: 2, operation: 'humanize', revisionId: revision.id })
     expect(text).not.toContain('top-secret')
+  })
+
+  it('serializes concurrent appends from separate stores sharing one canonical operations file', async () => {
+    const temporary = await mkdtemp(join(tmpdir(), 'dsh-md2wechat-shared-records-'))
+    temporaryDirectories.push(temporary)
+    const workspace = join(temporary, 'workspace')
+    await mkdir(workspace)
+    const fs = {
+      async resolve(path: string) {
+        const absolute = resolve(workspace, path)
+        return { targetKey: absolute, displayPath: absolute }
+      },
+      processPath(target: { targetKey: string }) { return target.targetKey },
+      contains(parent: { targetKey: string }, child: { targetKey: string }) {
+        const candidate = relative(parent.targetKey, child.targetKey)
+        return candidate === '' || (!candidate.startsWith('..') && !isAbsolute(candidate))
+      },
+      async readBytes(target: { targetKey: string }, _signal: AbortSignal | undefined, maxBytes: number) {
+        try {
+          const bytes = await readFile(target.targetKey)
+          if (bytes.byteLength > maxBytes) throw new Error('too large')
+          return bytes
+        } catch (error) {
+          if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+            const missing = new Error('file not found') as Error & { code: string }
+            missing.code = 'FS_NOT_FOUND'
+            throw missing
+          }
+          throw error
+        }
+      },
+    }
+    const firstStore = new ArtifactStore(fs as never, workspace, '.dsh/md2wechat')
+    const secondStore = new ArtifactStore(fs as never, workspace, '.dsh/md2wechat')
+    const revision = computeArticleRevision(new TextEncoder().encode('# Article\n'), manifest)
+
+    await Promise.all([
+      appendOperation(firstStore, revision, {
+        operation: 'advise',
+        createdAt: '2026-08-25T00:00:01.000Z',
+        details: {},
+      }, []),
+      appendOperation(secondStore, revision, {
+        operation: 'humanize',
+        createdAt: '2026-08-25T00:00:02.000Z',
+        details: {},
+      }, []),
+    ])
+
+    const text = new TextDecoder().decode(await firstStore.read(`revisions/${revision.id}/operations.jsonl`))
+    const records = text.trimEnd().split('\n').map(line => JSON.parse(line) as { sequence: number })
+    expect(records.map(record => record.sequence)).toEqual([1, 2])
   })
 })
 

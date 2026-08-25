@@ -13,7 +13,9 @@ const manifestKeys = new Set<keyof ArticleManifest>([
   'title',
   'parentRevisionId',
 ])
-const appendQueues = new WeakMap<ArtifactStore, Promise<void>>()
+// One plugin process may construct multiple stores for the same session root;
+// the backend-owned canonical identity lets those instances share this queue.
+const appendQueues = new Map<string, Promise<void>>()
 
 /** Persisted inputs used to derive one article revision. */
 export interface ArticleManifest {
@@ -116,6 +118,9 @@ export function computeArticleRevision(articleBytes: Uint8Array, manifestValue: 
  * @param revision - Revision that owns the operation.
  * @param input - Safe operation metadata before sequence assignment.
  * @param secrets - Resolved values that must not persist.
+ * Concurrent appends are serialized by canonical file identity within this
+ * process. The plugin runtime does not run multiple writers in separate
+ * processes for one session workspace.
  * @returns The record written to storage.
  */
 export async function appendOperation(
@@ -128,9 +133,10 @@ export async function appendOperation(
   requiredString(input.operation, 'operation')
   requiredString(input.createdAt, 'createdAt')
   const details = plainRecord(redactValue(input.details, secrets), 'operation details must be an object')
+  const path = `revisions/${revision.id}/operations.jsonl`
+  const identity = await store.canonicalIdentity(path)
   let result: OperationRecord | undefined
-  await enqueueAppend(store, async () => {
-    const path = `revisions/${revision.id}/operations.jsonl`
+  await enqueueAppend(identity, async () => {
     const existing = await readOptionalText(store, path)
     const sequence = lastSequence(existing) + 1
     result = {
@@ -194,11 +200,16 @@ function lastSequence(text: string): number {
   return last.sequence as number
 }
 
-async function enqueueAppend(store: ArtifactStore, operation: () => Promise<void>): Promise<void> {
-  const previous = appendQueues.get(store) ?? Promise.resolve()
+async function enqueueAppend(identity: string, operation: () => Promise<void>): Promise<void> {
+  const previous = appendQueues.get(identity) ?? Promise.resolve()
   const current = previous.then(operation, operation)
-  appendQueues.set(store, current.then(() => undefined, () => undefined))
-  return current
+  const tail = current.then(() => undefined, () => undefined)
+  appendQueues.set(identity, tail)
+  try {
+    return await current
+  } finally {
+    if (appendQueues.get(identity) === tail) appendQueues.delete(identity)
+  }
 }
 
 function plainRecord(value: unknown, message: string): Record<string, unknown> {
