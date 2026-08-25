@@ -13,22 +13,26 @@ export interface CliRequestContext {
 export interface CliEnvelope {
   success: boolean
   code: string
+  message: string
   schema_version: 'v1'
   status: CliStatus
   retryable: boolean
   data?: Readonly<Record<string, unknown>>
-  warnings?: readonly unknown[]
+  error?: string
+  error_details?: Readonly<Record<string, unknown>>
   next_actions?: readonly unknown[]
 }
 
 const envelopeKeys = new Set<keyof CliEnvelope>([
   'success',
   'code',
+  'message',
   'schema_version',
   'status',
   'retryable',
   'data',
-  'warnings',
+  'error',
+  'error_details',
   'next_actions',
 ])
 
@@ -46,11 +50,17 @@ export function validateCliEnvelope(value: unknown, request: CliRequestContext):
 
   const success = requiredBoolean(envelope.success, 'CLI response success must be a boolean')
   const code = requiredString(envelope.code, 'CLI response code must be a string')
+  const message = requiredString(envelope.message, 'CLI response message must be a string')
   if (envelope.schema_version !== 'v1') throw new TypeError('unsupported CLI schema_version')
   const status = validateStatus(envelope.status)
   const retryable = requiredBoolean(envelope.retryable, 'CLI response retryable must be a boolean')
   const data = envelope.data === undefined ? undefined : validateJsonRecord(envelope.data, 'data')
-  const warnings = envelope.warnings === undefined ? undefined : validateJsonArray(envelope.warnings, 'warnings')
+  const error = envelope.error === undefined
+    ? undefined
+    : requiredString(envelope.error, 'CLI response error must be a string')
+  const errorDetails = envelope.error_details === undefined
+    ? undefined
+    : validateJsonRecord(envelope.error_details, 'error_details')
   const nextActions = envelope.next_actions === undefined ? undefined : validateJsonArray(envelope.next_actions, 'next_actions')
 
   validateStatusSuccess(status, success)
@@ -60,11 +70,13 @@ export function validateCliEnvelope(value: unknown, request: CliRequestContext):
   return {
     success,
     code,
+    message,
     schema_version: 'v1',
     status,
     retryable,
     ...(data === undefined ? {} : { data }),
-    ...(warnings === undefined ? {} : { warnings }),
+    ...(error === undefined ? {} : { error }),
+    ...(errorDetails === undefined ? {} : { error_details: errorDetails }),
     ...(nextActions === undefined ? {} : { next_actions: nextActions }),
   }
 }
@@ -95,12 +107,12 @@ function validateStatusSuccess(status: CliStatus, success: boolean): void {
 }
 
 function validateCapabilities(data: Readonly<Record<string, unknown>> | undefined, requiredCommands: readonly string[]): void {
-  const capabilities = data?.capabilities
-  if (capabilities !== undefined && (!Array.isArray(capabilities) || !capabilities.every(item => typeof item === 'string'))) {
-    throw new TypeError('CLI response capabilities must contain only strings')
+  const commands = data?.commands
+  if (commands !== undefined && (!Array.isArray(commands) || !commands.every(item => typeof item === 'string'))) {
+    throw new TypeError('CLI response commands must contain only strings')
   }
   for (const command of requiredCommands) {
-    if (!Array.isArray(capabilities) || !capabilities.includes(command)) {
+    if (!Array.isArray(commands) || !commands.includes(command)) {
       throw new TypeError(`CLI response is missing required command ${command}`)
     }
   }

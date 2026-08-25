@@ -38,7 +38,7 @@ export interface CliRunOptions {
   signal?: AbortSignal
   stdin?: string
   timeoutMs?: number
-  beforeSpawn?: () => void | Promise<void>
+  beforeSpawn?: (signal: AbortSignal) => void | Promise<void>
 }
 
 /** Managed access to the configured external md2wechat executable. */
@@ -62,8 +62,16 @@ interface AbortControl {
  * @returns managed CLI gateway.
  */
 export function createCliGateway(ctx: Context, config: ResolvedConfig): CliGateway {
-  const resolve = (signal?: AbortSignal): Promise<string> =>
-    ctx.subprocess.resolveExecutable(config.binaryPath, {}, signal)
+  const resolve = async (signal?: AbortSignal): Promise<string> => {
+    try {
+      return await ctx.subprocess.resolveExecutable(config.binaryPath, {}, signal)
+    } catch {
+      const message = signal?.aborted
+        ? 'configured md2wechat executable resolution cancelled'
+        : 'configured md2wechat executable could not be resolved'
+      throw sanitizeError(new Error(message), [config.binaryPath, ...Object.values(config.credentialRefs)])
+    }
+  }
 
   return {
     resolve,
@@ -109,8 +117,7 @@ async function runOnce(
   signal: AbortSignal,
 ): Promise<CliEnvelope> {
   const executable = await resolve(signal)
-  await options.beforeSpawn?.()
-  signal.throwIfAborted()
+  await waitForBeforeSpawn(options.beforeSpawn, signal)
 
   const handle = ctx.subprocess.spawn({
     argv: [executable, ...argv],
@@ -174,6 +181,26 @@ function readCollected(output: SubprocessOutputRead | undefined, stream: 'stdout
 function diagnosticError(message: string, diagnostic: string): Error {
   const text = diagnostic.trim()
   return new Error(text.length === 0 ? message : `${message}: ${text}`)
+}
+
+async function waitForBeforeSpawn(
+  beforeSpawn: CliRunOptions['beforeSpawn'],
+  signal: AbortSignal,
+): Promise<void> {
+  if (beforeSpawn === undefined) return
+  signal.throwIfAborted()
+  const callback = Promise.resolve().then(() => beforeSpawn(signal))
+  let onAbort!: () => void
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = (): void => { reject(signal.reason) }
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
+  })
+  try {
+    await Promise.race([callback, aborted])
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
 }
 
 function isCapabilityProbe(argv: readonly string[]): boolean {

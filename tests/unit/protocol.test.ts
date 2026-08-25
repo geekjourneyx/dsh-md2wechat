@@ -6,6 +6,7 @@ const request = { argv: ['version', '--json'], requiredCommands: [] }
 const envelope = {
   success: true,
   code: 'OK',
+  message: 'completed',
   schema_version: 'v1',
   status: 'completed',
   retryable: false,
@@ -39,17 +40,45 @@ describe('validateCliEnvelope', () => {
     expect(() => validateCliEnvelope({ ...envelope, ...conflict }, request)).toThrow('success')
   })
 
-  it('rejects non-string capabilities', () => {
+  it('requires a string message and validates optional CLI error fields', () => {
+    const { message: _message, ...missingMessage } = envelope
+    expect(() => validateCliEnvelope(missingMessage, request)).toThrow('message')
+    expect(() => validateCliEnvelope({ ...envelope, message: 1 }, request)).toThrow('message')
+    expect(validateCliEnvelope({
+      ...envelope,
+      error: 'request failed',
+      error_details: { field: 'title', problems: ['missing'] },
+    }, request)).toMatchObject({
+      error: 'request failed',
+      error_details: { field: 'title', problems: ['missing'] },
+    })
+    expect(() => validateCliEnvelope({ ...envelope, error: 1 }, request)).toThrow('error')
+    expect(() => validateCliEnvelope({ ...envelope, error_details: [] }, request)).toThrow('error_details')
+  })
+
+  it('keeps strict top-level field validation with the real CLI fields', () => {
+    expect(() => validateCliEnvelope({ ...envelope, invented: true }, request)).toThrow('unsupported field')
+    expect(() => validateCliEnvelope({ ...envelope, warnings: [] }, request)).toThrow('unsupported field')
+  })
+
+  it('rejects non-string commands', () => {
     expect(() => validateCliEnvelope({
       ...envelope,
-      data: { version: '3.3.0', capabilities: ['convert', 1] },
-    }, request)).toThrow('capabilities')
+      data: { version: '3.3.0', commands: ['convert', 1] },
+    }, request)).toThrow('commands')
   })
 
   it('rejects an envelope missing a required command', () => {
     expect(() => validateCliEnvelope({
       ...envelope,
-      data: { version: '3.3.0', capabilities: ['convert'] },
+      data: { version: '3.3.0', commands: ['convert'] },
+    }, { argv: ['capabilities', '--json'], requiredCommands: ['convert', 'publish'] })).toThrow('publish')
+  })
+
+  it('does not let an invented capabilities field mask missing real commands', () => {
+    expect(() => validateCliEnvelope({
+      ...envelope,
+      data: { version: '3.3.0', commands: ['convert'], capabilities: ['convert', 'publish'] },
     }, { argv: ['capabilities', '--json'], requiredCommands: ['convert', 'publish'] })).toThrow('publish')
   })
 

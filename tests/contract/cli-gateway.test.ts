@@ -69,6 +69,21 @@ describe('CLI gateway', () => {
     await expect(gateway().resolve()).resolves.toBe(await realpath(fakeCli))
   })
 
+  it('classifies direct resolution failures without exposing configured values', async () => {
+    const missingPath = join(tmpdir(), 'needle-private-md2wechat')
+    const unresolved = gateway({
+      binaryPath: missingPath,
+      credentialRefs: { WECHAT_SECRET: 'needle-secret-reference' },
+    })
+    const error = await unresolved.resolve().catch((failure: unknown) => failure)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('configured md2wechat executable could not be resolved')
+    expect((error as Error).message).not.toContain('needle')
+
+    await expect(unresolved.resolve(AbortSignal.abort('needle-cancel-reason')))
+      .rejects.toThrow('resolution cancelled')
+  })
+
   it('runs the version and complete capability probes', async () => {
     await expect(gateway().run(['version', '--json'])).resolves.toMatchObject({ success: true })
     await expect(gateway().run(['capabilities', '--json'])).resolves.toMatchObject({
@@ -209,7 +224,57 @@ describe('CLI gateway', () => {
         FAKE_MD2WECHAT_BEHAVIOR: 'require-marker',
         FAKE_MD2WECHAT_MARKER_FILE: markerFile,
       },
-      beforeSpawn: async () => { await writeFile(markerFile, 'ready\n') },
+      beforeSpawn: async (signal) => {
+        expect(signal.aborted).toBe(false)
+        await writeFile(markerFile, 'ready\n')
+      },
     })).resolves.toMatchObject({ success: true })
+  })
+
+  it.each([
+    ['timed out', undefined],
+    ['cancelled', new AbortController()],
+  ])('interrupts a never-settling beforeSpawn callback when the run is %s', async (classification, controller) => {
+    const startedAt = Date.now()
+    const running = gateway().run(['version', '--json'], {
+      timeoutMs: classification === 'timed out' ? 25 : 2_000,
+      ...(controller === undefined ? {} : { signal: controller.signal }),
+      beforeSpawn: () => new Promise<void>(() => {}),
+    })
+    if (controller !== undefined) setTimeout(() => { controller.abort() }, 25)
+    const bounded = Promise.race([
+      running,
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => { reject(new Error('beforeSpawn stayed pending')) }, 500)
+      }),
+    ])
+    await expect(bounded).rejects.toThrow(classification)
+    expect(Date.now() - startedAt).toBeLessThan(500)
+  })
+
+  it('handles a beforeSpawn rejection that arrives after cancellation', async () => {
+    const callback = Promise.withResolvers<void>()
+    const controller = new AbortController()
+    const unhandled: unknown[] = []
+    const onUnhandled = (error: unknown): void => { unhandled.push(error) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const running = gateway().run(['version', '--json'], {
+        signal: controller.signal,
+        beforeSpawn: () => callback.promise,
+      })
+      setTimeout(() => { controller.abort() }, 25)
+      await expect(Promise.race([
+        running,
+        new Promise<never>((_resolve, reject) => {
+          setTimeout(() => { reject(new Error('beforeSpawn stayed pending')) }, 500)
+        }),
+      ])).rejects.toThrow('cancelled')
+      callback.reject(new Error('late callback failure'))
+      await new Promise(resolve => setImmediate(resolve))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 })

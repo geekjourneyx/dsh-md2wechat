@@ -28,6 +28,7 @@ function completed(data = {}) {
   return {
     success: true,
     code: 'OK',
+    message: 'completed',
     schema_version: 'v1',
     status: 'completed',
     retryable: false,
@@ -39,6 +40,7 @@ function retryableFailure() {
   return {
     success: false,
     code: 'TEMPORARY_FAILURE',
+    message: 'retry later',
     schema_version: 'v1',
     status: 'failed',
     retryable: true,
@@ -47,7 +49,7 @@ function retryableFailure() {
 
 function response() {
   if (argv[0] === 'version') return completed({ version: '3.3.0' })
-  if (argv[0] === 'capabilities') return completed({ commands, capabilities: commands })
+  if (argv[0] === 'capabilities') return completed({ commands })
   return completed({ argv })
 }
 
@@ -94,7 +96,6 @@ switch (behavior) {
   case 'missing-capability':
     process.stdout.write(`${JSON.stringify(completed({
       commands: commands.slice(0, -1),
-      capabilities: commands.slice(0, -1),
     }))}\n`)
     break
   case 'retry-once': {
