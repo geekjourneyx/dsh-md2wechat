@@ -179,6 +179,54 @@ export class ArtifactStore {
   }
 
   /**
+   * Create one contained artifact with native exclusive-create semantics.
+   * @param relative - Artifact-relative destination that must not already exist.
+   * @param bytes - Complete bytes owned by this attempt.
+   * @param signal - Optional cancellation signal.
+   * @param ownership - Flag set immediately after the exclusive file is created.
+   * @returns The supplied ownership flag after identity and byte verification.
+   */
+  async createExclusive(
+    relative: string,
+    bytes: Uint8Array,
+    signal?: AbortSignal,
+    ownership: ArtifactPublicationOwnership = { created: false },
+  ): Promise<ArtifactPublicationOwnership> {
+    signal?.throwIfAborted()
+    const target = await this.resolveContained(relative, signal)
+    const destination = this.fs.processPath(target)
+    await mkdir(dirname(destination), { recursive: true })
+    const binding = await this.bindPublication(target, relative, signal)
+    let handle: Awaited<ReturnType<typeof open>> | undefined
+    try {
+      handle = await open(this.fs.processPath(binding.target), 'wx', 0o600)
+      ownership.created = true
+      await handle.writeFile(bytes, signal === undefined ? undefined : { signal })
+      await handle.sync()
+      await handle.close()
+      handle = undefined
+      const current = await this.revalidateBinding(binding, signal)
+      const info = await this.fs.stat(current.target, signal)
+      if (info?.type !== 'file') throw new Error('exclusive artifact is not a regular file after creation')
+      const currentBytes = await this.fs.readBytes(current.target, signal, MAX_ARTIFACT_BYTES)
+      if (sha256(currentBytes) !== sha256(bytes)) throw new Error('exclusive artifact changed during creation')
+      return ownership
+    } catch (error) {
+      let failure: unknown = error
+      if (handle !== undefined) failure = await closeAfterFailure(handle, failure)
+      if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
+        const exists = new Error('exclusive artifact already exists') as Error & { code: string }
+        exists.code = 'ARTIFACT_EXISTS'
+        throw exists
+      }
+      // A failed write can no longer prove that the path still names the inode
+      // created by this attempt. Preserve a safe orphan instead of deleting a
+      // same-path replacement owned by another process.
+      throw failure
+    }
+  }
+
+  /**
    * Remove a regular artifact only while its canonical identity and bytes still match.
    * @param relative - Artifact-relative candidate owned by an uncommitted transaction.
    * @param expectedSha256 - Exact lowercase SHA-256 of the owned bytes.

@@ -10,6 +10,9 @@ const DEFAULT_SAFE_READ_RETRIES = 1
 const DEFAULT_SAFE_READ_RETRY_DELAY_MS = 500
 const DEFAULT_FOREGROUND_TIMEOUT_MS = 120_000
 const DEFAULT_IMAGE_JOB_TIMEOUT_MS = 900_000
+const DEFAULT_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+const DEFAULT_IMAGE_MAX_REDIRECTS = 3
+const DEFAULT_IMAGE_ACQUISITION_TIMEOUT_MS = 60_000
 
 const credentialEnvironmentNames = new Set<CredentialEnvironmentName>([
   'MD2WECHAT_API_KEY',
@@ -32,6 +35,9 @@ export interface Config {
   safeReadRetryDelayMs?: number
   foregroundTimeoutMs?: number
   imageJobTimeoutMs?: number
+  imageMaxBytes?: number
+  imageMaxRedirects?: number
+  imageAcquisitionTimeoutMs?: number
   credentialRefs?: Readonly<Record<CredentialEnvironmentName, string>>
 }
 
@@ -56,6 +62,9 @@ export interface ResolvedConfig {
   safeReadRetryDelayMs: number
   foregroundTimeoutMs: number
   imageJobTimeoutMs: number
+  imageMaxBytes: number
+  imageMaxRedirects: number
+  imageAcquisitionTimeoutMs: number
   credentialRefs: Readonly<Record<string, string>>
 }
 
@@ -72,6 +81,9 @@ const configFields = {
   safeReadRetryDelayMs: Schema.number(),
   foregroundTimeoutMs: Schema.number(),
   imageJobTimeoutMs: Schema.number(),
+  imageMaxBytes: Schema.number(),
+  imageMaxRedirects: Schema.number(),
+  imageAcquisitionTimeoutMs: Schema.number(),
   credentialRefs: Schema.dict(Schema.string()) as unknown as Schema<Readonly<Record<CredentialEnvironmentName, string>>>,
 }
 
@@ -121,6 +133,9 @@ export function resolveConfig(input: Config): ResolvedConfig {
     safeReadRetryDelayMs: optionalInteger(value.safeReadRetryDelayMs, DEFAULT_SAFE_READ_RETRY_DELAY_MS, 0, 'safeReadRetryDelayMs must be a non-negative integer'),
     foregroundTimeoutMs: optionalInteger(value.foregroundTimeoutMs, DEFAULT_FOREGROUND_TIMEOUT_MS, 1, 'foregroundTimeoutMs must be a positive integer'),
     imageJobTimeoutMs: optionalInteger(value.imageJobTimeoutMs, DEFAULT_IMAGE_JOB_TIMEOUT_MS, 1, 'imageJobTimeoutMs must be a positive integer'),
+    imageMaxBytes: optionalInteger(value.imageMaxBytes, DEFAULT_IMAGE_MAX_BYTES, 1, 'imageMaxBytes must be a positive integer'),
+    imageMaxRedirects: optionalInteger(value.imageMaxRedirects, DEFAULT_IMAGE_MAX_REDIRECTS, 0, 'imageMaxRedirects must be a non-negative integer'),
+    imageAcquisitionTimeoutMs: optionalInteger(value.imageAcquisitionTimeoutMs, DEFAULT_IMAGE_ACQUISITION_TIMEOUT_MS, 1, 'imageAcquisitionTimeoutMs must be a positive integer'),
     credentialRefs: resolveCredentialRefs(value.credentialRefs),
   }
 }
@@ -156,7 +171,7 @@ function optionalEnum<const T extends string>(value: unknown, fallback: T, allow
 
 function optionalInteger(value: unknown, fallback: number, minimum: number, message: string): number {
   if (value === undefined) return fallback
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < minimum) throw new TypeError(message)
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) throw new TypeError(message)
   return value
 }
 

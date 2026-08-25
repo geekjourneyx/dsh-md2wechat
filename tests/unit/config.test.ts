@@ -20,6 +20,14 @@ describe('resolveConfig', () => {
     expect(() => resolveConfig({ ...valid, foregroundTimeoutMs: 0 })).toThrow('positive integer')
   })
 
+  it.each([
+    ['imageMaxBytes', 0],
+    ['imageMaxRedirects', -1],
+    ['imageAcquisitionTimeoutMs', 0],
+  ] as const)('rejects invalid %s', (field, value) => {
+    expect(() => resolveConfig({ ...valid, [field]: value })).toThrow('integer')
+  })
+
   it('rejects unsupported credential environment names', () => {
     expect(() => resolveConfig({
       ...valid,
@@ -52,6 +60,9 @@ describe('resolveConfig', () => {
       safeReadRetryDelayMs: 500,
       foregroundTimeoutMs: 120000,
       imageJobTimeoutMs: 900000,
+      imageMaxBytes: 20971520,
+      imageMaxRedirects: 3,
+      imageAcquisitionTimeoutMs: 60000,
       credentialRefs: {},
     })
   })

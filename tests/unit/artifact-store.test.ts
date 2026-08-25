@@ -109,6 +109,23 @@ describe('ArtifactStore', () => {
     expect(Array.from(await store.read('images/picture.bin'))).toEqual([0, 255, 128, 10, 65])
   })
 
+  it('creates an artifact exclusively across store instances without replacing the winner', async () => {
+    const second = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat')
+    const left = new TextEncoder().encode('left')
+    const right = new TextEncoder().encode('right')
+    const attempts = await Promise.allSettled([
+      store.createExclusive('claims/item.json', left),
+      second.createExclusive('claims/item.json', right),
+    ])
+    expect(attempts.filter(attempt => attempt.status === 'fulfilled')).toHaveLength(1)
+    expect(attempts.filter(attempt => attempt.status === 'rejected')).toHaveLength(1)
+    const published = new TextDecoder().decode(await store.read('claims/item.json'))
+    expect(['left', 'right']).toContain(published)
+    await expect(store.createExclusive('claims/item.json', new TextEncoder().encode('replacement')))
+      .rejects.toMatchObject({ code: 'ARTIFACT_EXISTS' })
+    await expect(readFile(store.resolve('claims/item.json'), 'utf8')).resolves.toBe(published)
+  })
+
   it('authorizes and revalidates one unchanged regular contained artifact as CLI input', async () => {
     const bytes = new TextEncoder().encode('# Article\n')
     const hash = createHash('sha256').update(bytes).digest('hex')
