@@ -3,6 +3,9 @@ import Schema from '@deepseek-ai/schemastery'
 
 const DEFAULT_ARTIFACTS_DIR = '.dsh/md2wechat'
 const DEFAULT_LAYOUT_BASE_URL = 'https://www.md2wechat.cn'
+const DEFAULT_PREVIEW_THEME = 'default'
+const DEFAULT_PREVIEW_FONT_SIZE = 'medium'
+const DEFAULT_PREVIEW_BACKGROUND_TYPE = 'none'
 const DEFAULT_SAFE_READ_RETRIES = 1
 const DEFAULT_SAFE_READ_RETRY_DELAY_MS = 500
 const DEFAULT_FOREGROUND_TIMEOUT_MS = 120_000
@@ -20,6 +23,9 @@ export interface Config {
   binaryPath: string
   artifactsDir?: string
   layoutBaseUrl?: string
+  previewTheme?: string
+  previewFontSize?: 'small' | 'medium' | 'large'
+  previewBackgroundType?: 'default' | 'grid' | 'none'
   enableWechatWriteTools?: boolean
   enableFallbackImageTool?: boolean
   safeReadRetries?: number
@@ -41,6 +47,9 @@ export interface ResolvedConfig {
   binaryPath: string
   artifactsDir: string
   layoutBaseUrl: string
+  previewTheme: string
+  previewFontSize: 'small' | 'medium' | 'large'
+  previewBackgroundType: 'default' | 'grid' | 'none'
   enableWechatWriteTools: boolean
   enableFallbackImageTool: boolean
   safeReadRetries: number
@@ -54,6 +63,9 @@ const configFields = {
   binaryPath: Schema.string().required(),
   artifactsDir: Schema.string(),
   layoutBaseUrl: Schema.string(),
+  previewTheme: Schema.string(),
+  previewFontSize: Schema.union(['small', 'medium', 'large']),
+  previewBackgroundType: Schema.union(['default', 'grid', 'none']),
   enableWechatWriteTools: Schema.boolean(),
   enableFallbackImageTool: Schema.boolean(),
   safeReadRetries: Schema.number(),
@@ -100,6 +112,9 @@ export function resolveConfig(input: Config): ResolvedConfig {
     binaryPath,
     artifactsDir,
     layoutBaseUrl: optionalString(value.layoutBaseUrl, DEFAULT_LAYOUT_BASE_URL, 'layoutBaseUrl must be a string'),
+    previewTheme: optionalString(value.previewTheme, DEFAULT_PREVIEW_THEME, 'previewTheme must be a string'),
+    previewFontSize: optionalEnum(value.previewFontSize, DEFAULT_PREVIEW_FONT_SIZE, ['small', 'medium', 'large'], 'previewFontSize must be a supported value'),
+    previewBackgroundType: optionalEnum(value.previewBackgroundType, DEFAULT_PREVIEW_BACKGROUND_TYPE, ['default', 'grid', 'none'], 'previewBackgroundType must be a supported value'),
     enableWechatWriteTools: optionalBoolean(value.enableWechatWriteTools, true, 'enableWechatWriteTools must be a boolean'),
     enableFallbackImageTool: optionalBoolean(value.enableFallbackImageTool, true, 'enableFallbackImageTool must be a boolean'),
     safeReadRetries: optionalInteger(value.safeReadRetries, DEFAULT_SAFE_READ_RETRIES, 0, 'safeReadRetries must be a non-negative integer'),
@@ -131,6 +146,12 @@ function optionalBoolean(value: unknown, fallback: boolean, message: string): bo
   if (value === undefined) return fallback
   if (typeof value !== 'boolean') throw new TypeError(message)
   return value
+}
+
+function optionalEnum<const T extends string>(value: unknown, fallback: T, allowed: readonly T[], message: string): T {
+  if (value === undefined) return fallback
+  if (typeof value !== 'string' || !allowed.includes(value as T)) throw new TypeError(message)
+  return value as T
 }
 
 function optionalInteger(value: unknown, fallback: number, minimum: number, message: string): number {

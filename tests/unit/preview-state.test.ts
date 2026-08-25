@@ -93,7 +93,13 @@ function baseInput(overrides: Partial<PreviewSnapshotInput> = {}): PreviewSnapsh
       { path: `revisions/${'a'.repeat(64)}/images/a.png`, bytes: Uint8Array.from([1]) },
     ],
     layoutBaseUrl: 'https://www.md2wechat.cn',
-    previewSettings: { mode: 'api', output: 'standalone-html' },
+    previewSettings: {
+      mode: 'api',
+      theme: 'default',
+      fontSize: 'medium',
+      backgroundType: 'none',
+      output: 'standalone-html',
+    },
     credentialReference: 'MD2WECHAT_API_KEY',
     credentialValue: 'secret-one',
     pluginVersion: '1.0.0',
@@ -127,7 +133,10 @@ describe('signed preview state', () => {
         { path: `revisions/${'a'.repeat(64)}/images/a.png`, bytes: Uint8Array.from([1]) },
       ] }),
       baseInput({ layoutBaseUrl: 'https://layout.example' }),
-      baseInput({ previewSettings: { mode: 'api', output: 'different-html' } }),
+      baseInput({ previewSettings: { ...baseInput().previewSettings, theme: 'grace' } }),
+      baseInput({ previewSettings: { ...baseInput().previewSettings, fontSize: 'large' } }),
+      baseInput({ previewSettings: { ...baseInput().previewSettings, backgroundType: 'grid' } }),
+      baseInput({ previewSettings: { ...baseInput().previewSettings, output: 'different-html' } }),
       baseInput({ credentialReference: 'MD2WECHAT_PREVIEW_KEY' }),
       baseInput({ credentialValue: 'secret-two' }),
       baseInput({ pluginVersion: '1.0.1' }),
@@ -187,7 +196,7 @@ describe('signed preview state', () => {
       baseInput({ localImages: input.localImages.map((image, index) => index === 0 ? { ...image, bytes: Uint8Array.from([9]) } : image) }),
       baseInput({ credentialValue: 'different-account' }),
       baseInput({ layoutBaseUrl: 'https://changed.example' }),
-      baseInput({ previewSettings: { mode: 'api', output: 'changed' } }),
+      baseInput({ previewSettings: { ...baseInput().previewSettings, output: 'changed' } }),
       baseInput({ pluginVersion: '2.0.0' }),
       baseInput({ cliVersion: '4.0.0' }),
     ]
@@ -202,6 +211,11 @@ describe('signed preview state', () => {
       snapshotInput: input,
       credentialValue: input.credentialValue,
       now: new Date('2026-08-25T00:10:00.001Z'),
+    })).rejects.toThrow('stale preview')
+    await expect(validateCurrentPreview(store, {
+      snapshotInput: input,
+      credentialValue: input.credentialValue,
+      now: new Date(Number.NaN),
     })).rejects.toThrow('stale preview')
 
     const receiptPath = `revisions/${snapshot.revisionId}/previews/receipts/${receipt.id}.json`
@@ -292,5 +306,26 @@ describe('signed preview state', () => {
     const committed = await publishPreviewSnapshot(store, published)
     await cleanupPreviewSnapshot(store, committed)
     expect(Array.from(await store.read(previewHtmlPath))).toEqual(Array.from(html))
+  })
+
+  it('retains a prepared snapshot referenced by current and retains it when current is malformed', async () => {
+    const input = baseInput()
+    const snapshot = createPreviewSnapshot(input)
+    const html = encoder.encode('<article>ready</article>')
+    const previewHtmlPath = `revisions/${snapshot.revisionId}/previews/html/${snapshot.id}.html`
+    const snapshotPath = `revisions/${snapshot.revisionId}/previews/snapshots/${snapshot.id}.json`
+    const receipt = createPreviewReceipt({
+      snapshot, previewHtmlPath, previewHtmlBytes: html, credentialValue: input.credentialValue,
+      issuedAt: '2026-08-25T00:00:00.000Z', expiresAt: '2026-08-25T00:10:00.000Z',
+    })
+    await store.writeAtomic(previewHtmlPath, html)
+    await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt })
+
+    await cleanupPreviewSnapshot(store, { state: 'prepared', snapshot })
+    expect(Array.from(await store.read(snapshotPath))).toEqual(Array.from(canonicalBytes(snapshot)))
+
+    await store.writeAtomic(`revisions/${snapshot.revisionId}/previews/current.json`, encoder.encode('{}\n'))
+    await cleanupPreviewSnapshot(store, { state: 'prepared', snapshot })
+    expect(Array.from(await store.read(snapshotPath))).toEqual(Array.from(canonicalBytes(snapshot)))
   })
 })

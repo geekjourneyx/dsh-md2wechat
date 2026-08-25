@@ -77,7 +77,27 @@ async function listRegularFiles(root: string, prefix = ''): Promise<string[]> {
   return files.sort()
 }
 
-function inspectFixture(articlePath: string, imagePath?: string): Record<string, unknown> {
+interface FixtureAsset {
+  index: number
+  kind: 'local' | 'online' | 'ai'
+  source: string
+  resolved_source?: string
+  exists: boolean
+}
+
+function inspectFixture(articlePath: string, assets: readonly FixtureAsset[] = []): Record<string, unknown> {
+  const counts = {
+    total: assets.length,
+    local: assets.filter(asset => asset.kind === 'local').length,
+    remote: assets.filter(asset => asset.kind === 'online').length,
+    ai: assets.filter(asset => asset.kind === 'ai').length,
+  }
+  const checks = [
+    { level: 'warn', code: 'DUPLICATE_H1', message: 'Body H1 matches the final article title', field: 'title', suggested_fix: 'remove the body H1' },
+    ...(assets.length === 0 ? [] : [{
+      level: 'info', code: 'IMAGE_REPLACEMENT_REQUIRES_UPLOAD_OR_DRAFT', message: 'Images require a publishing flow', field: 'images', suggested_fix: 'use upload or draft',
+    }]),
+  ]
   return {
     source_file: articlePath,
     source_dir: dirname(articlePath),
@@ -89,15 +109,25 @@ function inspectFixture(articlePath: string, imagePath?: string): Record<string,
     },
     structure: {
       body_h1: { present: true, text: 'Fixture' }, duplicate_title_risk: true,
-      headings: [{ level: 1, text: 'Fixture' }], images: { total: imagePath === undefined ? 0 : 1, local: imagePath === undefined ? 0 : 1, remote: 0, ai: 0 },
+      headings: [{ level: 1, text: 'Fixture' }], images: counts,
     },
-    ...(imagePath === undefined ? {} : { assets: [{ index: 0, kind: 'local', source: 'images/hero.png', resolved_source: imagePath, exists: true }] }),
+    ...(assets.length === 0 ? {} : { assets }),
     readiness: {
       convert_ready: true, upload_ready: false, draft_ready: false, preview_fidelity: 'exact', schema_version: 'v1',
       targets: { preview: 'ready', convert: 'ready', upload: 'not_requested', draft: 'not_requested' }, blockers: [],
     },
-    checks: [],
+    checks,
   }
+}
+
+function mutableRecord(value: unknown): Record<string, unknown> {
+  return value as Record<string, unknown>
+}
+
+function mutateInspectResponse(response: CliEnvelope, mutate: (inspect: Record<string, unknown>) => void): CliEnvelope {
+  const copy = structuredClone(response)
+  mutate(mutableRecord(mutableRecord(copy.data).inspect))
+  return copy
 }
 
 class PreviewGateway implements CliGateway {
@@ -106,6 +136,7 @@ class PreviewGateway implements CliGateway {
   mutate?: (response: CliEnvelope) => CliEnvelope
   html = '<article>preview</article>'
   includeLocalImage = true
+  fixtureAssets?: readonly FixtureAsset[]
   resolve(): Promise<string> { return Promise.resolve('/fixture/md2wechat') }
   async run(argv: readonly string[], options?: CliRunOptions): Promise<CliEnvelope> {
     await this.beforeSpawn?.(argv, options)
@@ -114,10 +145,12 @@ class PreviewGateway implements CliGateway {
     const output = argv[argv.indexOf('--output') + 1]!
     await writeFile(output, this.html)
     const article = argv[1]!
-    const image = this.includeLocalImage ? join(dirname(article), 'images/hero.png') : undefined
+    const assets = this.fixtureAssets ?? (this.includeLocalImage
+      ? [{ index: 0, kind: 'local' as const, source: 'images/hero.png', resolved_source: join(dirname(article), 'images/hero.png'), exists: true }]
+      : [])
     const response: CliEnvelope = {
       success: true, code: 'PREVIEW_READY', message: 'Preview ready', schema_version: 'v1', status: 'completed', retryable: false,
-      data: { output_file: output, inspect: inspectFixture(article, image), render: { mode: 'api', theme: 'default', fidelity: 'exact', exact_html: true } },
+      data: { output_file: output, inspect: inspectFixture(article, assets), render: { mode: 'api', theme: 'default', fidelity: 'exact', exact_html: true } },
     }
     return this.mutate?.(response) ?? response
   }
@@ -190,6 +223,9 @@ describe('md2wechat_preview', () => {
       },
       now: () => new Date(fixedNow),
       previewTtlMs: 10 * 60 * 1000,
+      previewTheme: 'default',
+      previewFontSize: 'medium' as const,
+      previewBackgroundType: 'none' as const,
     }
   }
 
@@ -198,6 +234,21 @@ describe('md2wechat_preview', () => {
       signal, callId: 'preview-call' as never, name: 'md2wechat_preview', arguments: { manifestPath },
       rootCallId: 'preview-call' as never, token: Symbol('preview') as never,
       ...(withAgent ? { agent } : {}), deferContext() {}, concludeTurn() {},
+    }
+  }
+
+  async function currentSnapshotInput(layoutBaseUrl = 'https://www.md2wechat.cn') {
+    return {
+      revisionId,
+      articlePath,
+      articleBytes: await store.read(articlePath),
+      localImages: [{ path: imagePath, bytes: await store.read(imagePath) }],
+      layoutBaseUrl,
+      previewSettings: { mode: 'api' as const, theme: 'default', fontSize: 'medium' as const, backgroundType: 'none' as const, output: 'standalone-html' },
+      credentialReference,
+      credentialValue,
+      pluginVersion: '1.0.0',
+      cliVersion: '3.3.0',
     }
   }
 
@@ -214,8 +265,16 @@ describe('md2wechat_preview', () => {
     expect(gateway.calls).toHaveLength(1)
     const call = gateway.calls[0]!
     const articleProcessPath = await realpath(store.resolve(articlePath))
-    expect(call.argv).toEqual(['preview', articleProcessPath, '--mode', 'api', '--output', expect.any(String), '--json'])
-    expect(isAbsolute(call.argv[5]!)).toBe(true)
+    expect(call.argv).toEqual([
+      'preview', articleProcessPath,
+      '--mode', 'api',
+      '--theme', 'default',
+      '--font-size', 'medium',
+      '--background-type', 'none',
+      '--output', expect.any(String),
+      '--json',
+    ])
+    expect(isAbsolute(call.argv[11]!)).toBe(true)
     expect(call.options?.env).toEqual({ MD2WECHAT_API_KEY: credentialValue })
     expect(call.options?.secrets).toEqual([credentialValue])
     expect(call.options?.beforeSpawn).toBeTypeOf('function')
@@ -236,7 +295,8 @@ describe('md2wechat_preview', () => {
       snapshotInput: {
         revisionId, articlePath, articleBytes: await store.read(articlePath),
         localImages: [{ path: imagePath, bytes: await store.read(imagePath) }],
-        layoutBaseUrl: 'https://www.md2wechat.cn', previewSettings: { mode: 'api', output: 'standalone-html' },
+        layoutBaseUrl: 'https://www.md2wechat.cn',
+        previewSettings: { mode: 'api', theme: 'default', fontSize: 'medium', backgroundType: 'none', output: 'standalone-html' },
         credentialReference, credentialValue, pluginVersion: '1.0.0', cliVersion: '3.3.0',
       },
       credentialValue,
@@ -249,7 +309,9 @@ describe('md2wechat_preview', () => {
     approvalOutcome = outcome
     const gateway = new PreviewGateway()
     const tool = createPreviewTool(dependencies(gateway))
-    await expect(tool.execute({ manifestPath }, exec())).rejects.toThrow(`approval ${outcome}`)
+    await expect(tool.execute({ manifestPath }, exec())).rejects.toThrow(
+      outcome === 'cancelled' ? 'article preview cancelled' : `approval ${outcome}`,
+    )
     expect(approvalRequests).toHaveLength(1)
     expect(resolvedReferences).toHaveLength(0)
     expect(gateway.calls).toHaveLength(0)
@@ -272,21 +334,23 @@ describe('md2wechat_preview', () => {
     const gateway = new PreviewGateway()
     gateway.beforeSpawn = async () => { await store.writeAtomic(imagePath, Uint8Array.from([0])) }
     const tool = createPreviewTool(dependencies(gateway))
-    await expect(tool.execute({ manifestPath }, exec())).rejects.toThrow('changed')
+    await expect(tool.execute({ manifestPath }, exec())).rejects.toThrow('article preview failed')
     expect(gateway.calls).toHaveLength(0)
     await expect(store.read(`revisions/${revisionId}/previews/current.json`)).rejects.toMatchObject({ code: 'FS_NOT_FOUND' })
   })
 
-  it('treats remote, data, fragment, and generated image references as non-local freshness inputs', async () => {
+  it('accepts exact md2wechat 3.3.0 remote and generated asset projections in Markdown order', async () => {
     await installArticle([
       '# Fixture',
       '![remote](https://example.com/image.png)',
-      '![data](data:image/png;base64,AAAA)',
-      '![fragment](#existing-image)',
       '![generated](__generate:draw a cat__)',
     ].join('\n'))
     const gateway = new PreviewGateway()
     gateway.includeLocalImage = false
+    gateway.fixtureAssets = [
+      { index: 0, kind: 'online', source: 'https://example.com/image.png', exists: true },
+      { index: 1, kind: 'ai', source: 'draw a cat', exists: true },
+    ]
     const result = await createPreviewTool(dependencies(gateway)).execute({ manifestPath }, exec())
     expect(result.revisionId).toBe(revisionId)
   })
@@ -298,6 +362,10 @@ describe('md2wechat_preview', () => {
     ['duplicate alias', '![one](images/hero.png)\n![two](./images/hero.png)'],
     ['reference syntax', '![reference][hero]\n[hero]: images/hero.png'],
     ['ambiguous query', '![query](images/hero.png?size=2)'],
+    ['file URL', '![file](file:///private/image.png)'],
+    ['data URL', '![data](data:image/png;base64,AAAA)'],
+    ['fragment', '![fragment](#existing-image)'],
+    ['protocol-relative URL', '![remote](//example.com/image.png)'],
   ] as const)('rejects unsafe or unsupported local image input before approval: %s', async (_name, imageMarkdown) => {
     await installArticle(`# Fixture\n\n${imageMarkdown}\n`, { 'images/hero.png': Uint8Array.from([1]) })
     const gateway = new PreviewGateway()
@@ -320,7 +388,7 @@ describe('md2wechat_preview', () => {
   it('rejects a control-bearing local image destination before approval even when the file exists', async () => {
     const destination = 'images/control\u0001.png'
     await installArticle(`# Fixture\n\n![control](${destination})\n`, { [destination]: Uint8Array.from([1]) })
-    await expect(createPreviewTool(dependencies(new PreviewGateway())).execute({ manifestPath }, exec())).rejects.toThrow('control')
+    await expect(createPreviewTool(dependencies(new PreviewGateway())).execute({ manifestPath }, exec())).rejects.toThrow('article preview failed')
     expect(approvalRequests).toHaveLength(0)
   })
 
@@ -338,7 +406,7 @@ describe('md2wechat_preview', () => {
     const pending = createPreviewTool(deps).execute({ manifestPath }, exec(controller.signal))
     await started
     controller.abort(new Error('cancel awaiting approval'))
-    await expect(pending).rejects.toThrow('approval cancelled')
+    await expect(pending).rejects.toThrow('article preview cancelled')
     expect(resolvedReferences).toHaveLength(0)
   })
 
@@ -390,6 +458,53 @@ describe('md2wechat_preview', () => {
     await expect(store.read(`revisions/${revisionId}/previews/current.json`)).rejects.toMatchObject({ code: 'FS_NOT_FOUND' })
   })
 
+  it.each([
+    ['configured render', (inspect: Record<string, unknown>) => {
+      mutableRecord(inspect.context).theme = 'grace'
+    }, (response: CliEnvelope) => {
+      const copy = structuredClone(response)
+      mutableRecord(mutableRecord(copy.data).render).theme = 'grace'
+      return copy
+    }],
+    ['font size enum', (inspect: Record<string, unknown>) => { mutableRecord(inspect.context).font_size = 'huge' }],
+    ['background enum', (inspect: Record<string, unknown>) => { mutableRecord(inspect.context).background_type = 'paper' }],
+    ['metadata source enum', (inspect: Record<string, unknown>) => { mutableRecord(mutableRecord(inspect.metadata).title).source = 'hostile.source' }],
+    ['metadata length relation', (inspect: Record<string, unknown>) => { mutableRecord(mutableRecord(inspect.metadata).title).length = 99 }],
+    ['heading level', (inspect: Record<string, unknown>) => {
+      mutableRecord((mutableRecord(inspect.structure).headings as unknown[])[0]).level = 0
+    }],
+    ['image counter relation', (inspect: Record<string, unknown>) => { mutableRecord(mutableRecord(inspect.structure).images).total = 2 }],
+    ['asset index', (inspect: Record<string, unknown>) => { mutableRecord((inspect.assets as unknown[])[0]).index = 7 }],
+    ['asset kind', (inspect: Record<string, unknown>) => { mutableRecord((inspect.assets as unknown[])[0]).kind = 'online' }],
+    ['asset source', (inspect: Record<string, unknown>) => { mutableRecord((inspect.assets as unknown[])[0]).source = 'images/other.png' }],
+    ['asset exists', (inspect: Record<string, unknown>) => { mutableRecord((inspect.assets as unknown[])[0]).exists = false }],
+    ['readiness target enum', (inspect: Record<string, unknown>) => { mutableRecord(mutableRecord(inspect.readiness).targets).preview = 'degraded' }],
+    ['diagnostic level enum', (inspect: Record<string, unknown>) => {
+      inspect.checks = [{ level: 'fatal', code: 'DUPLICATE_H1', message: 'unsafe' }]
+    }],
+    ['diagnostic relation to inputs', (inspect: Record<string, unknown>) => {
+      inspect.checks = [{ level: 'error', code: 'LOCAL_IMAGE_UNSUPPORTED_FORMAT', message: 'unsafe', field: 'images', suggested_fix: 'unsafe' }]
+      mutableRecord(inspect.readiness).blockers = [{
+        level: 'error', code: 'LOCAL_IMAGE_UNSUPPORTED_FORMAT', message: 'unsafe', field: 'images', suggested_fix: 'unsafe', blocks: ['upload', 'draft'],
+      }]
+    }],
+    ['blocker relation', (inspect: Record<string, unknown>) => {
+      mutableRecord(inspect.readiness).blockers = [{ level: 'error', code: 'TITLE_TOO_LONG', message: 'unsafe', blocks: ['convert'] }]
+    }],
+    ['convert readiness relation', (inspect: Record<string, unknown>) => {
+      mutableRecord(inspect.readiness).convert_ready = false
+      mutableRecord(mutableRecord(inspect.readiness).targets).convert = 'blocked'
+    }],
+  ] as const)('rejects hostile nested CLI value: %s', async (_name, mutateInspect, mutateEnvelope) => {
+    const gateway = new PreviewGateway()
+    gateway.mutate = response => {
+      const inspected = mutateInspectResponse(response, mutateInspect)
+      return mutateEnvelope?.(inspected) ?? inspected
+    }
+    await expect(createPreviewTool(dependencies(gateway)).execute({ manifestPath }, exec())).rejects.toThrow()
+    await expect(store.read(`revisions/${revisionId}/previews/current.json`)).rejects.toMatchObject({ code: 'FS_NOT_FOUND' })
+  })
+
   it('redacts raw gateway failures before they reach the tool result', async () => {
     const gateway = new PreviewGateway()
     gateway.run = async (argv, options) => {
@@ -408,6 +523,48 @@ describe('md2wechat_preview', () => {
     expect(text).not.toContain(credentialReference)
     expect(text).not.toContain(workspace)
     expect(text).not.toContain('.staging')
+  })
+
+  it.each(['pre-approval read', 'credential provider', 'queue identity', 'staging'] as const)(
+    'sanitizes %s failures without exposing paths, references, or raw reasons',
+    async (phase) => {
+      const marker = `raw-${phase.replaceAll(' ', '-')}`
+      const gateway = new PreviewGateway()
+      let selectedStore = store
+      const deps = dependencies(gateway)
+      if (phase === 'pre-approval read') {
+        selectedStore = Object.create(store) as ArtifactStore
+        selectedStore.read = () => Promise.reject(new Error(`${marker} ${workspace} ${credentialReference}`))
+      }
+      if (phase === 'credential provider') {
+        deps.credentials.resolve = () => Promise.reject(new Error(`${marker} ${workspace} ${credentialReference}`))
+      }
+      if (phase === 'queue identity') {
+        selectedStore = Object.create(store) as ArtifactStore
+        selectedStore.canonicalIdentity = () => Promise.reject(new Error(`${marker} ${workspace} ${credentialReference}`))
+      }
+      if (phase === 'staging') {
+        selectedStore = Object.create(store) as ArtifactStore
+        selectedStore.stageOutput = () => Promise.reject(new Error(`${marker} ${workspace} ${credentialReference}`))
+      }
+      deps.store = selectedStore
+      const failure = await createPreviewTool(deps).execute({ manifestPath }, exec()).catch((error: unknown) => error)
+      const text = String(failure)
+      expect(failure).toBeInstanceOf(Error)
+      expect(text).not.toContain(marker)
+      expect(text).not.toContain(workspace)
+      expect(text).not.toContain(credentialReference)
+    },
+  )
+
+  it('classifies cancellation without exposing its raw reason', async () => {
+    const controller = new AbortController()
+    controller.abort(new Error(`raw-cancellation ${workspace} ${credentialReference}`))
+    const failure = await createPreviewTool(dependencies(new PreviewGateway()))
+      .execute({ manifestPath }, exec(controller.signal))
+      .catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect(String(failure)).toBe('Error: article preview cancelled')
   })
 
   it.each(['missing', 'empty', 'oversized', 'directory'] as const)('rejects %s staged HTML output and cleans it', async (kind) => {
@@ -444,7 +601,7 @@ describe('md2wechat_preview', () => {
       const gateway = new PreviewGateway()
       gateway.html = `<article>${phase}</article>`
       const deps = { ...dependencies(gateway, failingStore), layoutBaseUrl: `https://changed.example/${encodeURIComponent(phase)}` }
-      await expect(createPreviewTool(deps).execute({ manifestPath }, exec())).rejects.toThrow('injected')
+      await expect(createPreviewTool(deps).execute({ manifestPath }, exec())).rejects.toThrow('article preview failed')
       expect(await store.read(`revisions/${revisionId}/previews/current.json`)).toEqual(priorPointer)
       expect(await store.read(first.previewHtmlPath as string)).toEqual(priorHtml)
       expect(await listRegularFiles(previewRoot)).toEqual(priorFiles)
@@ -461,18 +618,63 @@ describe('md2wechat_preview', () => {
     })
     const replacement = dependencies(new PreviewGateway(), failingStore)
     replacement.now = () => new Date('2026-08-25T00:01:00.000Z')
-    await expect(createPreviewTool(replacement).execute({ manifestPath }, exec())).rejects.toThrow('injected')
+    await expect(createPreviewTool(replacement).execute({ manifestPath }, exec())).rejects.toThrow('article preview failed')
     expect(Array.from(await store.read(first.previewHtmlPath as string))).toEqual(Array.from(firstHtml))
     await expect(validateCurrentPreview(store, {
       snapshotInput: {
         revisionId, articlePath, articleBytes: await store.read(articlePath),
         localImages: [{ path: imagePath, bytes: await store.read(imagePath) }],
-        layoutBaseUrl: 'https://www.md2wechat.cn', previewSettings: { mode: 'api', output: 'standalone-html' },
+        layoutBaseUrl: 'https://www.md2wechat.cn', previewSettings: { mode: 'api', theme: 'default', fontSize: 'medium', backgroundType: 'none', output: 'standalone-html' },
         credentialReference, credentialValue, pluginVersion: '1.0.0', cliVersion: '3.3.0',
       },
       credentialValue,
       now: new Date('2026-08-25T00:05:00.000Z'),
     })).resolves.toMatchObject({ receipt: { id: first.previewReceiptId } })
+  })
+
+  it.each(['gateway', 'response', 'html'] as const)(
+    'preserves a prior same-snapshot current preview when replacement %s validation fails',
+    async (phase) => {
+      const first = await createPreviewTool(dependencies(new PreviewGateway())).execute({ manifestPath }, exec())
+      const gateway = new PreviewGateway()
+      if (phase === 'gateway') {
+        gateway.run = async (argv, options) => {
+          if (options?.beforeSpawn !== undefined) await options.beforeSpawn(options.signal ?? new AbortController().signal)
+          throw new Error('replacement gateway failure')
+        }
+      }
+      if (phase === 'response') gateway.mutate = response => ({ ...response, code: 'PREVIEW_ACTION_REQUIRED' })
+      if (phase === 'html') gateway.html = ''
+      const replacement = dependencies(gateway)
+      replacement.now = () => new Date('2026-08-25T00:01:00.000Z')
+
+      await expect(createPreviewTool(replacement).execute({ manifestPath }, exec())).rejects.toThrow()
+      await expect(validateCurrentPreview(store, {
+        snapshotInput: await currentSnapshotInput(),
+        credentialValue,
+        now: new Date('2026-08-25T00:05:00.000Z'),
+      })).resolves.toMatchObject({ receipt: { id: first.previewReceiptId } })
+    },
+  )
+
+  it('returns the committed preview when operation history append fails and reports a safe audit warning', async () => {
+    const auditWarnings: string[] = []
+    const failingStore = new ArtifactStore(fs as never, workspace, '.dsh/md2wechat', {
+      beforeNativeCommit({ destinationPath }) {
+        if (destinationPath.endsWith('/operations.jsonl')) throw new Error(`raw-audit ${workspace} ${credentialReference}`)
+      },
+    })
+    const deps = {
+      ...dependencies(new PreviewGateway(), failingStore),
+      reportAuditFailure(message: string) { auditWarnings.push(message) },
+    }
+    const result = await createPreviewTool(deps).execute({ manifestPath }, exec())
+    expect(auditWarnings).toEqual(['article preview operation history could not be recorded'])
+    await expect(validateCurrentPreview(store, {
+      snapshotInput: await currentSnapshotInput(),
+      credentialValue,
+      now: new Date('2026-08-25T00:05:00.000Z'),
+    })).resolves.toMatchObject({ receipt: { id: result.previewReceiptId } })
   })
 
   it('serializes concurrent previews and leaves one valid current pointer', async () => {
@@ -493,7 +695,7 @@ describe('md2wechat_preview', () => {
       snapshotInput: {
         revisionId, articlePath, articleBytes: await store.read(articlePath),
         localImages: [{ path: imagePath, bytes: await store.read(imagePath) }],
-        layoutBaseUrl: winnerLayout, previewSettings: { mode: 'api', output: 'standalone-html' },
+        layoutBaseUrl: winnerLayout, previewSettings: { mode: 'api', theme: 'default', fontSize: 'medium', backgroundType: 'none', output: 'standalone-html' },
         credentialReference, credentialValue, pluginVersion: '1.0.0', cliVersion: '3.3.0',
       },
       credentialValue,

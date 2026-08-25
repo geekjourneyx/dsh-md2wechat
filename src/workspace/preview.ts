@@ -18,6 +18,9 @@ export interface PreviewLocalImage {
 /** Expected rendering choices that affect preview currentness. */
 export interface PreviewSettings {
   mode: 'api'
+  theme: string
+  fontSize: 'small' | 'medium' | 'large'
+  backgroundType: 'default' | 'grid' | 'none'
   output: string
 }
 
@@ -225,6 +228,7 @@ export async function publishPreviewSnapshot(
 export async function validateCurrentPreview(store: ArtifactStore, input: CurrentPreviewInput): Promise<CurrentPreview> {
   try {
     input.signal?.throwIfAborted()
+    if (Number.isNaN(input.now.getTime())) throw new Error('invalid current time')
     const expected = createPreviewSnapshot(input.snapshotInput)
     if (expected.pluginVersion !== PLUGIN_VERSION || expected.cliVersion !== SUPPORTED_CLI_VERSION) throw new Error('version changed')
     const manifestPath = currentManifestPath(expected.revisionId)
@@ -251,7 +255,7 @@ export async function validateCurrentPreview(store: ArtifactStore, input: Curren
     }
     return { snapshot, receipt, manifestPath }
   } catch (error) {
-    if (input.signal?.aborted) throw input.signal.reason
+    if (input.signal?.aborted) throw new Error('preview validation cancelled')
     throw new Error('stale preview', { cause: error })
   }
 }
@@ -270,6 +274,8 @@ export async function cleanupPreviewSnapshot(
   switch (transaction.state) {
     case 'prepared': {
       const path = previewPaths(transaction.snapshot).snapshotPath
+      const current = await currentPointer(store, transaction.snapshot.revisionId, signal)
+      if (current === 'unknown' || current?.snapshotId === transaction.snapshot.id) return
       await store.removeIfMatching(path, sha256(encodeCanonical(transaction.snapshot)), signal)
       return
     }
@@ -459,9 +465,22 @@ function safeHexEqual(left: string, right: string): boolean {
 
 function validatePreviewSettings(value: unknown): PreviewSettings {
   const settings = plainRecord(value, 'preview settings must be an object')
-  assertExactKeys(settings, ['mode', 'output'], 'preview settings')
+  assertExactKeys(settings, ['mode', 'theme', 'fontSize', 'backgroundType', 'output'], 'preview settings')
   if (settings.mode !== 'api') throw new TypeError('preview mode must be api')
-  return { mode: 'api', output: requiredSafeString(settings.output, 'preview output setting') }
+  const fontSize = oneOf(settings.fontSize, ['small', 'medium', 'large'], 'preview font size')
+  const backgroundType = oneOf(settings.backgroundType, ['default', 'grid', 'none'], 'preview background type')
+  return {
+    mode: 'api',
+    theme: requiredSafeString(settings.theme, 'preview theme'),
+    fontSize,
+    backgroundType,
+    output: requiredSafeString(settings.output, 'preview output setting'),
+  }
+}
+
+function oneOf<const T extends string>(value: unknown, allowed: readonly T[], field: string): T {
+  if (typeof value !== 'string' || !allowed.includes(value as T)) throw new TypeError(`${field} is unsupported`)
+  return value as T
 }
 
 function encodeCanonical(value: unknown): Uint8Array {

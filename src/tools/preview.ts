@@ -8,7 +8,6 @@ import type { CliGateway } from '../cli/gateway.ts'
 import type { CliEnvelope } from '../cli/protocol.ts'
 import { resolveOperationEnv } from '../security/credentials.ts'
 import type { OperationCredentialServices } from '../security/credentials.ts'
-import { sanitizeError } from '../security/redaction.ts'
 import { PLUGIN_VERSION, SUPPORTED_CLI_VERSION } from '../version.ts'
 import type { ArtifactReadAuthorization, ArtifactStore } from '../workspace/artifact-store.ts'
 import { appendOperation } from '../workspace/revision.ts'
@@ -30,6 +29,12 @@ const PREVIEW_OUTPUT = 'standalone-html'
 const DEFAULT_PREVIEW_TTL_MS = 10 * 60 * 1000
 const previewQueues = new Map<string, Promise<unknown>>()
 
+class SafePreviewError extends Error {}
+class PreviewCancelledError extends Error {}
+
+type PreviewFontSize = 'small' | 'medium' | 'large'
+type PreviewBackgroundType = 'default' | 'grid' | 'none'
+
 interface PreviewToolDependencies {
   gateway: CliGateway
   store: ArtifactStore
@@ -37,19 +42,30 @@ interface PreviewToolDependencies {
   credentialRefs: OperationCredentialServices['credentialRefs']
   credentials: OperationCredentialServices['credentials']
   approval: Pick<Context['approval'], 'request'>
+  previewTheme: string
+  previewFontSize: PreviewFontSize
+  previewBackgroundType: PreviewBackgroundType
   now?: () => Date
   previewTtlMs?: number
+  reportAuditFailure?: (message: string) => void
 }
 
 interface LocalPreviewImage {
+  source: string
   path: string
   bytes: Uint8Array
   authorization: ArtifactReadAuthorization
 }
 
+type PreparedPreviewAsset =
+  | { index: number; kind: 'local'; source: string; image: LocalPreviewImage }
+  | { index: number; kind: 'online'; source: string }
+  | { index: number; kind: 'ai'; source: string }
+
 interface PreparedPreviewInputs {
   current: CurrentArticleRevision
   localImages: readonly LocalPreviewImage[]
+  assets: readonly PreparedPreviewAsset[]
   contentId: string
 }
 
@@ -65,11 +81,18 @@ export function createPreviewTool({
   credentialRefs,
   credentials,
   approval,
+  previewTheme,
+  previewFontSize,
+  previewBackgroundType,
   now = () => new Date(),
   previewTtlMs = DEFAULT_PREVIEW_TTL_MS,
+  reportAuditFailure,
 }: PreviewToolDependencies) {
   if (!Number.isSafeInteger(previewTtlMs) || previewTtlMs < 1) throw new TypeError('preview TTL must be a positive safe integer')
   requiredSafeString(layoutBaseUrl, 'preview layout base URL')
+  requiredSafeString(previewTheme, 'preview theme')
+  oneOf(previewFontSize, ['small', 'medium', 'large'], 'preview font size')
+  oneOf(previewBackgroundType, ['default', 'grid', 'none'], 'preview background type')
   return defineTool({
     name: TOOL_NAME,
     description: 'Generate an expiring, signed HTML preview for one immutable md2wechat article revision after one-time approval.',
@@ -96,130 +119,152 @@ export function createPreviewTool({
       }],
     },
     async execute(args, exec) {
-      assertKnownArguments(args, ['manifestPath'])
-      exec.signal.throwIfAborted()
-      const preparedBeforeApproval = await prepareInputs(store, args.manifestPath, exec.signal)
-      if (exec.agent === undefined) throw new Error('article preview requires an active agent')
-      const outcome = await approval.request({
-        agent: exec.agent,
-        toolName: TOOL_NAME,
-        callId: exec.callId,
-        reason: 'Generate an article preview using the configured md2wechat provider.',
-        signal: exec.signal,
-      })
-      assertApproved(outcome)
-      exec.signal.throwIfAborted()
-
-      const credentialReference = credentialRefs.MD2WECHAT_API_KEY
-      if (credentialReference === undefined) throw new Error('MD2WECHAT_API_KEY is not configured for article preview')
-      const resolved = await resolveOperationEnv(['MD2WECHAT_API_KEY'] satisfies readonly CredentialEnvironmentName[], {
-        credentialRefs,
-        credentials,
-      })
-      const credentialValue = resolved.env.MD2WECHAT_API_KEY
-      if (credentialValue === undefined) throw new Error('MD2WECHAT_API_KEY is not configured for article preview')
-      exec.signal.throwIfAborted()
-
-      const queueIdentity = await store.canonicalIdentity(
-        `revisions/${preparedBeforeApproval.current.revision.id}/previews/current.json`,
-        exec.signal,
-      )
-      return enqueuePreview(queueIdentity, async () => {
+      try {
+        assertKnownArguments(args, ['manifestPath'])
         exec.signal.throwIfAborted()
-        const prepared = await prepareInputs(store, args.manifestPath, exec.signal)
-        if (prepared.contentId !== preparedBeforeApproval.contentId) {
-          throw new Error('preview inputs changed after approval')
-        }
-        const snapshotInput = snapshotInputFor(
-          prepared,
-          layoutBaseUrl,
-          credentialReference,
-          credentialValue,
+        const preparedBeforeApproval = await prepareInputs(store, args.manifestPath, exec.signal)
+        if (exec.agent === undefined) throw new SafePreviewError('article preview requires an active agent')
+        const outcome = await approval.request({
+          agent: exec.agent,
+          toolName: TOOL_NAME,
+          callId: exec.callId,
+          reason: 'Generate an article preview using the configured md2wechat provider.',
+          signal: exec.signal,
+        })
+        assertApproved(outcome)
+        exec.signal.throwIfAborted()
+
+        const credentialReference = credentialRefs.MD2WECHAT_API_KEY
+        if (credentialReference === undefined) throw new SafePreviewError('MD2WECHAT_API_KEY is not configured for article preview')
+        const resolved = await resolveOperationEnv(['MD2WECHAT_API_KEY'] satisfies readonly CredentialEnvironmentName[], {
+          credentialRefs,
+          credentials,
+        })
+        const credentialValue = resolved.env.MD2WECHAT_API_KEY
+        if (credentialValue === undefined) throw new SafePreviewError('MD2WECHAT_API_KEY is not configured for article preview')
+        exec.signal.throwIfAborted()
+
+        const queueIdentity = await store.canonicalIdentity(
+          `revisions/${preparedBeforeApproval.current.revision.id}/previews/current.json`,
+          exec.signal,
         )
-        const snapshot = createPreviewSnapshot(snapshotInput)
-        let transaction: PreviewTransaction = { state: 'prepared', snapshot }
-        const previewHtmlPath = `revisions/${snapshot.revisionId}/previews/html/${snapshot.id}.html`
-        const stage = await store.stageOutput(previewHtmlPath, exec.signal, { immutable: true })
-        try {
-          const argv = [
-            'preview', prepared.current.articleAuthorization.processPath,
-            '--mode', PREVIEW_MODE,
-            '--output', stage.processPath,
-            '--json',
-          ] as const
-          const response = await gateway.run(argv, {
-            env: { MD2WECHAT_API_KEY: credentialValue },
-            secrets: resolved.secrets,
-            signal: exec.signal,
-            beforeSpawn: async (spawnSignal) => {
-              await prepared.current.articleAuthorization.beforeSpawn(spawnSignal)
-              for (const image of prepared.localImages) await image.authorization.beforeSpawn(spawnSignal)
-              await stage.beforeSpawn(spawnSignal)
-              const current = await prepareInputs(store, args.manifestPath, spawnSignal)
-              const currentSnapshot = createPreviewSnapshot(snapshotInputFor(
-                current,
-                layoutBaseUrl,
-                credentialReference,
-                credentialValue,
-              ))
-              if (currentSnapshot.id !== snapshot.id) throw new Error('preview inputs changed before spawn')
-            },
-          })
+        return await enqueuePreview(queueIdentity, async () => {
           exec.signal.throwIfAborted()
-          validatePreviewResponse(response, stage.processPath, prepared)
-          const html = await stage.read(PREVIEW_HTML_LIMIT_BYTES, exec.signal)
-          const issued = now()
-          if (Number.isNaN(issued.getTime())) throw new Error('preview clock returned an invalid time')
-          const expires = new Date(issued.getTime() + previewTtlMs)
-          const receipt = createPreviewReceipt({
-            snapshot,
-            previewHtmlPath,
-            previewHtmlBytes: html,
-            credentialValue,
-            issuedAt: issued.toISOString(),
-            expiresAt: expires.toISOString(),
-          })
-          transaction = { state: 'published', snapshot, receipt }
-          await stage.commit(exec.signal)
-          transaction = await publishPreviewSnapshot(store, transaction, exec.signal)
-          await appendOperation(store, prepared.current.revision, {
-            operation: 'preview',
-            createdAt: issued.toISOString(),
-            details: {
-              previewReceiptId: receipt.id,
-              previewSnapshotId: snapshot.id,
-              previewHtmlPath,
-              expiresAt: receipt.expiresAt,
-            },
-          }, resolved.secrets)
-          return domainResult({
-            manifestPath: prepared.current.manifestPath,
-            previewHtmlPath,
-            revisionId: prepared.current.revision.id,
-            previewReceiptId: receipt.id,
-          })
-        } catch (error) {
-          let failure: unknown = error
-          try {
-            await stage.cleanup()
-          } catch (cleanupError) {
-            failure = new AggregateError([failure, cleanupError], 'preview failed and staged output cleanup also failed')
+          const prepared = await prepareInputs(store, args.manifestPath, exec.signal)
+          if (prepared.contentId !== preparedBeforeApproval.contentId) {
+            throw new SafePreviewError('preview inputs changed after approval')
           }
-          try {
-            await cleanupPreviewSnapshot(store, transaction)
-          } catch (cleanupError) {
-            failure = new AggregateError([failure, cleanupError], 'preview failed and transaction cleanup also failed')
-          }
-          throw sanitizeError(failure, [
-            ...resolved.secrets,
+          const snapshotInput = snapshotInputFor(
+            prepared,
+            layoutBaseUrl,
             credentialReference,
-            store.workspace,
-            stage.processPath,
-            prepared.current.articleAuthorization.processPath,
-            ...prepared.localImages.map(image => image.authorization.processPath),
-          ])
-        }
-      })
+            credentialValue,
+            previewTheme,
+            previewFontSize,
+            previewBackgroundType,
+          )
+          const snapshot = createPreviewSnapshot(snapshotInput)
+          let transaction: PreviewTransaction = { state: 'prepared', snapshot }
+          const previewHtmlPath = `revisions/${snapshot.revisionId}/previews/html/${snapshot.id}.html`
+          const stage = await store.stageOutput(previewHtmlPath, exec.signal, { immutable: true })
+          try {
+            const argv = [
+              'preview', prepared.current.articleAuthorization.processPath,
+              '--mode', PREVIEW_MODE,
+              '--theme', previewTheme,
+              '--font-size', previewFontSize,
+              '--background-type', previewBackgroundType,
+              '--output', stage.processPath,
+              '--json',
+            ] as const
+            const response = await gateway.run(argv, {
+              env: { MD2WECHAT_API_KEY: credentialValue },
+              secrets: resolved.secrets,
+              signal: exec.signal,
+              beforeSpawn: async (spawnSignal) => {
+                await prepared.current.articleAuthorization.beforeSpawn(spawnSignal)
+                for (const image of prepared.localImages) await image.authorization.beforeSpawn(spawnSignal)
+                await stage.beforeSpawn(spawnSignal)
+                const current = await prepareInputs(store, args.manifestPath, spawnSignal)
+                const currentSnapshot = createPreviewSnapshot(snapshotInputFor(
+                  current,
+                  layoutBaseUrl,
+                  credentialReference,
+                  credentialValue,
+                  previewTheme,
+                  previewFontSize,
+                  previewBackgroundType,
+                ))
+                if (currentSnapshot.id !== snapshot.id) throw new SafePreviewError('preview inputs changed before spawn')
+              },
+            })
+            exec.signal.throwIfAborted()
+            validatePreviewResponse(response, stage.processPath, prepared, {
+              theme: previewTheme,
+              fontSize: previewFontSize,
+              backgroundType: previewBackgroundType,
+            })
+            const html = await stage.read(PREVIEW_HTML_LIMIT_BYTES, exec.signal)
+            const issued = now()
+            if (Number.isNaN(issued.getTime())) throw new SafePreviewError('preview clock returned an invalid time')
+            const expires = new Date(issued.getTime() + previewTtlMs)
+            const receipt = createPreviewReceipt({
+              snapshot,
+              previewHtmlPath,
+              previewHtmlBytes: html,
+              credentialValue,
+              issuedAt: issued.toISOString(),
+              expiresAt: expires.toISOString(),
+            })
+            transaction = { state: 'published', snapshot, receipt }
+            await stage.commit(exec.signal)
+            transaction = await publishPreviewSnapshot(store, transaction, exec.signal)
+            try {
+              await appendOperation(store, prepared.current.revision, {
+                operation: 'preview',
+                createdAt: issued.toISOString(),
+                details: {
+                  previewReceiptId: receipt.id,
+                  previewSnapshotId: snapshot.id,
+                  previewHtmlPath,
+                  expiresAt: receipt.expiresAt,
+                },
+              }, resolved.secrets)
+            } catch (operationHistoryError) {
+              void operationHistoryError
+              try {
+                reportAuditFailure?.('article preview operation history could not be recorded')
+              } catch (auditReporterError) {
+                void auditReporterError
+                // A committed preview remains usable when advisory audit reporting also fails.
+              }
+            }
+            return domainResult({
+              manifestPath: prepared.current.manifestPath,
+              previewHtmlPath,
+              revisionId: prepared.current.revision.id,
+              previewReceiptId: receipt.id,
+            })
+          } catch (error) {
+            let failure: unknown = error
+            try {
+              await stage.cleanup()
+            } catch (cleanupError) {
+              failure = new AggregateError([failure, cleanupError], 'preview failed and staged output cleanup also failed')
+            }
+            try {
+              await cleanupPreviewSnapshot(store, transaction)
+            } catch (cleanupError) {
+              failure = new AggregateError([failure, cleanupError], 'preview failed and transaction cleanup also failed')
+            }
+            throw failure
+          }
+        })
+      } catch (error) {
+        if (exec.signal.aborted || error instanceof PreviewCancelledError) throw new Error('article preview cancelled')
+        if (error instanceof SafePreviewError) throw new Error(error.message)
+        throw new Error('article preview failed')
+      }
     },
     presentCall: args => genericCall('Preview md2wechat article', 'edit', args.manifestPath, previewCallLocations(args.manifestPath)),
     presentResult: () => genericResult('Article preview ready'),
@@ -231,6 +276,9 @@ function snapshotInputFor(
   layoutBaseUrl: string,
   credentialReference: string,
   credentialValue: string,
+  previewTheme: string,
+  previewFontSize: PreviewFontSize,
+  previewBackgroundType: PreviewBackgroundType,
 ): PreviewSnapshotInput {
   return {
     revisionId: prepared.current.revision.id,
@@ -238,7 +286,13 @@ function snapshotInputFor(
     articleBytes: prepared.current.articleBytes,
     localImages: prepared.localImages.map(image => ({ path: image.path, bytes: image.bytes })),
     layoutBaseUrl,
-    previewSettings: { mode: PREVIEW_MODE, output: PREVIEW_OUTPUT },
+    previewSettings: {
+      mode: PREVIEW_MODE,
+      theme: previewTheme,
+      fontSize: previewFontSize,
+      backgroundType: previewBackgroundType,
+      output: PREVIEW_OUTPUT,
+    },
     credentialReference,
     credentialValue,
     pluginVersion: PLUGIN_VERSION,
@@ -256,8 +310,23 @@ async function prepareInputs(
   const revisionRoot = `revisions/${current.revision.id}`
   const portablePaths = new Set<string>()
   const localImages: LocalPreviewImage[] = []
-  for (const destination of destinations) {
-    if (isNonLocalImage(destination)) continue
+  const assets: PreparedPreviewAsset[] = []
+  for (const [index, destination] of destinations.entries()) {
+    if (destination.startsWith('http://') || destination.startsWith('https://')) {
+      assets.push({ index, kind: 'online', source: destination })
+      continue
+    }
+    if (destination.startsWith('__generate:') && destination.endsWith('__')) {
+      const prompt = destination.slice('__generate:'.length, -2)
+      requiredSafeString(prompt, 'generated Markdown image prompt')
+      assets.push({ index, kind: 'ai', source: prompt })
+      continue
+    }
+    if (destination.startsWith('#')
+      || destination.startsWith('//')
+      || /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(destination)) {
+      throw new Error('unsupported Markdown image destination')
+    }
     const path = resolveLocalImagePath(revisionRoot, destination)
     const portable = path.normalize('NFC').toLowerCase()
     if (portablePaths.has(portable)) throw new Error('preview local images contain duplicate aliases')
@@ -266,12 +335,15 @@ async function prepareInputs(
     const bytes = await store.read(path, signal)
     if (bytes.byteLength === 0) throw new Error('preview local image must not be empty')
     const authorization = await store.authorizeRead(path, sha256(bytes), signal)
-    localImages.push({ path, bytes, authorization })
+    const image = { source: destination, path, bytes, authorization }
+    localImages.push(image)
+    assets.push({ index, kind: 'local', source: destination, image })
   }
-  localImages.sort((left, right) => left.path.localeCompare(right.path, 'en'))
+  localImages.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
   return {
     current,
     localImages,
+    assets,
     contentId: sha256Text(JSON.stringify({
       revisionId: current.revision.id,
       articleSha256: current.revision.articleSha256,
@@ -304,13 +376,6 @@ function discoverMarkdownImageDestinations(bytes: Uint8Array): readonly string[]
   }
 }
 
-function isNonLocalImage(destination: string): boolean {
-  return destination.startsWith('#')
-    || destination.startsWith('//')
-    || (destination.startsWith('__generate:') && destination.endsWith('__'))
-    || /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(destination)
-}
-
 function resolveLocalImagePath(revisionRoot: string, destination: string): string {
   if (containsControl(destination)) throw new Error('local Markdown image destination contains a control character')
   if (destination.includes('\\') || destination.includes('?') || destination.includes('#') || destination.includes('%')) {
@@ -328,6 +393,7 @@ function validatePreviewResponse(
   response: CliEnvelope,
   expectedOutput: string,
   prepared: PreparedPreviewInputs,
+  settings: { theme: string; fontSize: PreviewFontSize; backgroundType: PreviewBackgroundType },
 ): void {
   if (!response.success
     || response.code !== 'PREVIEW_READY'
@@ -344,14 +410,17 @@ function validatePreviewResponse(
   if (data.output_file !== expectedOutput) throw new Error('preview output path does not match its private staging authorization')
   const render = requiredRecord(data.render, 'preview render')
   assertExactKeys(render, ['mode', 'theme', 'fidelity', 'exact_html'], 'preview render')
-  if (render.mode !== 'api' || render.fidelity !== 'exact' || render.exact_html !== true) {
+  if (render.mode !== 'api' || render.theme !== settings.theme || render.fidelity !== 'exact' || render.exact_html !== true) {
     throw new Error('preview render does not provide exact API HTML')
   }
-  const theme = requiredSafeString(render.theme, 'preview render theme')
-  validateInspect(data.inspect, prepared, theme)
+  validateInspect(data.inspect, prepared, settings)
 }
 
-function validateInspect(value: unknown, prepared: PreparedPreviewInputs, theme: string): void {
+function validateInspect(
+  value: unknown,
+  prepared: PreparedPreviewInputs,
+  settings: { theme: string; fontSize: PreviewFontSize; backgroundType: PreviewBackgroundType },
+): void {
   const inspect = requiredRecord(value, 'preview inspect')
   assertAllowedKeys(inspect, ['source_file', 'source_dir', 'context', 'metadata', 'structure', 'assets', 'readiness', 'checks'], ['source_file', 'source_dir', 'context', 'metadata', 'structure', 'readiness'], 'preview inspect')
   if (inspect.source_file !== prepared.current.articleAuthorization.processPath
@@ -360,100 +429,222 @@ function validateInspect(value: unknown, prepared: PreparedPreviewInputs, theme:
   }
   const context = requiredRecord(inspect.context, 'preview inspect context')
   assertExactKeys(context, ['mode', 'theme', 'font_size', 'background_type', 'custom_prompt', 'upload', 'draft'], 'preview inspect context')
-  if (context.mode !== 'api' || context.theme !== theme || context.custom_prompt !== false || context.upload !== false || context.draft !== false) {
+  if (context.mode !== 'api'
+    || context.theme !== settings.theme
+    || context.font_size !== settings.fontSize
+    || context.background_type !== settings.backgroundType
+    || context.custom_prompt !== false
+    || context.upload !== false
+    || context.draft !== false) {
     throw new Error('preview inspect context does not match the requested operation')
   }
-  requiredSafeString(context.font_size, 'preview inspect font size')
-  requiredSafeString(context.background_type, 'preview inspect background type')
   const metadata = requiredRecord(inspect.metadata, 'preview inspect metadata')
   assertExactKeys(metadata, ['title', 'author', 'digest'], 'preview inspect metadata')
-  for (const name of ['title', 'author', 'digest']) validateMetadataField(metadata[name], `preview inspect ${name}`)
-  validateStructure(inspect.structure)
+  const title = validateMetadataField(metadata.title, 'title')
+  const author = validateMetadataField(metadata.author, 'author')
+  const digest = validateMetadataField(metadata.digest, 'digest')
+  const structure = validateStructure(inspect.structure, prepared, title)
   validateAssets(inspect.assets, prepared)
-  validateReadiness(inspect.readiness)
-  validateChecks(inspect.checks)
+  const checks = validateChecks(inspect.checks)
+  const expectedCheckCodes: (keyof typeof diagnosticSpecs)[] = []
+  if (!title.valid) expectedCheckCodes.push('TITLE_TOO_LONG')
+  if (!author.valid) expectedCheckCodes.push('AUTHOR_TOO_LONG')
+  if (!digest.valid) expectedCheckCodes.push('DIGEST_TOO_LONG')
+  if (structure.duplicateTitleRisk) expectedCheckCodes.push('DUPLICATE_H1')
+  else if (structure.bodyH1Text !== undefined && title.value.trim() !== '' && structure.bodyH1Text !== title.value) {
+    expectedCheckCodes.push('TITLE_BODY_MISMATCH')
+  }
+  if (digest.value.trim() !== '') expectedCheckCodes.push('DIGEST_METADATA_ONLY')
+  for (const asset of prepared.assets) {
+    if (asset.kind === 'local' && !hasSupportedImageExtension(asset.source)) {
+      expectedCheckCodes.push('LOCAL_IMAGE_UNSUPPORTED_FORMAT')
+    }
+  }
+  if (prepared.assets.length > 0) expectedCheckCodes.push('IMAGE_REPLACEMENT_REQUIRES_UPLOAD_OR_DRAFT')
+  if (checks.length !== expectedCheckCodes.length || checks.some((check, index) => check.code !== expectedCheckCodes[index])) {
+    throw new TypeError('preview inspect checks do not match the prepared article')
+  }
+  validateReadiness(inspect.readiness, checks)
 }
 
-function validateMetadataField(value: unknown, field: string): void {
+function validateMetadataField(value: unknown, name: 'title' | 'author' | 'digest'): { value: string; source: string; valid: boolean } {
+  const field = `preview inspect ${name}`
   const metadata = requiredRecord(value, field)
   assertExactKeys(metadata, ['value', 'source', 'limit', 'length', 'valid'], field)
-  if (typeof metadata.value !== 'string' || typeof metadata.source !== 'string' || typeof metadata.valid !== 'boolean') throw new TypeError(`${field} contains malformed values`)
-  nonNegativeInteger(metadata.limit, `${field} limit`)
-  nonNegativeInteger(metadata.length, `${field} length`)
+  if (typeof metadata.value !== 'string') throw new TypeError(`${field} value must be a string`)
+  const sources = {
+    title: ['frontmatter.title', 'markdown.heading', 'fallback.untitled'],
+    author: ['frontmatter.author', 'fallback.empty'],
+    digest: ['frontmatter.digest', 'frontmatter.summary', 'frontmatter.description', 'fallback.empty'],
+  } as const
+  const source = oneOf(metadata.source, sources[name], `${field} source`)
+  const limits = { title: 32, author: 16, digest: 128 } as const
+  const length = [...metadata.value].length
+  if (metadata.limit !== limits[name] || metadata.length !== length || metadata.valid !== (length <= limits[name])) {
+    throw new TypeError(`${field} counters do not match its value`)
+  }
+  if ((source === 'fallback.empty' && metadata.value !== '')
+    || (source === 'fallback.untitled' && metadata.value !== '未命名文章')) {
+    throw new TypeError(`${field} fallback source does not match its value`)
+  }
+  return { value: metadata.value, source, valid: metadata.valid as boolean }
 }
 
-function validateStructure(value: unknown): void {
+function validateStructure(
+  value: unknown,
+  prepared: PreparedPreviewInputs,
+  title: { value: string; source: string },
+): { duplicateTitleRisk: boolean; bodyH1Text?: string } {
   const structure = requiredRecord(value, 'preview inspect structure')
   assertAllowedKeys(structure, ['body_h1', 'duplicate_title_risk', 'headings', 'images'], ['body_h1', 'duplicate_title_risk', 'images'], 'preview inspect structure')
   const bodyH1 = requiredRecord(structure.body_h1, 'preview inspect body_h1')
   assertAllowedKeys(bodyH1, ['present', 'text'], ['present'], 'preview inspect body_h1')
-  if (typeof bodyH1.present !== 'boolean' || (bodyH1.text !== undefined && typeof bodyH1.text !== 'string')) throw new TypeError('preview inspect body_h1 is malformed')
-  if (typeof structure.duplicate_title_risk !== 'boolean') throw new TypeError('preview inspect duplicate-title risk must be a boolean')
-  if (structure.headings !== undefined) {
-    for (const entry of requiredArray(structure.headings, 'preview inspect headings')) {
-      const heading = requiredRecord(entry, 'preview inspect heading')
-      assertExactKeys(heading, ['level', 'text'], 'preview inspect heading')
-      nonNegativeInteger(heading.level, 'preview inspect heading level')
-      if (typeof heading.text !== 'string') throw new TypeError('preview inspect heading text must be a string')
-    }
+  const headings = structure.headings === undefined ? [] : requiredArray(structure.headings, 'preview inspect headings')
+  let firstBodyH1: string | undefined
+  for (const entry of headings) {
+    const heading = requiredRecord(entry, 'preview inspect heading')
+    assertExactKeys(heading, ['level', 'text'], 'preview inspect heading')
+    const level = positiveInteger(heading.level, 'preview inspect heading level')
+    const text = requiredSafeString(heading.text, 'preview inspect heading text')
+    if (level === 1 && firstBodyH1 === undefined) firstBodyH1 = text
+  }
+  if (bodyH1.present !== (firstBodyH1 !== undefined)
+    || bodyH1.text !== firstBodyH1
+    || structure.duplicate_title_risk !== (firstBodyH1 === title.value && title.value !== '')) {
+    throw new TypeError('preview inspect heading summary is inconsistent')
   }
   const images = requiredRecord(structure.images, 'preview inspect image counters')
   assertExactKeys(images, ['total', 'local', 'remote', 'ai'], 'preview inspect image counters')
-  for (const key of ['total', 'local', 'remote', 'ai']) nonNegativeInteger(images[key], `preview inspect image ${key}`)
+  const expected = {
+    total: prepared.assets.length,
+    local: prepared.assets.filter(asset => asset.kind === 'local').length,
+    remote: prepared.assets.filter(asset => asset.kind === 'online').length,
+    ai: prepared.assets.filter(asset => asset.kind === 'ai').length,
+  }
+  for (const key of ['total', 'local', 'remote', 'ai'] as const) {
+    if (images[key] !== expected[key]) throw new TypeError(`preview inspect image ${key} does not match the article`)
+  }
+  return {
+    duplicateTitleRisk: structure.duplicate_title_risk as boolean,
+    ...(firstBodyH1 === undefined ? {} : { bodyH1Text: firstBodyH1 }),
+  }
 }
 
 function validateAssets(value: unknown, prepared: PreparedPreviewInputs): void {
   const assets = value === undefined ? [] : requiredArray(value, 'preview inspect assets')
-  const expected = new Map(prepared.localImages.map((image, index) => [image.authorization.processPath, index]))
-  if (assets.length !== expected.size) throw new TypeError('preview inspect assets do not match local Markdown images')
-  const seen = new Set<string>()
-  for (const entry of assets) {
+  if (assets.length !== prepared.assets.length) throw new TypeError('preview inspect assets do not match Markdown images')
+  for (const [index, entry] of assets.entries()) {
     const asset = requiredRecord(entry, 'preview inspect asset')
     assertAllowedKeys(asset, ['index', 'kind', 'source', 'resolved_source', 'exists'], ['index', 'kind', 'source', 'exists'], 'preview inspect asset')
-    nonNegativeInteger(asset.index, 'preview inspect asset index')
-    requiredSafeString(asset.kind, 'preview inspect asset kind')
-    requiredSafeString(asset.source, 'preview inspect asset source')
-    if (asset.exists !== true || typeof asset.resolved_source !== 'string' || !expected.has(asset.resolved_source) || seen.has(asset.resolved_source)) {
-      throw new TypeError('preview inspect asset does not match an authorized local image')
+    const expected = prepared.assets[index]!
+    if (asset.index !== expected.index || asset.kind !== expected.kind || asset.source !== expected.source || asset.exists !== true) {
+      throw new TypeError('preview inspect asset does not match its Markdown image')
     }
-    seen.add(asset.resolved_source)
+    if (expected.kind === 'local') {
+      if (asset.resolved_source !== expected.image.authorization.processPath) {
+        throw new TypeError('preview inspect local asset does not match its authorized path')
+      }
+    } else if ('resolved_source' in asset) {
+      throw new TypeError('preview inspect non-local asset must not contain a resolved source')
+    }
   }
 }
 
-function validateReadiness(value: unknown): void {
+interface ValidatedDiagnostic {
+  level: 'info' | 'warn' | 'error'
+  code: keyof typeof diagnosticSpecs
+  message: string
+  field?: string
+  suggestedFix?: string
+}
+
+const diagnosticSpecs = {
+  TITLE_TOO_LONG: { level: 'error', field: 'title', blocks: ['convert', 'upload', 'draft'] },
+  AUTHOR_TOO_LONG: { level: 'error', field: 'author', blocks: ['convert', 'upload', 'draft'] },
+  DIGEST_TOO_LONG: { level: 'error', field: 'digest', blocks: ['convert', 'upload', 'draft'] },
+  DUPLICATE_H1: { level: 'warn', field: 'title', blocks: [] },
+  TITLE_BODY_MISMATCH: { level: 'info', field: 'title', blocks: [] },
+  DIGEST_METADATA_ONLY: { level: 'info', field: 'digest', blocks: [] },
+  LOCAL_IMAGE_UNSUPPORTED_FORMAT: { level: 'error', field: 'images', blocks: ['upload', 'draft'] },
+  IMAGE_REPLACEMENT_REQUIRES_UPLOAD_OR_DRAFT: { level: 'info', field: 'images', blocks: [] },
+} as const
+
+function validateReadiness(value: unknown, checks: readonly ValidatedDiagnostic[]): void {
   const readiness = requiredRecord(value, 'preview inspect readiness')
   assertExactKeys(readiness, ['convert_ready', 'upload_ready', 'draft_ready', 'preview_fidelity', 'schema_version', 'targets', 'blockers'], 'preview inspect readiness')
-  if (readiness.convert_ready !== true
+  const expectedConvertReady = checks.every(check => !(diagnosticSpecs[check.code].blocks as readonly string[]).includes('convert'))
+  if (typeof readiness.convert_ready !== 'boolean'
     || typeof readiness.upload_ready !== 'boolean'
-    || typeof readiness.draft_ready !== 'boolean'
+    || readiness.draft_ready !== false
+    || readiness.convert_ready !== expectedConvertReady
     || readiness.preview_fidelity !== 'exact'
     || readiness.schema_version !== 'v1') throw new TypeError('preview inspect readiness is malformed')
   const targets = requiredRecord(readiness.targets, 'preview inspect targets')
   assertExactKeys(targets, ['preview', 'convert', 'upload', 'draft'], 'preview inspect targets')
-  for (const key of ['preview', 'convert', 'upload', 'draft']) requiredSafeString(targets[key], `preview inspect target ${key}`)
-  for (const entry of requiredArray(readiness.blockers, 'preview inspect blockers')) {
-    validateDiagnostic(entry, 'preview inspect blocker', true)
+  for (const key of ['preview', 'convert', 'upload', 'draft'] as const) {
+    oneOf(targets[key], ['ready', 'blocked', 'degraded', 'not_requested'], `preview inspect target ${key}`)
+  }
+  if (targets.preview !== 'ready'
+    || targets.convert !== (readiness.convert_ready ? 'ready' : 'blocked')
+    || targets.upload !== 'not_requested'
+    || targets.draft !== 'not_requested') {
+    throw new TypeError('preview inspect readiness targets do not match the requested operation')
+  }
+  const expectedBlockers = checks.filter(check => diagnosticSpecs[check.code].blocks.length > 0)
+  const blockers = requiredArray(readiness.blockers, 'preview inspect blockers')
+  if (blockers.length !== expectedBlockers.length) throw new TypeError('preview inspect blockers do not match checks')
+  for (const [index, entry] of blockers.entries()) {
+    const blocker = validateDiagnostic(entry, 'preview inspect blocker', true)
+    const expected = expectedBlockers[index]!
+    const expectedBlocks = diagnosticSpecs[expected.code].blocks
+    const actualBlocks = requiredArray(requiredRecord(entry, 'preview inspect blocker').blocks, 'preview inspect blocker blocks')
+    if (blocker.level !== 'error'
+      || blocker.code !== expected.code
+      || blocker.message !== expected.message
+      || blocker.field !== expected.field
+      || blocker.suggestedFix !== expected.suggestedFix
+      || actualBlocks.length !== expectedBlocks.length
+      || actualBlocks.some((item, blockIndex) => item !== expectedBlocks[blockIndex])) {
+      throw new TypeError('preview inspect blocker does not match its check')
+    }
   }
 }
 
-function validateChecks(value: unknown): void {
-  if (value === undefined) return
-  for (const entry of requiredArray(value, 'preview inspect checks')) validateDiagnostic(entry, 'preview inspect check', false)
+function validateChecks(value: unknown): readonly ValidatedDiagnostic[] {
+  if (value === undefined) return []
+  return requiredArray(value, 'preview inspect checks').map(entry => validateDiagnostic(entry, 'preview inspect check', false))
 }
 
-function validateDiagnostic(value: unknown, field: string, blocker: boolean): void {
+function validateDiagnostic(value: unknown, field: string, blocker: boolean): ValidatedDiagnostic {
   const diagnostic = requiredRecord(value, field)
   const allowed = blocker
     ? ['code', 'field', 'level', 'message', 'blocks', 'suggested_fix']
     : ['level', 'code', 'message', 'field', 'suggested_fix']
   const required = blocker ? ['code', 'level', 'message', 'blocks'] : ['level', 'code', 'message']
   assertAllowedKeys(diagnostic, allowed, required, field)
-  for (const key of ['level', 'code', 'message']) requiredSafeString(diagnostic[key], `${field} ${key}`)
+  const code = oneOf(diagnostic.code, Object.keys(diagnosticSpecs) as (keyof typeof diagnosticSpecs)[], `${field} code`)
+  const level = oneOf(diagnostic.level, ['info', 'warn', 'error'], `${field} level`)
+  const message = requiredSafeString(diagnostic.message, `${field} message`)
   if (diagnostic.field !== undefined && typeof diagnostic.field !== 'string') throw new TypeError(`${field} field must be a string`)
-  if (diagnostic.suggested_fix !== undefined && typeof diagnostic.suggested_fix !== 'string') throw new TypeError(`${field} suggested fix must be a string`)
+  if (typeof diagnostic.suggested_fix !== 'string' || diagnostic.suggested_fix.length === 0) throw new TypeError(`${field} suggested fix must be a non-empty string`)
+  const spec = diagnosticSpecs[code]
+  if (level !== spec.level || diagnostic.field !== spec.field) throw new TypeError(`${field} does not match md2wechat 3.3.0`)
   if (blocker) {
-    for (const item of requiredArray(diagnostic.blocks, `${field} blocks`)) requiredSafeString(item, `${field} block`)
+    const blocks = requiredArray(diagnostic.blocks, `${field} blocks`)
+    if (blocks.length === 0) throw new TypeError(`${field} blocks must not be empty`)
+    for (const item of blocks) oneOf(item, ['convert', 'upload', 'draft'], `${field} block`)
   }
+  return {
+    level,
+    code,
+    message,
+    ...(diagnostic.field === undefined ? {} : { field: diagnostic.field }),
+    ...(diagnostic.suggested_fix === undefined ? {} : { suggestedFix: diagnostic.suggested_fix }),
+  }
+}
+
+function hasSupportedImageExtension(source: string): boolean {
+  return ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'].includes(posix.extname(source).toLowerCase())
 }
 
 function assertApproved(outcome: ApprovalOutcome): void {
@@ -461,9 +652,10 @@ function assertApproved(outcome: ApprovalOutcome): void {
     case 'allowed-once':
       return
     case 'rejected':
-    case 'cancelled':
     case 'unavailable':
-      throw new Error(`article preview approval ${outcome}`)
+      throw new SafePreviewError(`article preview approval ${outcome}`)
+    case 'cancelled':
+      throw new PreviewCancelledError('article preview cancelled')
     default:
       return assertNever(outcome)
   }
@@ -475,7 +667,7 @@ function previewCallLocations(manifestPath: string): readonly string[] {
 }
 
 function assertKnownArguments(args: object, allowed: readonly string[]): void {
-  for (const key of Object.keys(args)) if (!allowed.includes(key)) throw new Error(`unknown preview argument ${key}`)
+  for (const key of Object.keys(args)) if (!allowed.includes(key)) throw new SafePreviewError('article preview contains an unknown argument')
 }
 
 function requiredRecord(value: unknown, field: string): Record<string, unknown> {
@@ -504,6 +696,17 @@ function containsControl(value: string): boolean {
 function nonNegativeInteger(value: unknown, field: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError(`${field} must be a non-negative safe integer`)
   return value
+}
+
+function positiveInteger(value: unknown, field: string): number {
+  const integer = nonNegativeInteger(value, field)
+  if (integer === 0) throw new TypeError(`${field} must be positive`)
+  return integer
+}
+
+function oneOf<const T extends string>(value: unknown, allowed: readonly T[], field: string): T {
+  if (typeof value !== 'string' || !allowed.includes(value as T)) throw new TypeError(`${field} is unsupported`)
+  return value as T
 }
 
 function assertExactKeys(value: Record<string, unknown>, keys: readonly string[], field: string): void {

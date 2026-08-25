@@ -27,6 +27,13 @@ describe('resolveConfig', () => {
     } as unknown as Config)).toThrow('not supported')
   })
 
+  it.each([
+    ['previewFontSize', 'huge'],
+    ['previewBackgroundType', 'paper'],
+  ] as const)('rejects an unsupported %s', (field, value) => {
+    expect(() => resolveConfig({ ...valid, [field]: value })).toThrow('supported')
+  })
+
   it('rejects unknown runtime configuration fields', () => {
     expect(() => resolveConfig({ ...valid, unexpected: true } as unknown as Config)).toThrow('unknown configuration field')
   })
@@ -36,6 +43,9 @@ describe('resolveConfig', () => {
       binaryPath: '/opt/md2wechat',
       artifactsDir: '.dsh/md2wechat',
       layoutBaseUrl: 'https://www.md2wechat.cn',
+      previewTheme: 'default',
+      previewFontSize: 'medium',
+      previewBackgroundType: 'none',
       enableWechatWriteTools: true,
       enableFallbackImageTool: true,
       safeReadRetries: 1,
