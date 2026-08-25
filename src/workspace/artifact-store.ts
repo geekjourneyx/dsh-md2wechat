@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { open, mkdir, rename, rm, rmdir } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -22,6 +22,14 @@ export interface ArtifactOutputStage {
   commit(signal?: AbortSignal): Promise<void>
   /** Remove uncommitted staged output without touching a changed or escaping path. */
   cleanup(signal?: AbortSignal): Promise<void>
+}
+
+/** Immutable read authorization passed directly to a managed CLI spawn. */
+export interface ArtifactReadAuthorization {
+  /** Canonical path in the filesystem provider's process world. */
+  readonly processPath: string
+  /** Revalidate target identity, version, regular-file type, and content hash immediately before spawn. */
+  readonly beforeSpawn: (signal: AbortSignal) => Promise<void>
 }
 
 interface PublicationBinding {
@@ -73,20 +81,42 @@ export class ArtifactStore {
   /**
    * Authorize one existing contained regular artifact as read-only CLI input.
    * @param relative - Artifact-relative input path.
+   * @param expectedSha256 - Authenticated content hash that must remain current through spawn.
    * @param signal - Optional cancellation signal.
-   * @returns Canonical path in the filesystem provider's process world.
+   * @returns Process path plus an immediate pre-spawn revalidation callback.
    */
-  async processPathForRead(relative: string, signal?: AbortSignal): Promise<string> {
+  async authorizeRead(
+    relative: string,
+    expectedSha256: string,
+    signal?: AbortSignal,
+  ): Promise<ArtifactReadAuthorization> {
+    if (!/^[a-f0-9]{64}$/u.test(expectedSha256)) throw new TypeError('expected artifact SHA-256 must be 64 lowercase hexadecimal characters')
     const target = await this.resolveContained(relative, signal)
     const info = await this.fs.stat(target, signal)
     if (info === undefined) throw new Error('artifact input does not exist')
     if (info.type !== 'file') throw new Error('artifact input must be a regular file')
-    const current = await this.resolveContained(relative, signal)
-    if (current.targetKey !== target.targetKey) throw new Error('artifact input changed after validation')
-    const currentInfo = await this.fs.stat(current, signal)
-    if (currentInfo === undefined) throw new Error('artifact input does not exist')
-    if (currentInfo.type !== 'file') throw new Error('artifact input must be a regular file')
-    return this.fs.processPath(current)
+    const bytes = await this.fs.readBytes(target, signal, MAX_ARTIFACT_BYTES)
+    if (sha256(bytes) !== expectedSha256) throw new Error('artifact input content changed before authorization')
+    const targetKey = target.targetKey
+    const version = info.version
+    return {
+      processPath: this.fs.processPath(target),
+      beforeSpawn: async (spawnSignal: AbortSignal): Promise<void> => {
+        spawnSignal.throwIfAborted()
+        const current = await this.resolveContained(relative, spawnSignal)
+        if (current.targetKey !== targetKey) throw new Error('artifact input target changed before spawn')
+        const currentInfo = await this.fs.stat(current, spawnSignal)
+        if (currentInfo === undefined || currentInfo.type !== 'file') throw new Error('artifact input is no longer the same regular file before spawn')
+        if (currentInfo.version !== version) throw new Error('artifact input version changed before spawn')
+        const currentBytes = await this.fs.readBytes(current, spawnSignal, MAX_ARTIFACT_BYTES)
+        if (sha256(currentBytes) !== expectedSha256) throw new Error('artifact input content changed before spawn')
+        const finalTarget = await this.resolveContained(relative, spawnSignal)
+        const finalInfo = await this.fs.stat(finalTarget, spawnSignal)
+        if (finalTarget.targetKey !== targetKey || finalInfo?.type !== 'file' || finalInfo.version !== version) {
+          throw new Error('artifact input changed during spawn authorization')
+        }
+      },
+    }
   }
 
   /**
@@ -406,6 +436,10 @@ export function validateArtifactId(id: string): void {
 
 function splitPath(value: string): string[] {
   return value.split(/[\\/]/u)
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex')
 }
 
 function resolveOptions(signal: AbortSignal | undefined): { signal: AbortSignal } | undefined {

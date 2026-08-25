@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, realpath, rename, stat, symlink, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -108,16 +109,34 @@ describe('ArtifactStore', () => {
     expect(Array.from(await store.read('images/picture.bin'))).toEqual([0, 255, 128, 10, 65])
   })
 
-  it('authorizes only an existing regular contained artifact as a CLI input path', async () => {
-    await store.writeAtomic('revisions/article.md', new TextEncoder().encode('# Article\n'))
+  it('authorizes and revalidates one unchanged regular contained artifact as CLI input', async () => {
+    const bytes = new TextEncoder().encode('# Article\n')
+    const hash = createHash('sha256').update(bytes).digest('hex')
+    await store.writeAtomic('revisions/article.md', bytes)
 
-    await expect(store.processPathForRead('revisions/article.md')).resolves.toBe(
-      await realpath(store.resolve('revisions/article.md')),
-    )
-    await expect(store.processPathForRead('revisions/missing.md')).rejects.toThrow('does not exist')
+    const authorization = await store.authorizeRead('revisions/article.md', hash)
+    expect(authorization.processPath).toBe(await realpath(store.resolve('revisions/article.md')))
+    await expect(authorization.beforeSpawn(new AbortController().signal)).resolves.toBeUndefined()
+    await expect(store.authorizeRead('revisions/missing.md', hash)).rejects.toThrow('does not exist')
 
     await mkdir(store.resolve('revisions/directory'), { recursive: true })
-    await expect(store.processPathForRead('revisions/directory')).rejects.toThrow('regular file')
+    await expect(store.authorizeRead('revisions/directory', hash)).rejects.toThrow('regular file')
+  })
+
+  it('rejects a same-path rewrite or replacement immediately before CLI spawn', async () => {
+    const original = new TextEncoder().encode('# Article\n')
+    const hash = createHash('sha256').update(original).digest('hex')
+    await store.writeAtomic('revisions/article.md', original)
+    const rewritten = await store.authorizeRead('revisions/article.md', hash)
+    await writeFile(store.resolve('revisions/article.md'), '# Changed\n')
+    await expect(rewritten.beforeSpawn(new AbortController().signal)).rejects.toThrow('changed')
+
+    await store.writeAtomic('revisions/article.md', original)
+    const replaced = await store.authorizeRead('revisions/article.md', hash)
+    const replacement = store.resolve('revisions/replacement.md')
+    await writeFile(replacement, original)
+    await rename(replacement, store.resolve('revisions/article.md'))
+    await expect(replaced.beforeSpawn(new AbortController().signal)).rejects.toThrow('changed')
   })
 
   it('rejects a CLI input path that escapes the artifact root through a symlink', async () => {
@@ -126,7 +145,7 @@ describe('ArtifactStore', () => {
     await mkdir(dirname(store.resolve('links/input.md')), { recursive: true })
     await symlink(outside, store.resolve('links/input.md'))
 
-    await expect(store.processPathForRead('links/input.md')).rejects.toThrow('workspace')
+    await expect(store.authorizeRead('links/input.md', '0'.repeat(64))).rejects.toThrow('workspace')
   })
 
   it('rejects a canonical path that escapes through a symlinked directory', async () => {

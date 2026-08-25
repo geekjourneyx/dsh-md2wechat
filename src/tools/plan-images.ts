@@ -13,6 +13,9 @@ interface PlanImagesToolDependencies {
   now?: () => Date
 }
 
+const MAX_PLAN_OUTPUT_BYTES = 1024 * 1024
+const planWriteQueues = new Map<string, Promise<void>>()
+
 const imageSchema = {
   type: 'object',
   additionalProperties: false,
@@ -60,7 +63,7 @@ export function createPlanImagesTool({
       },
       render: (_args, value) => [{
         type: 'text',
-        text: `Prepared ${value.items.length} side-effect-free image plan items at ${value.planPath}.`,
+        text: renderPlanItems(value.planPath, value.items),
       }],
     },
     async execute(args, exec) {
@@ -69,16 +72,26 @@ export function createPlanImagesTool({
       const normalized = normalizeImages(args.images, current.revision.id)
       const items: JsonValue[] = []
       for (const item of normalized) {
-        const response = await gateway.run(imageArgv(item, current.articleProcessPath), { signal: exec.signal })
-        const cliPlan = validateCliPlan(response.data, response.success, response.status)
+        const argv = imageArgv(item, current.articleAuthorization.processPath)
+        const response = await gateway.run(argv, {
+          signal: exec.signal,
+          beforeSpawn: current.articleAuthorization.beforeSpawn,
+        })
+        const cliPlan = validateCliPlan(response, item.original, current)
         items.push({ original: item.original, targetArtifactPath: item.targetArtifactPath, cliPlan })
       }
       const verified = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
       if (verified.revision.articleSha256 !== current.revision.articleSha256) {
         throw new Error('stale revision: article changed while preparing the image plan')
       }
+      if (new TextEncoder().encode(canonicalJson(items)).byteLength > MAX_PLAN_OUTPUT_BYTES) {
+        throw new Error('combined image plan exceeds the one-megabyte output limit')
+      }
       const planId = sha256(canonicalJson({ revisionId: current.revision.id, items }))
       const planPath = `revisions/${current.revision.id}/plans/${planId}.json`
+      if (new TextEncoder().encode(renderPlanItems(planPath, items)).byteLength > MAX_PLAN_OUTPUT_BYTES) {
+        throw new Error('rendered image plan exceeds the one-megabyte output limit')
+      }
       const persisted = {
         schemaVersion: 1,
         planId,
@@ -118,27 +131,60 @@ interface NormalizedImage {
 function normalizeImages(images: readonly ImageInput[], revisionId: string): NormalizedImage[] {
   if (images.length === 0) throw new Error('image plan must contain at least one item')
   const ids = new Set<string>()
-  const targets = new Set<string>()
+  const targets: string[] = []
   return images.map(image => {
-    validateArtifactId(image.id)
-    if (ids.has(image.id)) throw new Error(`duplicate image ID ${image.id}`)
-    ids.add(image.id)
+    const id = image.id.normalize('NFC')
+    validateArtifactId(id)
+    if (/[<>"|?*]/u.test(id)) throw new Error('image ID contains a non-portable Windows character')
+    const portableId = id.toLowerCase()
+    if (ids.has(portableId)) throw new Error(`duplicate portable image ID ${id}`)
+    ids.add(portableId)
     if (image.prompt.trim().length === 0) throw new Error('image prompt must not be empty')
     if (image.preset !== undefined && image.preset.trim().length === 0) throw new Error('image preset must not be empty')
     if (image.aspect !== undefined && image.aspect.trim().length === 0) throw new Error('image aspect must not be empty')
-    validateArtifactRelativePath(image.targetPath)
-    const targetArtifactPath = `revisions/${revisionId}/${image.targetPath}`
+    const targetPath = normalizeTargetPath(image.targetPath)
+    const portableTarget = targetPath.toLowerCase()
+    for (const existing of targets) {
+      if (portableTarget === existing
+        || portableTarget.startsWith(`${existing}/`)
+        || existing.startsWith(`${portableTarget}/`)) {
+        throw new Error(`image target collides with another image target: ${targetPath}`)
+      }
+    }
+    targets.push(portableTarget)
+    const targetArtifactPath = `revisions/${revisionId}/${targetPath}`
     validateArtifactRelativePath(targetArtifactPath)
-    if (targets.has(targetArtifactPath)) throw new Error(`duplicate image target ${image.targetPath}`)
-    targets.add(targetArtifactPath)
-    return { original: { ...image }, targetArtifactPath }
+    return { original: { ...image, id, targetPath }, targetArtifactPath }
   })
+}
+
+function normalizeTargetPath(input: string): string {
+  const normalized = input.replaceAll('\\', '/').normalize('NFC')
+  validateArtifactRelativePath(normalized)
+  if (!normalized.startsWith('images/') || normalized === 'images/') {
+    throw new Error('image target must stay beneath the revision-local images/ directory')
+  }
+  for (const component of normalized.split('/')) {
+    if (/[<>"|?*]/u.test(component) || [...component].some(character => {
+      const codePoint = character.codePointAt(0)!
+      return codePoint <= 0x1f || codePoint === 0x7f
+    })) {
+      throw new Error('image target contains a non-portable Windows or control character')
+    }
+  }
+  return normalized
 }
 
 function imageArgv(item: NormalizedImage, article: string): readonly string[] {
   const { original } = item
   if (original.kind === 'image' && original.preset === undefined) {
-    return ['generate_image', original.prompt, '--plan', '--json']
+    return [
+      'generate_image',
+      original.prompt,
+      ...(original.aspect === undefined ? [] : ['--aspect', original.aspect]),
+      '--plan',
+      '--json',
+    ]
   }
   const argv = [
     original.kind === 'image' ? 'generate_image' : original.kind === 'cover' ? 'generate_cover' : 'generate_infographic',
@@ -151,12 +197,36 @@ function imageArgv(item: NormalizedImage, article: string): readonly string[] {
   return argv
 }
 
-function validateCliPlan(data: Readonly<Record<string, unknown>> | undefined, success: boolean, status: string): JsonValue {
-  if (!success || status === 'failed' || data === undefined) throw new Error('md2wechat image planning did not return a successful plan')
-  if (data.mode !== 'plan' || data.side_effects !== false || data.requires_provider !== false) {
-    throw new Error('md2wechat image planning response is not side-effect-free')
+function validateCliPlan(
+  response: Awaited<ReturnType<CliGateway['run']>>,
+  image: ImageInput,
+  current: Awaited<ReturnType<typeof loadCurrentArticleRevision>>,
+): JsonValue {
+  if (!response.success || response.code !== 'IMAGE_PLAN_READY' || response.status !== 'action_required') {
+    throw new Error('md2wechat image planning did not return IMAGE_PLAN_READY/action_required')
   }
-  return data as JsonValue
+  const data = requiredRecord(response.data, 'image plan data')
+  const expectedCommand = image.kind === 'image' ? 'generate_image' : image.kind === 'cover' ? 'generate_cover' : 'generate_infographic'
+  requireLiteral(data.mode, 'plan', 'image plan mode')
+  requireLiteral(data.command, expectedCommand, 'image plan command')
+  requireLiteral(data.execution_owner, 'host_agent', 'image plan execution_owner')
+  requireLiteral(data.side_effects, false, 'image plan side_effects')
+  requireLiteral(data.requires_provider, false, 'image plan requires_provider')
+  requireLiteral(data.requires_image_api_key, false, 'image plan requires_image_api_key')
+  requiredNonEmptyString(data.prompt, 'image plan prompt')
+  for (const field of [
+    'raw_prompt', 'preset', 'archetype', 'primary_use_case', 'default_aspect_ratio', 'article',
+    'title', 'summary', 'keywords', 'style', 'aspect', 'size', 'model_hint', 'suggested_filename', 'alt_text',
+  ] as const) requiredString(data[field], `image plan ${field}`)
+  requiredStringArray(data.compatible_use_cases, 'image plan compatible_use_cases')
+  requiredStringArray(data.recommended_aspect_ratios, 'image plan recommended_aspect_ratios')
+  const article = data.article as string
+  const expectsArticle = image.kind !== 'image' || image.preset !== undefined
+  if ((expectsArticle && article !== current.articleAuthorization.processPath)
+    || (!expectsArticle && article !== '')) {
+    throw new Error('image plan article does not match the authorized article input')
+  }
+  return { ...data, article: current.articlePath }
 }
 
 async function writeStablePlan(
@@ -166,32 +236,43 @@ async function writeStablePlan(
   signal: AbortSignal,
 ): Promise<void> {
   const bytes = new TextEncoder().encode(`${canonicalJson(value)}\n`)
-  try {
-    const existing = await store.read(path, signal)
-    const existingValue = parsePersistedPlan(existing)
-    const { createdAt: _existingCreatedAt, ...existingStable } = existingValue
-    const { createdAt: _candidateCreatedAt, ...candidateStable } = value
-    if (canonicalJson(existingStable) !== canonicalJson(candidateStable)) {
-      throw new Error('existing immutable image plan conflicts with the computed plan')
+  const identity = await store.canonicalIdentity(path, signal)
+  await enqueuePlanWrite(identity, async () => {
+    try {
+      const existing = await store.read(path, signal)
+      const existingValue = parsePersistedPlan(existing)
+      const { createdAt: _existingCreatedAt, ...existingStable } = existingValue
+      const { createdAt: _candidateCreatedAt, ...candidateStable } = value
+      if (canonicalJson(existingStable) !== canonicalJson(candidateStable)) {
+        throw new Error('existing immutable image plan conflicts with the computed plan')
+      }
+      return
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'FS_NOT_FOUND')) throw error
     }
-    return
-  } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'FS_NOT_FOUND')) throw error
-  }
-  await store.writeAtomic(path, bytes, signal)
+    await store.writeAtomic(path, bytes, signal)
+  })
 }
 
-function parsePersistedPlan(bytes: Uint8Array): Record<string, unknown> {
+async function enqueuePlanWrite(identity: string, write: () => Promise<void>): Promise<void> {
+  const prior = planWriteQueues.get(identity) ?? Promise.resolve()
+  const current = prior.catch(() => undefined).then(write)
+  planWriteQueues.set(identity, current)
+  try {
+    await current
+  } finally {
+    if (planWriteQueues.get(identity) === current) planWriteQueues.delete(identity)
+  }
+}
+
+function parsePersistedPlan(bytes: Uint8Array): Readonly<Record<string, JsonValue>> {
   let value: unknown
   try {
     value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
   } catch (error) {
     throw new Error('existing image plan must contain valid UTF-8 JSON', { cause: error })
   }
-  if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
-    throw new Error('existing image plan must contain a JSON object')
-  }
-  return value as Record<string, unknown>
+  return requiredRecord(value, 'existing image plan')
 }
 
 function canonicalJson(value: unknown): string {
@@ -210,6 +291,59 @@ function sha256(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex')
 }
 
+function requiredRecord(value: unknown, field: string): Readonly<Record<string, JsonValue>> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new Error(`${field} must be an object`)
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, requiredJsonValue(item, field)]))
+}
+
+function requiredJsonValue(value: unknown, field: string): JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
+  if (typeof value === 'number') {
+    if (Number.isFinite(value)) return value
+    throw new Error(`${field} must contain finite JSON numbers`)
+  }
+  if (Array.isArray(value)) return value.map(item => requiredJsonValue(item, field))
+  if (value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, requiredJsonValue(item, field)]))
+  }
+  throw new Error(`${field} must contain only JSON values`)
+}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== 'string') throw new Error(`${field} must be a string`)
+  return value
+}
+
+function requiredNonEmptyString(value: unknown, field: string): string {
+  const text = requiredString(value, field)
+  if (text.trim().length === 0) throw new Error(`${field} must be non-empty`)
+  return text
+}
+
+function requiredStringArray(value: unknown, field: string): readonly string[] {
+  if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) throw new Error(`${field} must contain only strings`)
+  return value
+}
+
+function requireLiteral<T extends string | boolean>(value: unknown, expected: T, field: string): T {
+  if (value !== expected) throw new Error(`${field} must be ${String(expected)}`)
+  return expected
+}
+
+function renderPlanItems(planPath: string, items: readonly JsonValue[]): string {
+  const lines = [`Prepared ${items.length} side-effect-free image plan items at ${planPath}.`]
+  for (const item of items) {
+    const record = requiredRecord(item, 'rendered image plan item')
+    const original = requiredRecord(record.original, 'rendered original image item')
+    const cliPlan = requiredRecord(record.cliPlan, 'rendered CLI image plan')
+    lines.push(`[${requiredNonEmptyString(original.id, 'rendered image ID')}] ${requiredNonEmptyString(record.targetArtifactPath, 'rendered image target')}`)
+    lines.push(requiredNonEmptyString(cliPlan.prompt, 'rendered image prompt'))
+  }
+  return lines.join('\n')
+}
+
 function assertKnownArguments(args: object, allowed: readonly string[]): void {
   for (const key of Object.keys(args)) {
     if (!allowed.includes(key)) throw new Error(`unknown plan-images argument ${key}`)
@@ -222,6 +356,6 @@ function planLocations(manifestPath: string, images: readonly ImageInput[]): rea
   return [
     manifestPath,
     `revisions/${revisionId}/article.md`,
-    ...images.map(image => `revisions/${revisionId}/${image.targetPath}`),
+    ...images.map(image => `revisions/${revisionId}/${image.targetPath.replaceAll('\\', '/').normalize('NFC')}`),
   ]
 }

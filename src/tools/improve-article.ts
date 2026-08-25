@@ -1,8 +1,9 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-tools'
 import type { CliGateway } from '../cli/gateway.ts'
+import type { CliEnvelope } from '../cli/protocol.ts'
 import { domainResult, genericCall, genericResult } from './shared.ts'
-import type { ArtifactStore } from '../workspace/artifact-store.ts'
+import type { ArtifactReadAuthorization, ArtifactStore } from '../workspace/artifact-store.ts'
 import {
   appendOperation,
   computeArticleRevision,
@@ -24,7 +25,7 @@ export interface CurrentArticleRevision {
   manifest: ArticleManifest
   manifestPath: string
   articlePath: string
-  articleProcessPath: string
+  articleAuthorization: ArtifactReadAuthorization
   articleBytes: Uint8Array
 }
 
@@ -51,8 +52,8 @@ export async function loadCurrentArticleRevision(
   const articleBytes = await store.read(articlePath, signal)
   const revision = computeArticleRevision(articleBytes, manifest)
   if (revision.id !== directoryId) throw new Error('stale revision: manifest, article, or directory identity does not match')
-  const articleProcessPath = await store.processPathForRead(articlePath, signal)
-  return { revision, manifest, manifestPath, articlePath, articleProcessPath, articleBytes }
+  const articleAuthorization = await store.authorizeRead(articlePath, revision.articleSha256, signal)
+  return { revision, manifest, manifestPath, articlePath, articleAuthorization, articleBytes }
 }
 
 /**
@@ -100,15 +101,17 @@ export function createImproveArticleTool({
     async execute(args, exec) {
       assertKnownArguments(args, ['manifestPath', 'operation'])
       const current = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
-      const argv = improvementArgv(args.operation, current.articleProcessPath)
-      const response = await gateway.run(argv, { signal: exec.signal })
-      if (!response.success || response.status === 'failed') throw new Error(`md2wechat ${args.operation} preparation failed with ${response.code}`)
+      const argv = improvementArgv(args.operation, current.articleAuthorization.processPath)
+      const response = await gateway.run(argv, {
+        signal: exec.signal,
+        beforeSpawn: current.articleAuthorization.beforeSpawn,
+      })
+      const preparedRequest = projectImprovementResponse(args.operation, response, current)
       const verified = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
       if (verified.revision.articleSha256 !== current.revision.articleSha256) {
         throw new Error('stale revision: article changed while preparing the request')
       }
       const recordPath = `revisions/${current.revision.id}/operations.jsonl`
-      const preparedRequest = (response.data ?? {}) as JsonValue
       await appendOperation(store, current.revision, {
         operation: args.operation,
         createdAt: now().toISOString(),
@@ -128,6 +131,137 @@ export function createImproveArticleTool({
     presentCall: args => genericCall('Prepare article improvement', 'read', args.operation, revisionLocations(args.manifestPath)),
     presentResult: () => genericResult('Article improvement prepared'),
   })
+}
+
+function projectImprovementResponse(
+  operation: 'advise' | 'title' | 'humanize' | 'writer_style',
+  response: CliEnvelope,
+  current: CurrentArticleRevision,
+): JsonValue {
+  switch (operation) {
+    case 'advise':
+      assertEnvelope(response, 'ADVISE_COMPLETED', 'completed')
+      return projectAdvise(response.data, current)
+    case 'title':
+      assertEnvelope(response, 'TITLE_SUGGEST_REQUEST_READY', 'action_required')
+      return projectTitle(response.data, current)
+    case 'humanize':
+      assertEnvelope(response, 'HUMANIZE_REQUEST_READY', 'action_required')
+      return projectHumanize(response.data, current)
+    case 'writer_style':
+      assertEnvelope(response, 'WRITE_AI_REQUEST_READY', 'action_required')
+      return projectWriterStyle(response.data, current)
+    default:
+      return assertNever(operation)
+  }
+}
+
+function projectAdvise(data: Readonly<Record<string, unknown>> | undefined, current: CurrentArticleRevision): JsonValue {
+  const value = requiredRecord(data, 'advise data')
+  requireLiteral(value.schema_version, 'v1', 'advise schema_version')
+  requireLiteral(value.command, 'advise', 'advise command')
+  requireLiteral(value.source, current.articleAuthorization.processPath, 'advise source')
+  requiredNonEmptyString(value.decision, 'advise decision')
+  requiredRecord(value.article, 'advise article')
+  requiredArray(value.actions, 'advise actions')
+  requiredRecord(value.layout, 'advise layout')
+  requiredArray(value.micro_edits, 'advise micro_edits')
+  requiredArray(value.do_not_do, 'advise do_not_do')
+  return replaceMachinePath(value, current.articleAuthorization.processPath, current.articlePath)
+}
+
+function projectTitle(data: Readonly<Record<string, unknown>> | undefined, current: CurrentArticleRevision): JsonValue {
+  const value = requiredRecord(data, 'title data')
+  requireLiteral(value.action, 'ai_title_suggestion_request', 'title action')
+  requireLiteral(value.execution_owner, 'host_agent', 'title execution_owner')
+  requireLiteral(value.prompt_kind, 'title', 'title prompt_kind')
+  requiredNonEmptyString(value.prompt_name, 'title prompt_name')
+  requiredNonEmptyString(value.prompt, 'title prompt')
+  requireLiteral(value.article_path, current.articleAuthorization.processPath, 'title article_path')
+  requiredInteger(value.article_chars, 'title article_chars')
+  requiredNonEmptyString(value.target_reader, 'title target_reader')
+  requiredInteger(value.title_count, 'title title_count')
+  requiredInteger(value.max_title_chars, 'title max_title_chars')
+  requiredInteger(value.hook_level, 'title hook_level')
+  requiredNonEmptyString(value.hook_level_label, 'title hook_level_label')
+  requireLiteral(value.side_effects, false, 'title side_effects')
+  requireLiteral(value.requires_external_model, true, 'title requires_external_model')
+  requireLiteral(value.recommendation_only, true, 'title recommendation_only')
+  return replaceMachinePath(value, current.articleAuthorization.processPath, current.articlePath)
+}
+
+function projectHumanize(data: Readonly<Record<string, unknown>> | undefined, current: CurrentArticleRevision): JsonValue {
+  const value = requiredRecord(data, 'humanize data')
+  requireLiteral(value.action, 'humanize_request', 'humanize action')
+  const request = requiredRecord(value.request, 'humanize request')
+  requiredNonEmptyString(request.prompt, 'humanize prompt')
+  requiredNonEmptyString(request.content, 'humanize content')
+  requiredNonEmptyString(request.intensity, 'humanize intensity')
+  return replaceMachinePath(value, current.articleAuthorization.processPath, current.articlePath)
+}
+
+function projectWriterStyle(data: Readonly<Record<string, unknown>> | undefined, current: CurrentArticleRevision): JsonValue {
+  const value = requiredRecord(data, 'writer-style data')
+  requireLiteral(value.mode, 'ai', 'writer-style mode')
+  requireLiteral(value.action, 'ai_write_request', 'writer-style action')
+  requiredNonEmptyString(value.style, 'writer-style style')
+  requiredNonEmptyString(value.prompt, 'writer-style prompt')
+  return replaceMachinePath(value, current.articleAuthorization.processPath, current.articlePath)
+}
+
+function assertEnvelope(response: CliEnvelope, code: string, status: CliEnvelope['status']): void {
+  if (!response.success || response.code !== code || response.status !== status) {
+    throw new Error(`unexpected md2wechat response; expected ${code}/${status}`)
+  }
+}
+
+function requiredRecord(value: unknown, field: string): Readonly<Record<string, JsonValue>> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new Error(`${field} must be an object`)
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, requiredJsonValue(item, field)]))
+}
+
+function requiredArray(value: unknown, field: string): readonly JsonValue[] {
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array`)
+  return value.map(item => requiredJsonValue(item, field))
+}
+
+function requiredJsonValue(value: unknown, field: string): JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
+  if (typeof value === 'number') {
+    if (Number.isFinite(value)) return value
+    throw new Error(`${field} must contain finite JSON numbers`)
+  }
+  if (Array.isArray(value)) return value.map(item => requiredJsonValue(item, field))
+  if (value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, requiredJsonValue(item, field)]))
+  }
+  throw new Error(`${field} must contain only JSON values`)
+}
+
+function requiredNonEmptyString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0) throw new Error(`${field} must be a non-empty string`)
+  return value
+}
+
+function requiredInteger(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) throw new Error(`${field} must be a non-negative integer`)
+  return value
+}
+
+function requireLiteral<T extends string | boolean>(value: unknown, expected: T, field: string): T {
+  if (value !== expected) throw new Error(`${field} must be ${String(expected)}`)
+  return expected
+}
+
+function replaceMachinePath(value: JsonValue, machinePath: string, artifactPath: string): JsonValue {
+  if (typeof value === 'string') return value.replaceAll(machinePath, artifactPath)
+  if (Array.isArray(value)) return value.map(item => replaceMachinePath(item, machinePath, artifactPath))
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replaceMachinePath(item, machinePath, artifactPath)]))
+  }
+  return value
 }
 
 function improvementArgv(

@@ -14,6 +14,13 @@ interface ProbeResult {
   status: 'completed' | 'action_required' | 'failed'
 }
 
+const expectedProbeCodes = {
+  version: 'VERSION_SHOWN',
+  capabilities: 'CAPABILITIES_SHOWN',
+  config: 'CONFIG_VALIDATED',
+  providers: 'PROVIDERS_SHOWN',
+} as const
+
 const probeSchema = {
   type: 'object',
   additionalProperties: false,
@@ -53,7 +60,7 @@ export function createDoctorTool({ gateway }: DoctorToolDependencies) {
           : `md2wechat is not ready. ${formatProbes(value.probes)}`,
       }],
     },
-    async execute(args) {
+    async execute(args, exec) {
       if (Object.keys(args).length > 0) throw new Error('md2wechat_doctor does not accept arguments')
       const probes: ProbeResult[] = []
       for (const [name, argv] of [
@@ -62,7 +69,7 @@ export function createDoctorTool({ gateway }: DoctorToolDependencies) {
         ['config', ['config', 'validate', '--json']],
         ['providers', ['providers', 'list', '--json']],
       ] as const) {
-        probes.push(await safeProbe(gateway, name, argv))
+        probes.push(await safeProbe(gateway, name, argv, exec.signal))
       }
       return domainResult({ ready: probes.every(probe => probe.ready), probes })
     },
@@ -71,20 +78,29 @@ export function createDoctorTool({ gateway }: DoctorToolDependencies) {
   })
 }
 
-async function safeProbe(gateway: CliGateway, name: string, argv: readonly string[]): Promise<ProbeResult> {
+async function safeProbe(
+  gateway: CliGateway,
+  name: keyof typeof expectedProbeCodes,
+  argv: readonly string[],
+  signal: AbortSignal,
+): Promise<ProbeResult> {
   try {
-    return publicProbe(name, await gateway.run(argv))
+    return publicProbe(name, await gateway.run(argv, { signal }))
   } catch {
-    return { name, ready: false, code: 'PROBE_FAILED', status: 'failed' }
+    if (signal.aborted) signal.throwIfAborted()
+    return { name, ready: false, code: `${name.toUpperCase()}_PROBE_FAILED`, status: 'failed' }
   }
 }
 
-function publicProbe(name: string, response: CliEnvelope): ProbeResult {
+function publicProbe(name: keyof typeof expectedProbeCodes, response: CliEnvelope): ProbeResult {
+  const ready = response.success
+    && response.status === 'completed'
+    && response.code === expectedProbeCodes[name]
   return {
     name,
-    ready: response.success && response.status !== 'failed',
-    code: response.code,
-    status: response.status,
+    ready,
+    code: ready ? expectedProbeCodes[name] : `${name.toUpperCase()}_NOT_READY`,
+    status: ready ? 'completed' : 'failed',
   }
 }
 
