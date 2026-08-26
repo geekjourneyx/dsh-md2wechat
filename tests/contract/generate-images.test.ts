@@ -98,7 +98,7 @@ describe('md2wechat_generate_images', () => {
     const article = `revisions/${revisionId}/article.md`
     const definitions = [
       { id: 'raw', kind: 'image', original: { prompt: 'Raw prompt' }, prompt: 'Raw prompt', preset: '', aspect: '', archetype: '', defaultAspect: '', rawPrompt: 'Raw prompt' },
-      { id: 'preset', kind: 'image', original: { prompt: 'Direction', preset: 'diagram' }, prompt: 'Prepared preset prompt', preset: 'diagram', aspect: '4:3', archetype: 'diagram', defaultAspect: '4:3', rawPrompt: '' },
+      { id: 'preset', kind: 'image', original: { prompt: 'Direction', preset: 'cover-hero', aspect: '16:9' }, prompt: 'Prepared preset prompt', preset: 'cover-hero', aspect: '16:9', archetype: 'cover', defaultAspect: '16:9', rawPrompt: '' },
       { id: 'cover', kind: 'cover', original: { prompt: 'Direction' }, prompt: 'Prepared cover prompt', preset: 'cover-default', aspect: '16:9', archetype: 'cover', defaultAspect: '16:9', rawPrompt: '' },
       { id: 'info', kind: 'infographic', original: { prompt: 'Direction' }, prompt: 'Prepared preset prompt', preset: 'infographic-default', aspect: '3:4', archetype: 'infographic', defaultAspect: '3:4', rawPrompt: '' },
     ] as const
@@ -146,10 +146,37 @@ describe('md2wechat_generate_images', () => {
     const article = await realpath(store.resolve(`revisions/${revisionId}/article.md`))
     expect(gateway.calls.map(call => call.argv)).toEqual([
       ['generate_image', 'Raw prompt', '--json'],
-      ['generate_image', '--preset', 'diagram', '--article', article, '--aspect', '4:3', '--json'],
+      ['generate_image', '--preset', 'cover-hero', '--article', article, '--aspect', '16:9', '--json'],
       ['generate_cover', '--article', article, '--preset', 'cover-default', '--aspect', '16:9', '--json'],
       ['generate_infographic', '--article', article, '--preset', 'infographic-default', '--aspect', '3:4', '--json'],
     ])
+  })
+
+  it('rejects recomputed plans that replace approved prompt, preset, or aspect before approval or work', async () => {
+    const sourcePath = await installRealSourceExecutionPlan()
+    const source = JSON.parse(decoder.decode(await store.read(sourcePath))) as {
+      schemaVersion: 1; planId: string; revisionId: string; createdAt: string;
+      items: Array<{ original: Record<string, unknown>; targetArtifactPath: string; cliPlan: Record<string, unknown> }>
+    }
+    const attacks: Array<[string, (items: typeof source.items) => void]> = [
+      ['raw prompt', items => { items[0]!.cliPlan.prompt = 'Replaced paid prompt' }],
+      ['explicit preset', items => { items[1]!.cliPlan.preset = 'cover-default' }],
+      ['default cover preset', items => { items[2]!.cliPlan.preset = 'cover-hero' }],
+      ['default cover aspect', items => { items[2]!.cliPlan.aspect = '1:1' }],
+      ['default infographic aspect', items => { items[3]!.cliPlan.aspect = '16:9' }],
+    ]
+
+    for (const [, mutate] of attacks) {
+      const candidate = structuredClone(source)
+      mutate(candidate.items)
+      candidate.planId = canonicalImagePlanId(revisionId, candidate.items)
+      const candidatePath = `revisions/${revisionId}/plans/${candidate.planId}.json`
+      await store.writeAtomic(candidatePath, encodeCanonical(candidate))
+      const gateway = new Gateway()
+      const tool = createGenerateImagesTool(dependencies(gateway))
+      await expect(tool.execute({ manifestPath, planPaths: [candidatePath] }, exec())).rejects.toThrow('could not be prepared')
+      expect(gateway.calls).toHaveLength(0); expect(approvals).toHaveLength(0); expect(resolved).toHaveLength(0); expect(starts).toHaveLength(0)
+    }
   })
 
   it('never resolves credentials or starts work when denied, empty, or duplicated', async () => {
@@ -158,8 +185,9 @@ describe('md2wechat_generate_images', () => {
     approvals.length = 0; await expect(tool.execute({ manifestPath, planPaths: [] }, exec())).rejects.toThrow('at least one'); await expect(tool.execute({ manifestPath, planPaths: [planPath, planPath] }, exec())).rejects.toThrow('duplicate'); expect(approvals).toHaveLength(0)
   })
 
-  it('rejects unsupported target extensions before approval, credentials, or provider work', async () => {
-    const unsafePlan = await installPlan('images/hero.bmp')
+  it.each(['images/hero.bmp', 'images/hero.PNG', 'images/hero.PnG'])('rejects unsupported or non-canonical target extension %s before approval, credentials, or provider work', async target => {
+    const unsafePlan = await installPlan(target)
+    approval = 'rejected'
     const tool = createGenerateImagesTool(dependencies(new Gateway()))
     await expect(tool.execute({ manifestPath, planPaths: [unsafePlan] }, exec())).rejects.toThrow('could not be prepared')
     expect(approvals).toHaveLength(0); expect(resolved).toHaveLength(0); expect(starts).toHaveLength(0)

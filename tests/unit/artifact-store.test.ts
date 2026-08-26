@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, realpath, rename, stat, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, stat, symlink, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -151,6 +151,18 @@ describe('ArtifactStore', () => {
       .rejects.toMatchObject({ code: 'ARTIFACT_EXISTS' })
     await expect(readFile(conflicting.resolve('claims/new.json'))).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(readFile(store.resolve('claims/existing.json'), 'utf8')).resolves.toBe('winner')
+  })
+
+  it('cleans every private exclusive stage when cancelled after directory creation', async () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const controller = new AbortController()
+      const cancelled = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat', {
+        afterExclusiveStage() { controller.abort(new Error(`cancel ${attempt}`)) },
+      })
+      await expect(cancelled.createExclusive(`claims/cancelled-${attempt}.json`, new TextEncoder().encode('claim'), controller.signal)).rejects.toThrow(`cancel ${attempt}`)
+      await expect(readFile(cancelled.resolve(`claims/cancelled-${attempt}.json`))).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(readdir(cancelled.resolve('.exclusive'))).resolves.toEqual([])
+    }
   })
 
   it('authorizes and revalidates one unchanged regular contained artifact as CLI input', async () => {

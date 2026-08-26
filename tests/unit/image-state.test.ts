@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createPrivateKey } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:https'
@@ -87,6 +87,41 @@ describe('image state', () => {
     expect({ resolves, requests }).toEqual({ resolves: 0, requests: 0 })
   })
 
+  it('times out unresolved DNS before transport and safely consumes late resolver outcomes', async () => {
+    vi.useFakeTimers()
+    try {
+      for (const lateOutcome of ['resolve', 'reject'] as const) {
+        let state: 'pending' | 'resolved' | 'rejected' = 'pending'
+        let failure: unknown
+        let requests = 0
+        const acquisition = acquireRemoteImage('https://images.example/file.png', {
+          maxBytes: 64, maxRedirects: 0, timeoutMs: 5,
+          resolve: async () => new Promise<readonly string[]>((resolve, reject) => setTimeout(() => {
+            if (lateOutcome === 'resolve') resolve(['93.184.216.34'])
+            else reject(new Error('late resolver failure'))
+          }, 40)),
+          request: async () => { requests += 1; return { status: 500, headers: {}, body: new Uint8Array() } },
+        })
+        void acquisition.then(
+          () => { state = 'resolved' },
+          error => { state = 'rejected'; failure = error },
+        )
+
+        await vi.advanceTimersByTimeAsync(5)
+        expect(state).toBe('rejected')
+        expect(String(failure)).toContain('timed out')
+        expect(requests).toBe(0)
+
+        await vi.advanceTimersByTimeAsync(35)
+        expect(requests).toBe(0)
+        expect(vi.getTimerCount()).toBe(0)
+      }
+    } finally {
+      await vi.runAllTimersAsync()
+      vi.useRealTimers()
+    }
+  })
+
   it('uses the prevalidated address with Node all:true lookup options in the production HTTPS transport', async () => {
     const [key, cert] = await Promise.all([
       readFile(new URL('../fixtures/pinned.invalid-key.pk8.b64', import.meta.url), 'utf8'),
@@ -94,7 +129,9 @@ describe('image state', () => {
     ])
     const privateKey = createPrivateKey({ key: Buffer.from(key.trim(), 'base64'), format: 'der', type: 'pkcs8' })
       .export({ format: 'pem', type: 'pkcs8' })
-    const server = createServer({ key: privateKey, cert }, (_request, response) => {
+    let receivedHost = ''
+    const server = createServer({ key: privateKey, cert }, (request, response) => {
+      receivedHost = request.headers.host ?? ''
       response.writeHead(200, { 'content-length': '2', 'content-type': 'text/plain' })
       response.end('ok')
     })
@@ -108,6 +145,7 @@ describe('image state', () => {
         ca: cert,
       })
       expect(response).toMatchObject({ status: 200, body: new TextEncoder().encode('ok') })
+      expect(receivedHost).toBe(`pinned.invalid:${address.port}`)
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()))
     }
@@ -120,7 +158,7 @@ describe('image state', () => {
       targetArtifactPath: `revisions/${revisionId}/images/hero.png`,
       cliPlan: {
         mode: 'plan', command: 'generate_image', execution_owner: 'host_agent', side_effects: false,
-        requires_provider: false, requires_image_api_key: false, prompt: 'rendered', raw_prompt: 'raw', preset: '',
+        requires_provider: false, requires_image_api_key: false, prompt: 'raw', raw_prompt: 'raw', preset: '',
         archetype: '', primary_use_case: '', compatible_use_cases: [], recommended_aspect_ratios: [],
         default_aspect_ratio: '', article: '', title: '', summary: '', keywords: '', style: '', aspect: '', size: '',
         model_hint: '', suggested_filename: '', alt_text: '',
@@ -131,7 +169,7 @@ describe('image state', () => {
     const value = { schemaVersion: 1, planId, revisionId, createdAt: '2026-08-25T00:00:00.000Z', items }
     const store = { readBounded: async () => encodeCanonical(value) }
     const plan = await loadImagePlan(store as never, `revisions/${revisionId}/plans/${planId}.json`, revisionId, `revisions/${revisionId}/article.md`)
-    expect(plan.items[0]).toMatchObject({ id: 'hero', prompt: 'rendered', targetPath: `revisions/${revisionId}/images/hero.png` })
+    expect(plan.items[0]).toMatchObject({ id: 'hero', prompt: 'raw', targetPath: `revisions/${revisionId}/images/hero.png` })
     const unknown = { ...value, debug: 'secret' }
     await expect(loadImagePlan({ readBounded: async () => encodeCanonical(unknown) } as never, plan.path, revisionId, `revisions/${revisionId}/article.md`)).rejects.toThrow('unknown')
   })
@@ -157,13 +195,13 @@ describe('image state', () => {
   it.each([
     { id: 'diagram', kind: 'image' as const, originalPreset: 'diagram', resolvedPreset: 'diagram', archetype: 'diagram', aspect: '4:3' },
     { id: 'info', kind: 'infographic' as const, originalPreset: undefined, resolvedPreset: 'infographic-default', archetype: 'infographic', aspect: '3:4' },
-    { id: 'compatible-cover', kind: 'cover' as const, originalPreset: 'infographic-comparison', resolvedPreset: 'infographic-comparison', archetype: 'infographic', aspect: '16:9', compatible: ['infographic', 'cover'] },
+    { id: 'compatible-cover', kind: 'cover' as const, originalPreset: 'infographic-comparison', resolvedPreset: 'infographic-comparison', archetype: 'infographic', aspect: '16:9', defaultAspect: '3:4', compatible: ['infographic', 'cover'], recommended: ['3:4', '16:9'] },
   ])('accepts real 3.3.0 resolved $kind preset/aspect output', async fixture => {
     const revisionId = 'e'.repeat(64); const articlePath = `revisions/${revisionId}/article.md`
-    const original = { id: fixture.id, kind: fixture.kind, prompt: 'direction', targetPath: `images/${fixture.id}.png`, ...(fixture.originalPreset === undefined ? {} : { preset: fixture.originalPreset }) }
+    const original = { id: fixture.id, kind: fixture.kind, prompt: 'direction', targetPath: `images/${fixture.id}.png`, ...(fixture.originalPreset === undefined ? {} : { preset: fixture.originalPreset, aspect: fixture.aspect }) }
     const cliPlan = { mode: 'plan', command: fixture.kind === 'image' ? 'generate_image' : fixture.kind === 'cover' ? 'generate_cover' : 'generate_infographic', execution_owner: 'host_agent', side_effects: false, requires_provider: false, requires_image_api_key: false,
       prompt: `Rendered ${fixture.kind} prompt`, raw_prompt: '', preset: fixture.resolvedPreset, archetype: fixture.archetype, primary_use_case: fixture.archetype,
-      compatible_use_cases: 'compatible' in fixture ? fixture.compatible : [fixture.archetype], recommended_aspect_ratios: [fixture.aspect], default_aspect_ratio: fixture.aspect,
+      compatible_use_cases: 'compatible' in fixture ? fixture.compatible : [fixture.archetype], recommended_aspect_ratios: 'recommended' in fixture ? fixture.recommended : [fixture.aspect], default_aspect_ratio: 'defaultAspect' in fixture ? fixture.defaultAspect : fixture.aspect,
       article: articlePath, title: 'Fixture', summary: 'Summary', keywords: '', style: 'editorial', aspect: fixture.aspect, size: '', model_hint: '', suggested_filename: `${fixture.id}.png`, alt_text: 'Fixture' }
     const items = [{ original, targetArtifactPath: `revisions/${revisionId}/images/${fixture.id}.png`, cliPlan }]; const planId = canonicalImagePlanId(revisionId, items)
     const plan = await loadImagePlan({ readBounded: async () => encodeCanonical({ schemaVersion: 1, planId, revisionId, createdAt: '2026-08-25T00:00:00.000Z', items }) } as never, `revisions/${revisionId}/plans/${planId}.json`, revisionId, articlePath)
@@ -178,8 +216,9 @@ describe('image state', () => {
       '\\\\server\\share\\secret.md', 'argument=\\\\server\\share\\secret.md',
       'file:///private/secret.md',
     ]) {
-      const original = { id: 'hero', kind: 'image', prompt: 'raw', targetPath: 'images/hero.png' }
-      const cliPlan = { mode: 'plan', command: 'generate_image', execution_owner: 'host_agent', side_effects: false, requires_provider: false, requires_image_api_key: false, prompt: `render ${leaked}`, raw_prompt: 'raw', preset: '', archetype: '', primary_use_case: '', compatible_use_cases: ['https://example.com/valid/path'], recommended_aspect_ratios: [], default_aspect_ratio: '', article: '', title: '', summary: '', keywords: '', style: '', aspect: '', size: '', model_hint: '', suggested_filename: '', alt_text: '' }
+      const approvedPrompt = `render ${leaked}`
+      const original = { id: 'hero', kind: 'image', prompt: approvedPrompt, targetPath: 'images/hero.png' }
+      const cliPlan = { mode: 'plan', command: 'generate_image', execution_owner: 'host_agent', side_effects: false, requires_provider: false, requires_image_api_key: false, prompt: approvedPrompt, raw_prompt: approvedPrompt, preset: '', archetype: '', primary_use_case: '', compatible_use_cases: ['https://example.com/valid/path'], recommended_aspect_ratios: [], default_aspect_ratio: '', article: '', title: '', summary: '', keywords: '', style: '', aspect: '', size: '', model_hint: '', suggested_filename: '', alt_text: '' }
       const items = [{ original, targetArtifactPath: `revisions/${revisionId}/images/hero.png`, cliPlan }]; const planId = canonicalImagePlanId(revisionId, items)
       const error = await loadImagePlan({ readBounded: async () => encodeCanonical({ schemaVersion: 1, planId, revisionId, createdAt: '2026-08-25T00:00:00.000Z', items }) } as never, `revisions/${revisionId}/plans/${planId}.json`, revisionId, articlePath).catch(value => value)
       expect(String(error)).toContain('path'); expect((error as Error).cause).toBeUndefined()

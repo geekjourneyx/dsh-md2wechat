@@ -13,6 +13,7 @@ export interface ArtifactStoreInternals {
   link?: (source: string, destination: string) => Promise<void>
   beforeNativeStage?: (paths: { destinationPath: string; directoryPath: string }) => void | Promise<void>
   beforeNativeCommit?: (paths: { destinationPath: string; tempPath: string }) => void | Promise<void>
+  afterExclusiveStage?: (paths: { destinationPath: string; tempPath: string; directoryPath: string }) => void | Promise<void>
   beforeExclusiveLink?: (paths: { destinationPath: string; tempPath: string }) => void | Promise<void>
 }
 
@@ -217,13 +218,15 @@ export class ArtifactStore {
     const tempTarget = await this.resolveContained(tempRelative, signal)
     const tempParent = await this.resolveContained(tempDirectoryRelative, signal)
     await mkdir(dirname(destination), { recursive: true })
-    await mkdir(this.fs.processPath(tempParent), { recursive: true, mode: 0o700 })
-    const binding = await this.bindPublication(target, relative, signal)
-    const boundTempParent = await this.revalidateContained(tempDirectoryRelative, tempParent, signal, 'exclusive temporary directory changed before write')
-    const boundTemp = await this.revalidateContained(tempRelative, tempTarget, signal, 'exclusive temporary file changed before write')
     let handle: Awaited<ReturnType<typeof open>> | undefined
     let primary: unknown
     try {
+      await mkdir(this.fs.processPath(tempParent), { recursive: true, mode: 0o700 })
+      await this.internals.afterExclusiveStage?.({ destinationPath: destination, tempPath: this.fs.processPath(tempTarget), directoryPath: this.fs.processPath(tempParent) })
+      signal?.throwIfAborted()
+      const binding = await this.bindPublication(target, relative, signal)
+      const boundTempParent = await this.revalidateContained(tempDirectoryRelative, tempParent, signal, 'exclusive temporary directory changed before write')
+      const boundTemp = await this.revalidateContained(tempRelative, tempTarget, signal, 'exclusive temporary file changed before write')
       handle = await open(this.fs.processPath(boundTemp), 'wx', 0o600)
       await handle.writeFile(bytes, signal === undefined ? undefined : { signal })
       await handle.sync()
@@ -252,7 +255,7 @@ export class ArtifactStore {
       primary = handle === undefined ? error : await closeAfterFailure(handle, error)
     }
     try {
-      await this.cleanupStage(tempRelative, boundTemp, tempDirectoryRelative, boundTempParent)
+      await this.cleanupStage(tempRelative, tempTarget, tempDirectoryRelative, tempParent)
     } catch (cleanupError) {
       if (primary === undefined) primary = cleanupError
     }

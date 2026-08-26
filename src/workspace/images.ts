@@ -14,6 +14,19 @@ const MAX_PLAN_BYTES = 1024 * 1024
 const MAX_PLAN_ITEMS = 128
 const MAX_PLAN_ARRAY_ITEMS = 128
 const MAX_PLAN_STRING_BYTES = 16 * 1024
+const BUNDLED_PRESET_DEFAULT_ASPECT = new Map<string, string>([
+  ['cover-claude-warm', '21:9'], ['cover-data-visual', '16:9'], ['cover-default', '16:9'],
+  ['cover-editorial', '16:9'], ['cover-editorial-collage', '21:9'], ['cover-hero', '16:9'],
+  ['cover-illustrated', '16:9'], ['cover-metaphor', '16:9'], ['cover-minimal', '16:9'],
+  ['cover-semantic-concept', '21:9'], ['cover-suspense-black-gold', '2.35:1'],
+  ['infographic-apple-keynote-premium', '3:4'], ['infographic-bento', '3:4'],
+  ['infographic-claude-warm', '21:9'], ['infographic-comparison', '3:4'],
+  ['infographic-dark-ticket-cn', '21:9'], ['infographic-dashboard', '3:4'],
+  ['infographic-default', '3:4'], ['infographic-flat-vector-panorama', '21:9'],
+  ['infographic-handdrawn-sketchnote', '3:4'], ['infographic-hierarchy', '3:4'],
+  ['infographic-process', '3:4'], ['infographic-ticket-process', '21:9'],
+  ['infographic-timeline', '3:4'], ['infographic-victorian-engraving-banner', '21:9'],
+])
 
 /** One image operation authenticated by an immutable plan file. */
 export interface ImagePlanItem {
@@ -195,7 +208,7 @@ export async function loadImagePlan(
     const preset = optionalBoundedText(original.preset, `image plan item ${index} preset`, 256)
     const aspect = optionalBoundedText(original.aspect, `image plan item ${index} aspect`, 64)
     const cliPlan = validateCliPlan(item.cliPlan, {
-      kind, expectedArticlePath,
+      kind, prompt: originalPrompt, expectedArticlePath,
       ...(preset === undefined ? {} : { preset }),
       ...(aspect === undefined ? {} : { aspect }),
     }, index)
@@ -354,14 +367,14 @@ export async function acquireRemoteImage(input: string, options: RemoteImageAcqu
     if (seen.has(current)) throw new Error('image redirect loop is not allowed')
     seen.add(current)
     const url = new URL(current)
-    const addresses = await resolve(url.hostname, deadline.signal)
+    const addresses = await awaitWithAbort(() => resolve(url.hostname, deadline.signal), deadline.signal)
     if (addresses.length === 0 || addresses.some(address => !isPublicNetworkAddress(address))) throw new Error('image host must resolve only to public network addresses')
     const address = addresses[0]!
-    const response = await transport({
+    const response = await awaitWithAbort(() => transport({
       url: current, hostname: url.hostname, port: url.port === '' ? 443 : Number(url.port),
       path: `${url.pathname}${url.search}`, address, servername: url.hostname,
       signal: deadline.signal, maxBytes: options.maxBytes,
-    })
+    }), deadline.signal)
     if (response.body.byteLength > options.maxBytes) throw new Error('image response exceeds the configured byte limit')
     if (response.status >= 300 && response.status < 400) {
       if (redirects >= options.maxRedirects) throw new Error('image redirect limit exceeded')
@@ -398,7 +411,7 @@ export function createPersistedImageResult(input: {
 
 /** Validate a planned target's canonical raster extension, optionally against a MIME type. */
 export function validatePlannedImageTarget(path: string, mimeType?: SupportedImageMime): void {
-  const extension = path.slice(path.lastIndexOf('.')).toLowerCase()
+  const extension = path.slice(path.lastIndexOf('.'))
   if (!['.png', '.jpg', '.gif', '.webp'].includes(extension)) throw new Error('planned image target must use .png, .jpg, .gif, or .webp')
   if (mimeType !== undefined && extension !== extensionForMime(mimeType)) throw new Error('planned image target extension does not match its content type')
 }
@@ -408,7 +421,7 @@ export function encodeCanonical(value: unknown): Uint8Array {
   return encoder.encode(`${canonicalJson(value)}\n`)
 }
 
-function validateCliPlan(value: unknown, expected: { kind: ImagePlanItem['kind']; preset?: string; aspect?: string; expectedArticlePath: string }, index: number): Readonly<Record<string, JsonValue>> {
+function validateCliPlan(value: unknown, expected: { kind: ImagePlanItem['kind']; prompt: string; preset?: string; aspect?: string; expectedArticlePath: string }, index: number): Readonly<Record<string, JsonValue>> {
   const cli = record(value, `image plan item ${index} cliPlan`)
   exactKeys(cli, ['mode', 'command', 'execution_owner', 'side_effects', 'requires_provider', 'requires_image_api_key', 'prompt', 'raw_prompt', 'preset', 'archetype', 'primary_use_case', 'compatible_use_cases', 'recommended_aspect_ratios', 'default_aspect_ratio', 'article', 'title', 'summary', 'keywords', 'style', 'aspect', 'size', 'model_hint', 'suggested_filename', 'alt_text'], `image plan item ${index} cliPlan`)
   const command = expected.kind === 'image' ? 'generate_image' : expected.kind === 'cover' ? 'generate_cover' : 'generate_infographic'
@@ -419,23 +432,35 @@ function validateCliPlan(value: unknown, expected: { kind: ImagePlanItem['kind']
   literal(cli.requires_provider, false, 'image CLI plan provider requirement')
   literal(cli.requires_image_api_key, false, 'image CLI plan key requirement')
   const prompt = boundedPlanString(cli.prompt, 'image CLI plan prompt', false)
+  const rawPrompt = boundedPlanString(cli.raw_prompt, 'image CLI plan raw_prompt')
   const article = boundedPlanString(cli.article, 'image CLI plan article')
   const expectsArticle = expected.kind !== 'image' || expected.preset !== undefined
   if (article !== (expectsArticle ? expected.expectedArticlePath : '')) throw new Error('image CLI plan article binding is invalid')
   const resolvedPreset = boundedPlanString(cli.preset, 'image CLI plan preset')
-  if (expected.kind === 'image' && expected.preset === undefined && resolvedPreset !== '') throw new Error('raw image CLI plan preset must be empty')
-  if ((expected.kind !== 'image' || expected.preset !== undefined) && resolvedPreset === '') throw new Error('preset image CLI plan must contain its resolved preset')
   const resolvedAspect = boundedPlanString(cli.aspect, 'image CLI plan aspect')
-  boundedPlanString(cli.default_aspect_ratio, 'image CLI plan default_aspect_ratio')
-  if (expected.kind === 'image' && resolvedPreset === '' && resolvedAspect !== '') throw new Error('raw image CLI plan aspect must be empty')
+  const defaultAspect = boundedPlanString(cli.default_aspect_ratio, 'image CLI plan default_aspect_ratio')
   const archetype = boundedPlanString(cli.archetype, 'image CLI plan archetype')
   const primaryUseCase = boundedPlanString(cli.primary_use_case, 'image CLI plan primary_use_case')
   const compatibleUseCases = stringArray(cli.compatible_use_cases, 'image CLI plan compatible_use_cases')
+  const recommendedAspects = stringArray(cli.recommended_aspect_ratios, 'image CLI plan recommended_aspect_ratios')
+  if (expected.kind === 'image' && expected.preset === undefined) {
+    if (prompt !== expected.prompt || rawPrompt !== expected.prompt.trim()) throw new Error('raw image CLI plan prompt does not match the approved prompt')
+    if (resolvedPreset !== '' || resolvedAspect !== '' || defaultAspect !== '') throw new Error('raw image CLI plan must not resolve preset metadata')
+  } else {
+    if (rawPrompt !== '') throw new Error('preset image CLI plan raw prompt must be empty')
+    const approvedPreset = (expected.preset ?? (expected.kind === 'cover' ? 'cover-default' : 'infographic-default')).trim().toLowerCase()
+    if (resolvedPreset.toLowerCase() !== approvedPreset) throw new Error('image CLI plan preset does not match the approved preset')
+    const bundledDefault = BUNDLED_PRESET_DEFAULT_ASPECT.get(approvedPreset)
+    const approvedAspect = expected.aspect?.trim() ?? bundledDefault
+    if (approvedAspect === undefined) throw new Error('image CLI plan requires an approved aspect for an unverifiable preset default')
+    if (resolvedAspect !== approvedAspect) throw new Error('image CLI plan aspect does not match the approved or bundled default aspect')
+    if (bundledDefault !== undefined && defaultAspect !== bundledDefault) throw new Error('image CLI plan preset default aspect does not match md2wechat 3.3.0')
+    if (defaultAspect === '' || !recommendedAspects.includes(defaultAspect)) throw new Error('image CLI plan default aspect is not recommended by its preset')
+  }
   if (expected.kind !== 'image' && ![archetype, primaryUseCase, ...compatibleUseCases].some(value => value.toLowerCase() === expected.kind)) {
     throw new Error(`${expected.kind} CLI plan must resolve a compatible preset`)
   }
-  for (const key of ['raw_prompt', 'title', 'summary', 'keywords', 'style', 'size', 'model_hint', 'suggested_filename', 'alt_text']) boundedPlanString(cli[key], `image CLI plan ${key}`)
-  stringArray(cli.recommended_aspect_ratios, 'image CLI plan recommended_aspect_ratios')
+  for (const key of ['title', 'summary', 'keywords', 'style', 'size', 'model_hint', 'suggested_filename', 'alt_text']) boundedPlanString(cli[key], `image CLI plan ${key}`)
   return { ...cli, prompt }
 }
 
@@ -532,7 +557,7 @@ export async function nodePinnedHttpsRequest(options: PinnedHttpsRequest): Promi
   return new Promise((resolve, reject) => {
     const request = httpsRequest({
       protocol: 'https:', hostname: options.hostname, port: options.port, path: options.path,
-      method: 'GET', servername: options.servername, headers: { host: options.hostname, 'accept-encoding': 'identity' },
+      method: 'GET', servername: options.servername, headers: { host: new URL(options.url).host, 'accept-encoding': 'identity' },
       lookup: (_hostname, lookupOptions, callback) => {
         const family = isIP(options.address) as 4 | 6
         const requestedFamily = typeof lookupOptions === 'object' ? lookupOptions.family : lookupOptions
@@ -578,6 +603,30 @@ function createDeadline(parent: AbortSignal | undefined, timeoutMs: number): { s
   if (parent?.aborted) abort()
   else parent?.addEventListener('abort', abort, { once: true })
   return { signal: controller.signal, [Symbol.dispose]() { clearTimeout(timer); parent?.removeEventListener('abort', abort) } }
+}
+
+function awaitWithAbort<T>(operation: () => T | PromiseLike<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted()
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    const settle = (complete: () => void): void => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', abort)
+      complete()
+    }
+    const abort = (): void => settle(() => reject(signal.reason ?? new Error('image acquisition cancelled')))
+    signal.addEventListener('abort', abort, { once: true })
+    try {
+      Promise.resolve(operation()).then(
+        value => settle(() => resolve(value)),
+        error => settle(() => reject(error)),
+      )
+    } catch (error) {
+      settle(() => reject(error))
+    }
+    if (signal.aborted) abort()
+  })
 }
 
 function parseContentType(value: string): SupportedImageMime {
