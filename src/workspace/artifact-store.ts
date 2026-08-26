@@ -371,6 +371,7 @@ export class ArtifactStore {
     if (sourceInfo?.type !== 'file') throw new Error('export source must be a regular file')
     const sourceBytes = await this.fs.readBytes(source, signal, MAX_ARTIFACT_BYTES)
     if (sha256(sourceBytes) !== expectedSha256) throw new Error('export source does not match its signed digest')
+    const expectedSize = sourceBytes.byteLength
     const sourceNative = await requireNativeFileIdentity(this.fs.processPath(source), 'export source')
     const destination = await this.fs.resolve(destinationAbsolute, resolveOptions(signal))
     assertDifferentTargets(source, destination)
@@ -389,7 +390,8 @@ export class ArtifactStore {
       destinationAbsolute,
       expectedSha256,
       commitVerified: async (bytes, commitSignal) => {
-        if (sha256(bytes) !== expectedSha256) throw new Error('verified export bytes do not match the signed digest')
+        const verifiedBytes = new Uint8Array(bytes)
+        if (verifiedBytes.byteLength !== expectedSize || sha256(verifiedBytes) !== expectedSha256) throw new Error('verified export bytes do not match the signed digest')
         await this.revalidateCopySource(sourceRelative, sourceBinding, expectedSha256, commitSignal)
         let currentDestination = await this.fs.resolve(destinationAbsolute, resolveOptions(commitSignal))
         let currentParent = await this.fs.resolve(dirname(this.fs.processPath(currentDestination)), resolveOptions(commitSignal))
@@ -404,7 +406,7 @@ export class ArtifactStore {
         if (currentDestination.targetKey !== destinationBinding.targetKey || currentParent.targetKey !== parentBinding.targetKey) throw new Error('export destination or parent changed during commit')
         await requireSameNativeState(ancestorBinding.path, ancestorBinding.native, 'export destination ancestor')
         await requireSameNativeState(this.fs.processPath(currentParent), createdParentNative, 'export destination parent')
-        await this.publishAuthorized({ target: currentDestination, parent: currentParent }, bytes, commitSignal, destinationBinding.native, createdParentNative, async () => {
+        await this.publishAuthorized({ target: currentDestination, parent: currentParent }, verifiedBytes, expectedSha256, expectedSize, commitSignal, destinationBinding.native, createdParentNative, async () => {
           await this.revalidateCopySource(sourceRelative, sourceBinding, expectedSha256, commitSignal)
         })
         const published = await this.fs.resolve(destinationAbsolute, resolveOptions(commitSignal))
@@ -616,6 +618,8 @@ export class ArtifactStore {
   private async publishAuthorized(
     binding: PublicationBinding,
     bytes: Uint8Array,
+    expectedSha256: string,
+    expectedSize: number,
     signal: AbortSignal | undefined,
     destinationNative: NativeIdentity | undefined,
     parentNative: NativeIdentity,
@@ -642,7 +646,7 @@ export class ArtifactStore {
       await prepareCommit()
       const current = await this.revalidateBinding(binding, signal)
       const currentTemp = await this.revalidateTemp(temp, tempTarget, binding.parent, undefined, signal)
-      this.commitAuthorizedSync(currentTemp, current, stagedTempNative, destinationNative, parentNative, bytes)
+      this.commitAuthorizedSync(currentTemp, current, stagedTempNative, destinationNative, parentNative, expectedSha256, expectedSize)
     } catch (error) {
       let failure: unknown = error
       if (handle !== undefined) failure = await closeAfterFailure(handle, failure)
@@ -657,14 +661,15 @@ export class ArtifactStore {
     tempNative: NativeIdentity,
     destinationNative: NativeIdentity | undefined,
     parentNative: NativeIdentity,
-    expectedBytes: Uint8Array,
+    expectedSha256: string,
+    expectedSize: number,
   ): void {
     const tempPath = this.fs.processPath(temp)
     const tempInfo = lstatSync(tempPath)
     if (!tempInfo.isFile() || tempInfo.isSymbolicLink() || !sameNativeIdentity(tempNative, nativeIdentity(tempInfo))) throw new Error('export temporary file identity changed before commit')
-    if (tempInfo.size !== expectedBytes.byteLength) throw new Error('export temporary file bytes changed before commit')
+    if (tempInfo.size !== expectedSize) throw new Error('export temporary file bytes changed before commit')
     const currentBytes = readFileSync(tempPath)
-    if (sha256(currentBytes) !== sha256(expectedBytes)) throw new Error('export temporary file bytes changed before commit')
+    if (sha256(currentBytes) !== expectedSha256) throw new Error('export temporary file bytes changed before commit')
     const parentPath = this.fs.processPath(binding.parent)
     const destinationPath = this.fs.processPath(binding.target)
     requireSameNativeStateSync(parentPath, parentNative, 'export destination parent')

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { link, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -116,6 +117,14 @@ describe('md2wechat_export', () => {
     const selected = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat', { async beforeNativeCommit({ tempPath }) { if (mutation === 'identity') await rm(tempPath); await writeFile(tempPath, 'unverified bytes') } })
     await expect(createExportTool(deps(selected)).execute({ manifestPath, previewReceiptId: receiptId, destinationPath }, exec())).rejects.toThrow('failed')
     expect(await readFile(destinationPath, 'utf8')).toBe('approved target')
+  })
+
+  it('does not trust caller-owned bytes after commitVerified starts', async () => {
+    const destinationPath = join(temporary, 'mutable-caller.html'); await writeFile(destinationPath, 'approved target')
+    const authorization = await store.authorizeCopyOut(sourcePath, createHash('sha256').update(html).digest('hex'), destinationPath)
+    const callerBytes = new Uint8Array(html); const commit = authorization.commitVerified(callerBytes); callerBytes.fill(0x78)
+    await expect(commit).resolves.toBeUndefined()
+    expect(Array.from(await readFile(destinationPath))).toEqual(Array.from(html))
   })
 
   it.each(['symlink', 'directory'] as const)('rejects a %s inserted at an exclusively created destination segment', async race => {
