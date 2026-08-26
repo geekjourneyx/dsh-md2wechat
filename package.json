@@ -10,6 +10,7 @@
     "typecheck": "tsc -b --pretty false",
     "lint": "oxlint src tests scripts",
     "test": "vitest run",
+    "test:installed": "node scripts/installed-acceptance.mjs",
     "build": "tsc -b && tsdown",
     "prepare": "pnpm run build",
     "pack:check": "vitest run tests/integration/package-contents.test.ts"
