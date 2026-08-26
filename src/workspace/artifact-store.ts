@@ -69,6 +69,12 @@ interface PublicationBinding {
   relative?: string
 }
 
+interface ExistingAncestorBinding {
+  path: string
+  native: NativeIdentity
+  missingSegments: readonly string[]
+}
+
 /** Workspace-contained binary artifact storage backed by the DSH filesystem identity service. */
 export class ArtifactStore {
   /**
@@ -371,6 +377,7 @@ export class ArtifactStore {
     const parent = await this.fs.resolve(dirname(this.fs.processPath(destination)), resolveOptions(signal))
     const parentNative = await optionalNativeIdentity(this.fs.processPath(parent), 'export destination parent')
     if (parentNative !== undefined && parentNative.kind !== 'directory') throw new Error('export destination parent must be a directory')
+    const ancestorBinding = await bindExistingAncestor(this.fs.processPath(parent), 'export destination parent')
     const sourceBinding = { targetKey: source.targetKey, version: sourceInfo.version, native: sourceNative }
     const destinationBinding = { targetKey: destination.targetKey, native: destinationNative }
     const parentBinding = { targetKey: parent.targetKey, native: parentNative }
@@ -386,18 +393,18 @@ export class ArtifactStore {
         if (currentDestination.targetKey !== destinationBinding.targetKey || currentParent.targetKey !== parentBinding.targetKey) throw new Error('export destination or parent changed after approval')
         await requireSameNativeState(this.fs.processPath(currentDestination), destinationBinding.native, 'export destination')
         await requireSameNativeState(this.fs.processPath(currentParent), parentBinding.native, 'export destination parent')
+        await requireMissingAncestry(ancestorBinding, 'export destination parent')
         const currentNative = await optionalNativeIdentity(this.fs.processPath(currentDestination), 'export destination')
         if (sameNativeIdentity(sourceBinding.native, currentNative)) throw new Error('copy source and destination are hard-link aliases')
         await mkdir(dirname(this.fs.processPath(currentDestination)), { recursive: true })
         currentDestination = await this.fs.resolve(destinationAbsolute, resolveOptions(commitSignal))
         currentParent = await this.fs.resolve(dirname(this.fs.processPath(currentDestination)), resolveOptions(commitSignal))
         if (currentDestination.targetKey !== destinationBinding.targetKey || currentParent.targetKey !== parentBinding.targetKey) throw new Error('export destination or parent changed during commit')
+        await requireSameNativeState(ancestorBinding.path, ancestorBinding.native, 'export destination ancestor')
         const commitParentNative = await optionalNativeIdentity(this.fs.processPath(currentParent), 'export destination parent')
         if (commitParentNative?.kind !== 'directory') throw new Error('export destination parent must be a directory')
-        await this.publishAuthorized({ target: currentDestination, parent: currentParent }, bytes, commitSignal, async () => {
+        await this.publishAuthorized({ target: currentDestination, parent: currentParent }, bytes, commitSignal, destinationBinding.native, commitParentNative, async () => {
           await this.revalidateCopySource(sourceRelative, sourceBinding, expectedSha256, commitSignal)
-          await requireSameNativeState(this.fs.processPath(currentDestination), destinationBinding.native, 'export destination')
-          await requireSameNativeState(this.fs.processPath(currentParent), commitParentNative, 'export destination parent')
         })
         const published = await this.fs.resolve(destinationAbsolute, resolveOptions(commitSignal))
         if (published.targetKey !== destinationBinding.targetKey) throw new Error('export destination changed after commit')
@@ -585,7 +592,9 @@ export class ArtifactStore {
     binding: PublicationBinding,
     bytes: Uint8Array,
     signal: AbortSignal | undefined,
-    immediatelyBeforeRename: () => void | Promise<void>,
+    destinationNative: NativeIdentity | undefined,
+    parentNative: NativeIdentity,
+    prepareCommit: () => void | Promise<void>,
   ): Promise<void> {
     signal?.throwIfAborted()
     const destination = this.fs.processPath(binding.target)
@@ -604,9 +613,11 @@ export class ArtifactStore {
       handle = undefined
       signal?.throwIfAborted()
       await this.internals.beforeNativeCommit?.({ destinationPath: destination, tempPath: temp })
-      await immediatelyBeforeRename()
+      await prepareCommit()
       const current = await this.revalidateBinding(binding, signal)
       const currentTemp = await this.revalidateTemp(temp, tempTarget, binding.parent, undefined, signal)
+      await requireSameNativeState(this.fs.processPath(current.parent), parentNative, 'export destination parent')
+      await requireSameNativeState(this.fs.processPath(current.target), destinationNative, 'export destination')
       await (this.internals.rename ?? rename)(this.fs.processPath(currentTemp), this.fs.processPath(current.target))
     } catch (error) {
       let failure: unknown = error
@@ -784,6 +795,31 @@ function sha256(bytes: Uint8Array): string {
 }
 
 interface NativeIdentity { dev: number; ino: number; kind: 'file' | 'directory' }
+
+async function bindExistingAncestor(path: string, field: string): Promise<ExistingAncestorBinding> {
+  let current = path
+  const missingSegments: string[] = []
+  while (true) {
+    const native = await optionalNativeIdentity(current, field)
+    if (native !== undefined) {
+      if (native.kind !== 'directory') throw new Error(`${field} ancestor must be a directory`)
+      return { path: current, native, missingSegments: missingSegments.reverse() }
+    }
+    const parent = dirname(current)
+    if (parent === current) throw new Error(`${field} has no existing directory ancestor`)
+    missingSegments.push(basename(current))
+    current = parent
+  }
+}
+
+async function requireMissingAncestry(binding: ExistingAncestorBinding, field: string): Promise<void> {
+  await requireSameNativeState(binding.path, binding.native, `${field} ancestor`)
+  let current = binding.path
+  for (const segment of binding.missingSegments) {
+    current = join(current, segment)
+    if (await optionalNativeIdentity(current, field) !== undefined) throw new Error(`${field} missing path changed after approval`)
+  }
+}
 
 async function optionalNativeIdentity(path: string, field: string): Promise<NativeIdentity | undefined> {
   try {

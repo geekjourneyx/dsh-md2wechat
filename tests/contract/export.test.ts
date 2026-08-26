@@ -95,6 +95,22 @@ describe('md2wechat_export', () => {
     await expect(readFile(destinationPath)).rejects.toMatchObject({ code: 'ENOENT' }); await expect(readFile(join(moved, 'article.html'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
+  it('does not perform asynchronous path preparation after the final destination identity check', async () => {
+    const destinationPath = join(temporary, 'last-check-race.html'); await writeFile(destinationPath, 'approved target')
+    const canonicalDestination = await realpath(destinationPath); const base = fileSystem(workspace); let armed = false; let replaced = false
+    const racing = { ...base, async resolve(path: string) { if (armed && !replaced && resolve(path) === canonicalDestination) { replaced = true; await rm(destinationPath); await writeFile(destinationPath, 'replacement target') }; return base.resolve(path) } }
+    const selected = new ArtifactStore(racing as never, workspace, '.dsh/md2wechat', { beforeNativeCommit() { armed = true } })
+    await expect(createExportTool(deps(selected)).execute({ manifestPath, previewReceiptId: receiptId, destinationPath }, exec())).rejects.toThrow('failed')
+    expect(replaced).toBe(true); expect(await readFile(destinationPath, 'utf8')).toBe('replacement target')
+  })
+
+  it('binds the nearest existing destination ancestor when the direct parent is absent', async () => {
+    const selected = join(temporary, 'selected-tree'); const moved = join(temporary, 'selected-tree-moved'); await mkdir(selected)
+    const destinationPath = join(selected, 'new', 'article.html'); approvalHook = async () => { await rename(selected, moved); await mkdir(selected) }
+    await expect(createExportTool(deps()).execute({ manifestPath, previewReceiptId: receiptId, destinationPath }, exec())).rejects.toThrow('failed')
+    await expect(readFile(destinationPath)).rejects.toMatchObject({ code: 'ENOENT' }); await expect(readFile(join(moved, 'new', 'article.html'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('leaves no partial destination when the final atomic write fails', async () => {
     const destinationPath = join(temporary, 'write-failure.html')
     const selected = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat', { rename: async () => { throw new Error('injected write failure') } })
