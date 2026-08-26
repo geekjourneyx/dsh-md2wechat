@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { open, link, mkdir, rename, rm, rmdir } from 'node:fs/promises'
+import { link, lstat, mkdir, open, rename, rm, rmdir } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
 
 const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+const TRUSTED_RECORD_ROOT = '.trusted'
 const windowsDeviceName = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/iu
 
 /** Native publication hooks used only to inject storage-boundary failures in tests. */
@@ -59,6 +60,7 @@ interface PublicationBinding {
   target: FsTarget
   parent: FsTarget
   relative?: string
+  trusted?: true
 }
 
 /** Workspace-contained binary artifact storage backed by the DSH filesystem identity service. */
@@ -87,6 +89,7 @@ export class ArtifactStore {
    */
   resolve(relative: string): string {
     validateArtifactRelativePath(relative)
+    rejectTrustedRecordPath(relative)
     return join(this.workspace, this.rootRelative, ...splitPath(relative))
   }
 
@@ -210,8 +213,65 @@ export class ArtifactStore {
     signal?: AbortSignal,
     ownership: ArtifactPublicationOwnership = { created: false },
   ): Promise<ArtifactPublicationOwnership> {
+    return this.createExclusiveAt(relative, bytes, signal, ownership)
+  }
+
+  /**
+   * Create one plugin-owned trust record outside the user/model artifact namespace.
+   * @param key - Trust-record-relative key below the reserved private directory.
+   * @param bytes - Complete immutable record bytes.
+   * @param signal - Optional cancellation signal.
+   * @param ownership - Per-attempt publication ownership.
+   * @returns Ownership after atomic exclusive publication and private-mode verification.
+   */
+  async createTrustedRecord(
+    key: string,
+    bytes: Uint8Array,
+    signal?: AbortSignal,
+    ownership: ArtifactPublicationOwnership = { created: false },
+  ): Promise<ArtifactPublicationOwnership> {
+    const relative = trustedRecordPath(key)
+    await this.validateTrustedParents(relative, true, signal)
+    const result = await this.createExclusiveAt(relative, bytes, signal, ownership, true)
+    await this.validateTrustedParents(relative, false, signal)
+    await this.validateTrustedFile(relative, signal)
+    return result
+  }
+
+  /**
+   * Read one bounded plugin-owned trust record while rebinding identity and private modes.
+   * @param key - Trust-record-relative key below the reserved private directory.
+   * @param maxBytes - Positive byte limit no larger than the artifact-store maximum.
+   * @param signal - Optional cancellation signal.
+   * @returns Complete unchanged record bytes.
+   */
+  async readTrustedRecord(key: string, maxBytes: number, signal?: AbortSignal): Promise<Uint8Array> {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_ARTIFACT_BYTES) throw new TypeError('trusted record read limit is invalid')
+    const relative = trustedRecordPath(key)
+    await this.validateTrustedParents(relative, false, signal)
+    const target = await this.resolveContained(relative, signal, true)
+    const info = await this.fs.stat(target, signal)
+    if (info === undefined || info.type !== 'file') throw new Error('trusted record must be a regular file')
+    if (info.size !== undefined && info.size > maxBytes) throw new Error('trusted record exceeds the requested read limit')
+    await this.validateTrustedFile(relative, signal, target)
+    const bytes = await this.fs.readBytes(target, signal, maxBytes)
+    const current = await this.resolveContained(relative, signal, true)
+    const currentInfo = await this.fs.stat(current, signal)
+    if (current.targetKey !== target.targetKey || currentInfo?.type !== 'file' || currentInfo.version !== info.version) throw new Error('trusted record changed during read')
+    await this.validateTrustedParents(relative, false, signal)
+    await this.validateTrustedFile(relative, signal, current)
+    return bytes
+  }
+
+  private async createExclusiveAt(
+    relative: string,
+    bytes: Uint8Array,
+    signal?: AbortSignal,
+    ownership: ArtifactPublicationOwnership = { created: false },
+    trusted = false,
+  ): Promise<ArtifactPublicationOwnership> {
     signal?.throwIfAborted()
-    const target = await this.resolveContained(relative, signal)
+    const target = await this.resolveContained(relative, signal, trusted)
     const destination = this.fs.processPath(target)
     const tempDirectoryRelative = `.exclusive/${randomUUID()}`
     const tempRelative = `${tempDirectoryRelative}/payload`
@@ -224,7 +284,7 @@ export class ArtifactStore {
       await mkdir(this.fs.processPath(tempParent), { recursive: true, mode: 0o700 })
       await this.internals.afterExclusiveStage?.({ destinationPath: destination, tempPath: this.fs.processPath(tempTarget), directoryPath: this.fs.processPath(tempParent) })
       signal?.throwIfAborted()
-      const binding = await this.bindPublication(target, relative, signal)
+      const binding = await this.bindPublication(target, relative, signal, trusted)
       const boundTempParent = await this.revalidateContained(tempDirectoryRelative, tempParent, signal, 'exclusive temporary directory changed before write')
       const boundTemp = await this.revalidateContained(tempRelative, tempTarget, signal, 'exclusive temporary file changed before write')
       handle = await open(this.fs.processPath(boundTemp), 'wx', 0o600)
@@ -436,8 +496,9 @@ export class ArtifactStore {
     return this.resolveContained(relative, signal).then(target => target.targetKey)
   }
 
-  private async resolveContained(relative: string, signal?: AbortSignal): Promise<FsTarget> {
-    this.resolve(relative)
+  private async resolveContained(relative: string, signal?: AbortSignal, trusted = false): Promise<FsTarget> {
+    validateArtifactRelativePath(relative)
+    if (!trusted) rejectTrustedRecordPath(relative)
     const workspace = await this.fs.resolve(this.workspace, resolveOptions(signal))
     const rootParts = splitPath(this.rootRelative)
     const pathParts: string[] = []
@@ -507,19 +568,19 @@ export class ArtifactStore {
     }
   }
 
-  private async bindPublication(target: FsTarget, relative: string | undefined, signal?: AbortSignal): Promise<PublicationBinding> {
+  private async bindPublication(target: FsTarget, relative: string | undefined, signal?: AbortSignal, trusted = false): Promise<PublicationBinding> {
     let current: FsTarget
     try {
       current = relative === undefined
         ? await this.fs.resolve(this.fs.processPath(target), resolveOptions(signal))
-        : await this.resolveContained(relative, signal)
+        : await this.resolveContained(relative, signal, trusted)
     } catch (error) {
       throw new Error('artifact publication target changed after validation', { cause: error })
     }
     if (current.targetKey !== target.targetKey) throw new Error('artifact publication target changed after validation')
     const parent = await this.fs.resolve(dirname(this.fs.processPath(current)), resolveOptions(signal))
     if (relative !== undefined) await this.assertContainedTarget(parent, signal)
-    return { target: current, parent, ...(relative === undefined ? {} : { relative }) }
+    return { target: current, parent, ...(relative === undefined ? {} : { relative }), ...(trusted ? { trusted: true as const } : {}) }
   }
 
   private async revalidateBinding(binding: PublicationBinding, signal?: AbortSignal): Promise<PublicationBinding> {
@@ -527,7 +588,7 @@ export class ArtifactStore {
     try {
       current = binding.relative === undefined
         ? await this.fs.resolve(this.fs.processPath(binding.target), resolveOptions(signal))
-        : await this.resolveContained(binding.relative, signal)
+        : await this.resolveContained(binding.relative, signal, binding.trusted === true)
     } catch (error) {
       throw new Error('artifact publication target changed before commit', { cause: error })
     }
@@ -535,7 +596,7 @@ export class ArtifactStore {
     const parent = await this.fs.resolve(dirname(this.fs.processPath(current)), resolveOptions(signal))
     if (parent.targetKey !== binding.parent.targetKey) throw new Error('artifact publication directory changed before commit')
     if (binding.relative !== undefined) await this.assertContainedTarget(parent, signal)
-    return { target: current, parent, ...(binding.relative === undefined ? {} : { relative: binding.relative }) }
+    return { target: current, parent, ...(binding.relative === undefined ? {} : { relative: binding.relative }), ...(binding.trusted === true ? { trusted: true as const } : {}) }
   }
 
   private async revalidateTemp(
@@ -604,8 +665,9 @@ export class ArtifactStore {
     expected: FsTarget,
     signal: AbortSignal | undefined,
     message: string,
+    trusted = false,
   ): Promise<FsTarget> {
-    const current = await this.resolveContained(relative, signal)
+    const current = await this.resolveContained(relative, signal, trusted)
     if (current.targetKey !== expected.targetKey) throw new Error(message)
     return current
   }
@@ -619,6 +681,33 @@ export class ArtifactStore {
     const root = await this.resolveStoreRoot(signal)
     if (!this.fs.contains(workspace, target)) throw new Error('artifact path escapes the session workspace')
     if (!this.fs.contains(root, target)) throw new Error('artifact path escapes the configured artifact root')
+  }
+
+  private async validateTrustedParents(relative: string, create: boolean, signal?: AbortSignal): Promise<void> {
+    const components = splitPath(relative).slice(0, -1)
+    for (let index = 1; index <= components.length; index += 1) {
+      const parentRelative = components.slice(0, index).join('/')
+      const expected = await this.resolveContained(parentRelative, signal, true)
+      if (create) await mkdir(this.fs.processPath(expected), { recursive: true, mode: 0o700 })
+      await this.revalidateContained(parentRelative, expected, signal, 'trusted record directory changed', true)
+      const info = await lstat(this.trustedLexicalPath(parentRelative))
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('trusted record parent must be a private directory')
+      if ((info.mode & 0o077) !== 0) throw new Error('trusted record directory permissions are not private')
+    }
+  }
+
+  private async validateTrustedFile(relative: string, signal?: AbortSignal, expected?: FsTarget): Promise<void> {
+    const target = expected ?? await this.resolveContained(relative, signal, true)
+    await this.revalidateContained(relative, target, signal, 'trusted record identity changed', true)
+    const info = await lstat(this.trustedLexicalPath(relative))
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error('trusted record must be a regular file')
+    if ((info.mode & 0o077) !== 0) throw new Error('trusted record permissions are not private')
+  }
+
+  private trustedLexicalPath(relative: string): string {
+    validateArtifactRelativePath(relative)
+    if (splitPath(relative)[0] !== TRUSTED_RECORD_ROOT) throw new TypeError('trusted record path is outside the reserved directory')
+    return join(this.workspace, ...splitPath(this.rootRelative), ...splitPath(relative))
   }
 }
 
@@ -653,6 +742,16 @@ export function validateArtifactId(id: string): void {
 
 function splitPath(value: string): string[] {
   return value.split(/[\\/]/u)
+}
+
+function rejectTrustedRecordPath(relative: string): void {
+  if (splitPath(relative)[0]?.normalize('NFC').toLowerCase() === TRUSTED_RECORD_ROOT) throw new TypeError('trusted record directory is reserved')
+}
+
+function trustedRecordPath(key: string): string {
+  validateArtifactRelativePath(key)
+  rejectTrustedRecordPath(key)
+  return `${TRUSTED_RECORD_ROOT}/${splitPath(key).join('/')}`
 }
 
 function sha256(bytes: Uint8Array): string {

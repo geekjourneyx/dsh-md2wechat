@@ -17,6 +17,7 @@ import {
   loadImagePlan,
   loadVerifiedImageResult,
   releaseImageClaim,
+  verifyImagePlanTrust,
   validatePlannedImageTarget,
   validateRemoteImageUrl,
 } from '../workspace/images.ts'
@@ -95,7 +96,7 @@ export function createGenerateImagesTool({
   positiveInteger(imageAcquisitionTimeoutMs, 'image acquisition timeout')
   if (typeof jobs.start !== 'function' || typeof jobs.get !== 'function') throw new TypeError('background job registry is required')
   if (typeof gateway.run !== 'function') throw new TypeError('CLI gateway is required')
-  if (typeof store.read !== 'function' || typeof store.createExclusive !== 'function') throw new TypeError('artifact store is required')
+  if (typeof store.read !== 'function' || typeof store.createExclusive !== 'function' || typeof store.readTrustedRecord !== 'function') throw new TypeError('artifact store is required')
   if (typeof credentials.resolve !== 'function') throw new TypeError('credential resolver is required')
   if (typeof approval.request !== 'function') throw new TypeError('approval service is required')
   if (typeof reportAuditFailure !== 'function') throw new TypeError('image audit failure reporter is required')
@@ -324,6 +325,7 @@ async function prepareBatch(gateway: CliGateway, store: ArtifactStore, manifestP
   const targets = new Set<string>()
   for (const path of planPaths) {
     const plan = await loadImagePlan(store, path, current.revision.id, current.articlePath, signal)
+    await verifyImagePlanTrust(store, plan, signal)
     if (planIds.has(plan.planId)) throw new Error('duplicate image plan IDs are not allowed')
     planIds.add(plan.planId)
     plans.push(plan)

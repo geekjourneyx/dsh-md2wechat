@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, realpath, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -7,8 +7,9 @@ import type { JobHooks, JobId, JobStart } from '@deepseek-ai/dsh-jobs'
 import type { CliEnvelope } from '../../src/cli/protocol.ts'
 import type { CliGateway, CliRunOptions } from '../../src/cli/gateway.ts'
 import { createGenerateImagesTool } from '../../src/tools/generate-images.ts'
+import { createPlanImagesTool } from '../../src/tools/plan-images.ts'
 import { ArtifactStore } from '../../src/workspace/artifact-store.ts'
-import { canonicalImagePlanId, encodeCanonical } from '../../src/workspace/images.ts'
+import { canonicalImagePlanId, encodeCanonical, registerImagePlanTrust } from '../../src/workspace/images.ts'
 import { computeArticleRevision } from '../../src/workspace/revision.ts'
 import type { ArticleManifest } from '../../src/workspace/revision.ts'
 
@@ -53,19 +54,20 @@ class Gateway implements CliGateway {
     this.calls.push({ argv: [...argv], options })
     const command = argv[0]!
     if (argv.includes('--plan')) {
+      const raw = command === 'generate_image' && !argv.includes('--preset')
       const value = (flag: string): string => argv[argv.indexOf(flag) + 1]!
-      const preset = argv.includes('--preset') ? value('--preset') : command === 'generate_cover' ? 'cover-default' : 'infographic-default'
+      const preset = raw ? '' : argv.includes('--preset') ? value('--preset') : command === 'generate_cover' ? 'cover-default' : 'infographic-default'
       const archetype = preset.startsWith('cover-') ? 'cover' : 'infographic'
-      const defaultAspect = archetype === 'cover' ? '16:9' : '3:4'
+      const defaultAspect = raw ? '' : archetype === 'cover' ? '16:9' : '3:4'
       const aspect = argv.includes('--aspect') ? value('--aspect') : defaultAspect
       return {
         success: true, code: 'IMAGE_PLAN_READY', message: 'Image plan ready; generate the image with a host Agent or configured provider.',
         schema_version: 'v1', status: 'action_required', retryable: false,
         data: {
           mode: 'plan', command, execution_owner: 'host_agent', side_effects: false, requires_provider: false, requires_image_api_key: false,
-          prompt: command === 'generate_cover' ? 'Prepared cover prompt' : 'Prepared preset prompt', raw_prompt: '', preset, archetype,
-          primary_use_case: archetype, compatible_use_cases: [archetype], recommended_aspect_ratios: [aspect], default_aspect_ratio: defaultAspect,
-          article: value('--article'), title: 'Fixture', summary: '', keywords: '', style: '', aspect, size: '', model_hint: '',
+          prompt: raw ? argv[1] : preset === 'cover-minimal' ? 'Prepared minimal prompt' : command === 'generate_cover' ? 'Prepared cover prompt' : 'Prepared preset prompt', raw_prompt: raw ? argv[1]!.trim() : '', preset, archetype: raw ? '' : archetype,
+          primary_use_case: raw ? '' : archetype, compatible_use_cases: raw ? [] : [archetype], recommended_aspect_ratios: aspect === '' ? [] : [aspect], default_aspect_ratio: defaultAspect,
+          article: raw ? '' : value('--article'), title: 'Fixture', summary: '', keywords: '', style: '', aspect, size: '', model_hint: '',
           suggested_filename: `${command === 'generate_cover' ? 'cover' : command === 'generate_infographic' ? 'info' : 'preset'}.png`, alt_text: 'Fixture',
         },
       }
@@ -98,7 +100,7 @@ describe('md2wechat_generate_images', () => {
         prompt: 'Hero raw', raw_prompt: 'Hero raw', preset: '', archetype: '', primary_use_case: '', compatible_use_cases: [], recommended_aspect_ratios: [], default_aspect_ratio: '',
         article: '', title: '', summary: '', keywords: '', style: '', aspect: '', size: '', model_hint: '', suggested_filename: '', alt_text: '' } }
     const items = [item]; const planId = canonicalImagePlanId(revisionId, items); const path = `revisions/${revisionId}/plans/${planId}.json`
-    await store.writeAtomic(path, encodeCanonical({ schemaVersion: 1, planId, revisionId, createdAt: now.toISOString(), items })); return path
+    await publishTrustedPlan(path, planId, items, { schemaVersion: 1, planId, revisionId, createdAt: now.toISOString(), items }); return path
   }
 
   async function installManyPlan(count: number): Promise<string> {
@@ -109,7 +111,7 @@ describe('md2wechat_generate_images', () => {
           prompt: `Prompt ${index}`, raw_prompt: `Prompt ${index}`, preset: '', archetype: '', primary_use_case: '', compatible_use_cases: [], recommended_aspect_ratios: [], default_aspect_ratio: '', article: '', title: '', summary: '', keywords: '', style: '', aspect: '', size: '', model_hint: '', suggested_filename: '', alt_text: '' } }
     })
     const planId = canonicalImagePlanId(revisionId, items); const path = `revisions/${revisionId}/plans/${planId}.json`
-    await store.writeAtomic(path, encodeCanonical({ schemaVersion: 1, planId, revisionId, createdAt: now.toISOString(), items })); return path
+    await publishTrustedPlan(path, planId, items, { schemaVersion: 1, planId, revisionId, createdAt: now.toISOString(), items }); return path
   }
 
   async function installRealSourceExecutionPlan(): Promise<string> {
@@ -128,7 +130,12 @@ describe('md2wechat_generate_images', () => {
           article: definition.preset === '' ? '' : article, title: 'Fixture', summary: '', keywords: '', style: '', aspect: definition.aspect, size: '', model_hint: '', suggested_filename: `${definition.id}.png`, alt_text: 'Fixture' } }
     })
     const planId = canonicalImagePlanId(revisionId, items); const path = `revisions/${revisionId}/plans/${planId}.json`
-    await store.writeAtomic(path, encodeCanonical({ schemaVersion: 1, planId, revisionId, createdAt: now.toISOString(), items })); return path
+    await publishTrustedPlan(path, planId, items, { schemaVersion: 1, planId, revisionId, createdAt: now.toISOString(), items }); return path
+  }
+
+  async function publishTrustedPlan(path: string, planId: string, items: readonly Record<string, unknown>[], value: unknown): Promise<void> {
+    await store.writeAtomic(path, encodeCanonical(value))
+    await registerImagePlanTrust(store, { path, planId, revisionId, items: items as never })
   }
 
   function dependencies(gateway: CliGateway, selectedStore = store, reportAuditFailure: (message: string) => void = () => {}) {
@@ -155,6 +162,24 @@ describe('md2wechat_generate_images', () => {
     const claimDirectory = dirname(store.resolve(`revisions/${revisionId}/image-claims/targets/placeholder`)); await expect(import('node:fs/promises').then(fs => fs.readdir(claimDirectory))).resolves.toEqual([])
     const jobDirectory = dirname(store.resolve(`revisions/${revisionId}/image-jobs/placeholder`)); await expect(import('node:fs/promises').then(fs => fs.readdir(jobDirectory))).resolves.toEqual([])
     approvals.length = 0; resolved.length = 0; starts.length = 0; const complete = await tool.execute({ manifestPath, planPaths: [planPath] }, exec()); expect(complete).toMatchObject({ kind: 'completed', resultPaths: [resultPath] }); expect(approvals).toHaveLength(0); expect(resolved).toHaveLength(0); expect(starts).toHaveLength(0)
+  })
+
+  it('executes a legitimate Task 5 plan after idempotent planning and an ArtifactStore restart', async () => {
+    const planningGateway = new Gateway()
+    const planner = createPlanImagesTool({ gateway: planningGateway, store, now: () => new Date(now) })
+    const request = { manifestPath, images: [{ id: 'task5', kind: 'image' as const, prompt: 'Task 5 raw', targetPath: 'images/task5.png' }] }
+    const first = await planner.execute(request, exec())
+    const repeated = await planner.execute(request, exec())
+    expect(repeated).toEqual(first)
+    const trustedPlanPath = (first as { planPath: string }).planPath
+
+    const restartedStore = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat')
+    const generationGateway = new Gateway()
+    const tool = createGenerateImagesTool(dependencies(generationGateway, restartedStore))
+    const submitted = await tool.execute({ manifestPath, planPaths: [trustedPlanPath] }, exec())
+    expect(submitted).toMatchObject({ kind: 'background' })
+    await expect(hooks!.done).resolves.toMatchObject({ status: 'completed' })
+    expect(generationGateway.calls.map(call => call.argv)).toEqual([['generate_image', 'Task 5 raw', '--json']])
   })
 
   it('executes raw, preset, cover, and infographic from resolved 3.3.0 plan semantics', async () => {
@@ -195,7 +220,7 @@ describe('md2wechat_generate_images', () => {
       mutate(candidate.items)
       candidate.planId = canonicalImagePlanId(revisionId, candidate.items)
       const candidatePath = `revisions/${revisionId}/plans/${candidate.planId}.json`
-      await store.writeAtomic(candidatePath, encodeCanonical(candidate))
+      await publishTrustedPlan(candidatePath, candidate.planId, candidate.items, candidate)
       const gateway = new Gateway()
       const tool = createGenerateImagesTool(dependencies(gateway))
       await expect(tool.execute({ manifestPath, planPaths: [candidatePath] }, exec())).rejects.toThrow('could not be prepared')
@@ -204,6 +229,48 @@ describe('md2wechat_generate_images', () => {
       else expect(gateway.calls.every(call => call.argv.includes('--plan'))).toBe(true)
       expect(approvals).toHaveLength(0); expect(resolved).toHaveLength(0); expect(starts).toHaveLength(0)
     }
+  })
+
+  it('rejects a fully replaced valid source and CLI projection without a Task 5 trust identity', async () => {
+    const sourcePath = await installRealSourceExecutionPlan()
+    const sourceBytes = await store.read(sourcePath)
+    const candidate = JSON.parse(decoder.decode(sourceBytes)) as {
+      schemaVersion: 1; planId: string; revisionId: string; createdAt: string;
+      items: Array<{ original: Record<string, unknown>; targetArtifactPath: string; cliPlan: Record<string, unknown> }>
+    }
+    candidate.items[1]!.original.preset = 'cover-minimal'
+    candidate.items[1]!.cliPlan.preset = 'cover-minimal'
+    candidate.items[1]!.cliPlan.prompt = 'Prepared minimal prompt'
+    candidate.planId = canonicalImagePlanId(revisionId, candidate.items)
+    const candidatePath = `revisions/${revisionId}/plans/${candidate.planId}.json`
+    await store.writeAtomic(candidatePath, encodeCanonical(candidate))
+    approval = 'rejected'
+    const gateway = new Gateway()
+    const tool = createGenerateImagesTool(dependencies(gateway))
+    await expect(tool.execute({ manifestPath, planPaths: [candidatePath] }, exec())).rejects.toThrow('could not be prepared')
+    expect(gateway.calls).toHaveLength(0); expect(approvals).toHaveLength(0); expect(resolved).toHaveLength(0); expect(starts).toHaveLength(0)
+
+    const copiedPath = `revisions/${revisionId}/plans/${'f'.repeat(64)}.json`
+    await store.writeAtomic(copiedPath, sourceBytes)
+    await expect(tool.execute({ manifestPath, planPaths: [copiedPath] }, exec())).rejects.toThrow('could not be prepared')
+    expect(gateway.calls).toHaveLength(0); expect(approvals).toHaveLength(0)
+
+    const changedPublished = JSON.parse(decoder.decode(sourceBytes)) as Record<string, unknown>
+    changedPublished.createdAt = '2026-08-25T04:00:01.000Z'
+    await store.writeAtomic(sourcePath, encodeCanonical(changedPublished))
+    await expect(tool.execute({ manifestPath, planPaths: [sourcePath] }, exec())).rejects.toThrow('could not be prepared')
+    expect(gateway.calls).toHaveLength(0); expect(approvals).toHaveLength(0)
+  })
+
+  it('rejects a changed private trust record before any CLI, approval, credentials, or job work', async () => {
+    const planId = basename(planPath, '.json')
+    const trustPath = join(workspace, `.dsh/md2wechat/.trusted/image-plans/${revisionId}/${planId}.json`)
+    await writeFile(trustPath, encodeCanonical({ schemaVersion: 1, planId, revisionId, changed: true }))
+    approval = 'rejected'
+    const gateway = new Gateway()
+    const tool = createGenerateImagesTool(dependencies(gateway))
+    await expect(tool.execute({ manifestPath, planPaths: [planPath] }, exec())).rejects.toThrow('could not be prepared')
+    expect(gateway.calls).toHaveLength(0); expect(approvals).toHaveLength(0); expect(resolved).toHaveLength(0); expect(starts).toHaveLength(0)
   })
 
   it('rejects recomputed plans that replace approved prompt, preset, or aspect before approval or work', async () => {
@@ -225,7 +292,7 @@ describe('md2wechat_generate_images', () => {
       mutate(candidate.items)
       candidate.planId = canonicalImagePlanId(revisionId, candidate.items)
       const candidatePath = `revisions/${revisionId}/plans/${candidate.planId}.json`
-      await store.writeAtomic(candidatePath, encodeCanonical(candidate))
+      await publishTrustedPlan(candidatePath, candidate.planId, candidate.items, candidate)
       const gateway = new Gateway()
       const tool = createGenerateImagesTool(dependencies(gateway))
       await expect(tool.execute({ manifestPath, planPaths: [candidatePath] }, exec())).rejects.toThrow('could not be prepared')

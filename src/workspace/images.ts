@@ -14,6 +14,7 @@ const MAX_PLAN_BYTES = 1024 * 1024
 const MAX_PLAN_ITEMS = 128
 const MAX_PLAN_ARRAY_ITEMS = 128
 const MAX_PLAN_STRING_BYTES = 16 * 1024
+const MAX_PLAN_TRUST_BYTES = 2 * 1024 * 1024
 const BUNDLED_PRESET_DEFAULT_ASPECT = new Map<string, string>([
   ['cover-claude-warm', '21:9'], ['cover-data-visual', '16:9'], ['cover-default', '16:9'],
   ['cover-editorial', '16:9'], ['cover-editorial-collage', '21:9'], ['cover-hero', '16:9'],
@@ -63,6 +64,17 @@ export interface LoadedImagePlan {
   readonly contentSha256: string
   readonly items: readonly LoadedImagePlanItem[]
   readonly canonicalItems: readonly JsonValue[]
+}
+
+interface ImagePlanTrustRecord {
+  readonly schemaVersion: 1
+  readonly workspaceIdentity: string
+  readonly revisionId: string
+  readonly planId: string
+  readonly planPath: string
+  readonly planIdentity: string
+  readonly planSha256: string
+  readonly items: readonly JsonValue[]
 }
 
 /** Immutable completed-image record, including item identity and safe WeChat metadata. */
@@ -147,6 +159,43 @@ export function canonicalImagePlanId(revisionId: string, items: unknown): string
   return sha256(encoder.encode(canonicalJson({ revisionId, items })))
 }
 
+/**
+ * Register the exact plan published by Task 5 in plugin-owned persistent metadata.
+ * @param store - Workspace artifact store that owns the private trust namespace.
+ * @param plan - Published plan identity and canonical item projection.
+ * @param signal - Optional cancellation signal.
+ */
+export async function registerImagePlanTrust(
+  store: ArtifactStore,
+  plan: { readonly path: string; readonly planId: string; readonly revisionId: string; readonly items: readonly JsonValue[] },
+  signal?: AbortSignal,
+): Promise<void> {
+  const record = await createImagePlanTrustRecord(store, plan, signal)
+  const bytes = encodeCanonical(record)
+  const key = imagePlanTrustKey(plan.revisionId, plan.planId)
+  try {
+    await store.createTrustedRecord(key, bytes, signal)
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ARTIFACT_EXISTS')) throw error
+    const existing = await store.readTrustedRecord(key, MAX_PLAN_TRUST_BYTES, signal)
+    if (!Buffer.from(existing).equals(Buffer.from(bytes))) throw new Error('existing image plan trust record conflicts with the published plan')
+  }
+}
+
+/**
+ * Require a loaded Task 7 plan to match the persistent record created only by Task 5.
+ * @param store - Workspace artifact store that owns the private trust namespace.
+ * @param plan - Strictly loaded plan and its actual published byte hash.
+ * @param signal - Optional cancellation signal.
+ */
+export async function verifyImagePlanTrust(store: ArtifactStore, plan: LoadedImagePlan, signal?: AbortSignal): Promise<void> {
+  const expected = encodeCanonical(await createImagePlanTrustRecord(store, {
+    path: plan.path, planId: plan.planId, revisionId: plan.revisionId, items: plan.canonicalItems,
+  }, signal))
+  const actual = await store.readTrustedRecord(imagePlanTrustKey(plan.revisionId, plan.planId), MAX_PLAN_TRUST_BYTES, signal)
+  if (!Buffer.from(actual).equals(Buffer.from(expected))) throw new Error('image plan does not match its trusted Task 5 publication')
+}
+
 /** Load and authenticate one immutable Task 5 image plan. */
 export async function loadImagePlan(
   store: ArtifactStore,
@@ -227,6 +276,25 @@ export async function loadImagePlan(
   })
   if (canonicalImagePlanId(revisionId, canonicalItems) !== planId) throw new Error('image plan ID does not match its canonical payload')
   return { schemaVersion: 1, planId, revisionId, createdAt, path: planPath, contentSha256: sha256(planBytes), items, canonicalItems }
+}
+
+async function createImagePlanTrustRecord(
+  store: ArtifactStore,
+  plan: { readonly path: string; readonly planId: string; readonly revisionId: string; readonly items: readonly JsonValue[] },
+  signal?: AbortSignal,
+): Promise<ImagePlanTrustRecord> {
+  const planBytes = await store.readBounded(plan.path, MAX_PLAN_BYTES, signal)
+  const workspaceIdentity = sha256(encoder.encode(await store.canonicalIdentity('revisions', signal)))
+  const planIdentity = sha256(encoder.encode(await store.canonicalIdentity(plan.path, signal)))
+  return {
+    schemaVersion: 1, workspaceIdentity, revisionId: plan.revisionId, planId: plan.planId, planPath: plan.path,
+    planIdentity, planSha256: sha256(planBytes), items: plan.items,
+  }
+}
+
+function imagePlanTrustKey(revisionId: string, planId: string): string {
+  if (!HASH_PATTERN.test(revisionId) || !HASH_PATTERN.test(planId)) throw new TypeError('image plan trust identity is invalid')
+  return `image-plans/${revisionId}/${planId}.json`
 }
 
 /** Parse and verify one completed image result against current artifact bytes. */

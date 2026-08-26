@@ -573,10 +573,18 @@ describe('article preparation tools', () => {
     expect(value.planPath).toBe(`revisions/${value.revisionId}/plans/${value.planId}.json`)
     expect(value.items).toHaveLength(4)
     expect(value.locations).toContain(value.planPath)
+    expect(JSON.stringify(result)).not.toContain('.trusted')
     const persisted = JSON.parse(decoder.decode(await store.read(value.planPath))) as { items: Array<Record<string, unknown>> }
     expect(persisted.items[0]).toMatchObject({ original: images[0], cliPlan: { mode: 'plan', side_effects: false } })
     expect(persisted.items[3]).toMatchObject({ original: { targetPath: 'images/info.png' } })
     expect(JSON.stringify(persisted)).not.toContain(workspace)
+    const trustKey = `image-plans/${value.revisionId}/${value.planId}.json`
+    const trusted = await store.readTrustedRecord(trustKey, 1024 * 1024)
+    expect(JSON.parse(decoder.decode(trusted))).toMatchObject({
+      schemaVersion: 1, revisionId: value.revisionId, planId: value.planId, planPath: value.planPath, items: persisted.items,
+    })
+    const originalWorkspaceIdentity = (JSON.parse(decoder.decode(trusted)) as { workspaceIdentity: string }).workspaceIdentity
+    expect(originalWorkspaceIdentity).toMatch(/^[a-f0-9]{64}$/u)
     const articleProcessPath = await realpath(store.resolve(manifestPath.replace('manifest.json', 'article.md')))
     expect(gateway.calls.map(call => call.argv)).toEqual([
       ['generate_image', 'A mountain', '--aspect', '1:1', '--plan', '--json'],
@@ -596,6 +604,7 @@ describe('article preparation tools', () => {
 
     const repeated = await execute(ctx, 'md2wechat_plan_images', { manifestPath, images })
     expect(repeated.value).toEqual(result.value)
+    expect(await store.readTrustedRecord(trustKey, 1024 * 1024)).toEqual(trusted)
 
     const movedWorkspace = join(temporary, 'moved-workspace')
     await mkdir(movedWorkspace)
@@ -620,6 +629,10 @@ describe('article preparation tools', () => {
     expect((movedPlan.value as { planId: string }).planId).toBe(value.planId)
     const movedPlanPath = (movedPlan.value as { planPath: string }).planPath
     expect(decoder.decode(await movedStore.read(movedPlanPath))).not.toContain(movedWorkspace)
+    const movedTrust = JSON.parse(decoder.decode(await movedStore.readTrustedRecord(
+      `image-plans/${value.revisionId}/${value.planId}.json`, 1024 * 1024,
+    ))) as { workspaceIdentity: string }
+    expect(movedTrust.workspaceIdentity).not.toBe(originalWorkspaceIdentity)
     await movedPlanContext.dispose()
     await movedStart.dispose()
   })

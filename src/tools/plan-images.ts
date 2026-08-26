@@ -4,6 +4,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-tools'
 import type { CliGateway } from '../cli/gateway.ts'
 import { validateArtifactId, validateArtifactRelativePath } from '../workspace/artifact-store.ts'
 import type { ArtifactStore } from '../workspace/artifact-store.ts'
+import { registerImagePlanTrust } from '../workspace/images.ts'
 import { domainResult, genericCall, genericResult } from './shared.ts'
 import { loadCurrentArticleRevision } from './improve-article.ts'
 
@@ -100,6 +101,7 @@ export function createPlanImagesTool({
         items,
       }
       await writeStablePlan(store, planPath, persisted, exec.signal)
+      await registerImagePlanTrust(store, { path: planPath, planId, revisionId: current.revision.id, items }, exec.signal)
       return domainResult({
         revisionId: current.revision.id,
         manifestPath: current.manifestPath,
