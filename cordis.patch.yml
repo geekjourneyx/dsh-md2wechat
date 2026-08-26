@@ -1,0 +1,10 @@
+- insert:
+    - id: dsh-md2wechat
+      name: '@geekjourneyx/dsh-md2wechat'
+      config:
+        binaryPath: !!js process.env.MD2WECHAT_BINARY_PATH
+        credentialRefs:
+          MD2WECHAT_API_KEY: MD2WECHAT_API_KEY
+          WECHAT_APPID: WECHAT_APPID
+          WECHAT_SECRET: WECHAT_SECRET
+          IMAGE_API_KEY: IMAGE_API_KEY

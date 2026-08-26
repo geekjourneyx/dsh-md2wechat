@@ -19,7 +19,8 @@ export default defineConfig({
   platform: 'node',
   target: 'es2024',
   fixedExtension: false,
-  dts: true,
+  dts: false,
+  clean: false,
   deps: {
     neverBundle: EXTERNAL_PEERS,
   },
