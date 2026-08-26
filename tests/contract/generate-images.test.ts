@@ -277,6 +277,37 @@ describe('md2wechat_generate_images', () => {
     expect(gateway.calls).toHaveLength(0); expect(approvals).toHaveLength(0); expect(resolved).toHaveLength(0); expect(starts).toHaveLength(0)
   })
 
+  it('authenticates every plan in a batch before replaying any CLI projection', async () => {
+    const trustedPresetPlan = await installRealSourceExecutionPlan()
+    const target = 'images/untrusted-batch.png'
+    const items = [{
+      original: { id: 'untrusted-batch', kind: 'image', prompt: 'Untrusted batch prompt', targetPath: target },
+      targetArtifactPath: `revisions/${revisionId}/${target}`,
+      cliPlan: {
+        mode: 'plan', command: 'generate_image', execution_owner: 'host_agent', side_effects: false,
+        requires_provider: false, requires_image_api_key: false, prompt: 'Untrusted batch prompt',
+        raw_prompt: 'Untrusted batch prompt', preset: '', archetype: '', primary_use_case: '',
+        compatible_use_cases: [], recommended_aspect_ratios: [], default_aspect_ratio: '', article: '',
+        title: '', summary: '', keywords: '', style: '', aspect: '', size: '', model_hint: '',
+        suggested_filename: '', alt_text: '',
+      },
+    }]
+    const planId = canonicalImagePlanId(revisionId, items)
+    const untrustedPath = `revisions/${revisionId}/plans/${planId}.json`
+    await store.createExclusive(untrustedPath, encodeCanonical({
+      schemaVersion: 1, planId, revisionId, createdAt: now.toISOString(), items,
+    }))
+
+    const gateway = new Gateway()
+    const tool = createGenerateImagesTool(dependencies(gateway))
+    await expect(tool.execute({ manifestPath, planPaths: [trustedPresetPlan, untrustedPath] }, exec()))
+      .rejects.toThrow('could not be prepared')
+    expect(gateway.calls).toHaveLength(0)
+    expect(approvals).toHaveLength(0)
+    expect(resolved).toHaveLength(0)
+    expect(starts).toHaveLength(0)
+  })
+
   it('rejects recomputed plans that replace approved prompt, preset, or aspect before approval or work', async () => {
     const sourcePath = await installRealSourceExecutionPlan()
     const source = JSON.parse(decoder.decode(await store.read(sourcePath))) as {

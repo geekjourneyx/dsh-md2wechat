@@ -328,6 +328,7 @@ async function prepareBatch(gateway: CliGateway, store: ArtifactStore, state: Im
   const planIds = new Set<string>()
   const itemIds = new Set<string>()
   const targets = new Set<string>()
+  let itemCount = 0
   for (const path of planPaths) {
     const plan = await loadImagePlan(store, path, current.revision.id, current.articlePath, signal)
     const planBytes = await store.readBounded(path, MAX_PLAN_INPUT_BYTES, signal)
@@ -343,11 +344,18 @@ async function prepareBatch(gateway: CliGateway, store: ArtifactStore, state: Im
       const targetKey = item.targetPath.normalize('NFC').toLowerCase()
       if (itemIds.has(itemKey) || [...targets].some(existing => targetKey === existing || targetKey.startsWith(`${existing}/`) || existing.startsWith(`${targetKey}/`))) throw new Error('duplicate image plan item or target alias')
       itemIds.add(itemKey); targets.add(targetKey)
+      itemCount += 1
+      if (itemCount > MAX_BATCH_ITEMS) throw new Error('image generation batch contains too many items')
+    }
+  }
+  const authenticated = await loadCurrentArticleRevision(store, manifestPath, signal)
+  if (authenticated.revision.id !== current.revision.id) throw new Error('article revision changed while authenticating image plans')
+  for (const plan of plans) {
+    for (const item of plan.items) {
       await verifyPresetProjection(gateway, current, item, signal)
       const result = await loadVerifiedImageResult(store, plan, item, signal)
       if (result === undefined) remaining.push({ plan, item })
       else completedPaths.push(imageResultPath(plan, item))
-      if (remaining.length + completedPaths.length > MAX_BATCH_ITEMS) throw new Error('image generation batch contains too many items')
     }
   }
   const verified = await loadCurrentArticleRevision(store, manifestPath, signal)

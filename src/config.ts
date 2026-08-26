@@ -124,7 +124,9 @@ export function resolveConfig(input: Config): ResolvedConfig {
 
   const artifactsDir = optionalString(value.artifactsDir, DEFAULT_ARTIFACTS_DIR, 'artifactsDir must be a string')
   if (!isSessionWorkspacePath(artifactsDir)) throw new TypeError('artifactsDir must stay within the session workspace')
-  const stateDir = optionalString(value.stateDir, defaultStateDir(), 'stateDir must be a string')
+  const stateDir = value.stateDir === undefined
+    ? defaultStateDir()
+    : requiredString(value.stateDir, 'stateDir must be a string')
   if (!isAbsolute(stateDir)) throw new TypeError('stateDir must be an absolute path')
 
   return {

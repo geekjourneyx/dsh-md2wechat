@@ -31,6 +31,11 @@ describe('resolveConfig', () => {
     expect(() => resolveConfig(valid)).toThrow('DSH_HOME must be an absolute path')
   })
 
+  it('does not evaluate DSH_HOME when an explicit absolute state directory is supplied', () => {
+    vi.stubEnv('DSH_HOME', 'workspace-home')
+    expect(resolveConfig({ ...valid, stateDir: '/var/lib/dsh-md2wechat' }).stateDir).toBe('/var/lib/dsh-md2wechat')
+  })
+
   it('rejects a non-positive foreground timeout', () => {
     expect(() => resolveConfig({ ...valid, foregroundTimeoutMs: 0 })).toThrow('positive integer')
   })
