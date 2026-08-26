@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { lstatSync, mkdirSync, readFileSync, renameSync, type Stats } from 'node:fs'
 import { open, link, lstat, mkdir, rename, rm, rmdir } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -10,9 +11,11 @@ const windowsDeviceName = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/iu
 /** Native publication hooks used only to inject storage-boundary failures in tests. */
 export interface ArtifactStoreInternals {
   rename?: (source: string, destination: string) => Promise<void>
+  renameAuthorizedSync?: (source: string, destination: string) => void
   link?: (source: string, destination: string) => Promise<void>
   beforeNativeStage?: (paths: { destinationPath: string; directoryPath: string }) => void | Promise<void>
   beforeNativeCommit?: (paths: { destinationPath: string; tempPath: string }) => void | Promise<void>
+  beforeExportDirectoryCreate?: (paths: { parentPath: string; destinationPath: string }) => void | Promise<void>
   afterExclusiveStage?: (paths: { destinationPath: string; tempPath: string; directoryPath: string }) => void | Promise<void>
   beforeExclusiveLink?: (paths: { destinationPath: string; tempPath: string }) => void | Promise<void>
 }
@@ -393,17 +396,15 @@ export class ArtifactStore {
         if (currentDestination.targetKey !== destinationBinding.targetKey || currentParent.targetKey !== parentBinding.targetKey) throw new Error('export destination or parent changed after approval')
         await requireSameNativeState(this.fs.processPath(currentDestination), destinationBinding.native, 'export destination')
         await requireSameNativeState(this.fs.processPath(currentParent), parentBinding.native, 'export destination parent')
-        await requireMissingAncestry(ancestorBinding, 'export destination parent')
         const currentNative = await optionalNativeIdentity(this.fs.processPath(currentDestination), 'export destination')
         if (sameNativeIdentity(sourceBinding.native, currentNative)) throw new Error('copy source and destination are hard-link aliases')
-        await mkdir(dirname(this.fs.processPath(currentDestination)), { recursive: true })
+        const createdParentNative = await this.createExportDirectories(ancestorBinding, commitSignal)
         currentDestination = await this.fs.resolve(destinationAbsolute, resolveOptions(commitSignal))
         currentParent = await this.fs.resolve(dirname(this.fs.processPath(currentDestination)), resolveOptions(commitSignal))
         if (currentDestination.targetKey !== destinationBinding.targetKey || currentParent.targetKey !== parentBinding.targetKey) throw new Error('export destination or parent changed during commit')
         await requireSameNativeState(ancestorBinding.path, ancestorBinding.native, 'export destination ancestor')
-        const commitParentNative = await optionalNativeIdentity(this.fs.processPath(currentParent), 'export destination parent')
-        if (commitParentNative?.kind !== 'directory') throw new Error('export destination parent must be a directory')
-        await this.publishAuthorized({ target: currentDestination, parent: currentParent }, bytes, commitSignal, destinationBinding.native, commitParentNative, async () => {
+        await requireSameNativeState(this.fs.processPath(currentParent), createdParentNative, 'export destination parent')
+        await this.publishAuthorized({ target: currentDestination, parent: currentParent }, bytes, commitSignal, destinationBinding.native, createdParentNative, async () => {
           await this.revalidateCopySource(sourceRelative, sourceBinding, expectedSha256, commitSignal)
         })
         const published = await this.fs.resolve(destinationAbsolute, resolveOptions(commitSignal))
@@ -412,6 +413,30 @@ export class ArtifactStore {
         if (sha256(publishedBytes) !== expectedSha256) throw new Error('export destination bytes changed during commit')
       },
     }
+  }
+
+  private async createExportDirectories(binding: ExistingAncestorBinding, signal?: AbortSignal): Promise<NativeIdentity> {
+    let parentPath = binding.path
+    let parentNative = binding.native
+    for (const segment of binding.missingSegments) {
+      signal?.throwIfAborted()
+      requireSameNativeStateSync(parentPath, parentNative, 'export destination ancestor')
+      const destinationPath = join(parentPath, segment)
+      await this.internals.beforeExportDirectoryCreate?.({ parentPath, destinationPath })
+      signal?.throwIfAborted()
+      requireSameNativeStateSync(parentPath, parentNative, 'export destination ancestor')
+      try {
+        mkdirSync(destinationPath)
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'EEXIST') throw new Error('export destination directory appeared during commit')
+        throw error
+      }
+      const created = requireNativeDirectoryIdentitySync(destinationPath, 'export destination parent')
+      requireSameNativeStateSync(parentPath, parentNative, 'export destination ancestor')
+      parentPath = destinationPath
+      parentNative = created
+    }
+    return parentNative
   }
 
   /**
@@ -611,20 +636,41 @@ export class ArtifactStore {
       await handle.sync()
       await handle.close()
       handle = undefined
+      const stagedTempNative = await requireNativeFileIdentity(this.fs.processPath(tempTarget), 'export temporary file')
       signal?.throwIfAborted()
       await this.internals.beforeNativeCommit?.({ destinationPath: destination, tempPath: temp })
       await prepareCommit()
       const current = await this.revalidateBinding(binding, signal)
       const currentTemp = await this.revalidateTemp(temp, tempTarget, binding.parent, undefined, signal)
-      await requireSameNativeState(this.fs.processPath(current.parent), parentNative, 'export destination parent')
-      await requireSameNativeState(this.fs.processPath(current.target), destinationNative, 'export destination')
-      await (this.internals.rename ?? rename)(this.fs.processPath(currentTemp), this.fs.processPath(current.target))
+      this.commitAuthorizedSync(currentTemp, current, stagedTempNative, destinationNative, parentNative, bytes)
     } catch (error) {
       let failure: unknown = error
       if (handle !== undefined) failure = await closeAfterFailure(handle, failure)
       try { if (tempTarget !== undefined) await this.cleanupBoundTemp(temp, tempTarget, binding.parent) } catch (cleanupError) { failure = new AggregateError([failure, cleanupError], 'artifact export and temporary cleanup both failed') }
       throw failure
     }
+  }
+
+  private commitAuthorizedSync(
+    temp: FsTarget,
+    binding: PublicationBinding,
+    tempNative: NativeIdentity,
+    destinationNative: NativeIdentity | undefined,
+    parentNative: NativeIdentity,
+    expectedBytes: Uint8Array,
+  ): void {
+    const tempPath = this.fs.processPath(temp)
+    const tempInfo = lstatSync(tempPath)
+    if (!tempInfo.isFile() || tempInfo.isSymbolicLink() || !sameNativeIdentity(tempNative, nativeIdentity(tempInfo))) throw new Error('export temporary file identity changed before commit')
+    if (tempInfo.size !== expectedBytes.byteLength) throw new Error('export temporary file bytes changed before commit')
+    const currentBytes = readFileSync(tempPath)
+    if (sha256(currentBytes) !== sha256(expectedBytes)) throw new Error('export temporary file bytes changed before commit')
+    const parentPath = this.fs.processPath(binding.parent)
+    const destinationPath = this.fs.processPath(binding.target)
+    requireSameNativeStateSync(parentPath, parentNative, 'export destination parent')
+    requireSameNativeStateSync(destinationPath, destinationNative, 'export destination')
+    const commit = this.internals.renameAuthorizedSync ?? renameSync
+    commit(tempPath, destinationPath)
   }
 
   private async revalidateCopySource(
@@ -812,25 +858,43 @@ async function bindExistingAncestor(path: string, field: string): Promise<Existi
   }
 }
 
-async function requireMissingAncestry(binding: ExistingAncestorBinding, field: string): Promise<void> {
-  await requireSameNativeState(binding.path, binding.native, `${field} ancestor`)
-  let current = binding.path
-  for (const segment of binding.missingSegments) {
-    current = join(current, segment)
-    if (await optionalNativeIdentity(current, field) !== undefined) throw new Error(`${field} missing path changed after approval`)
-  }
-}
-
 async function optionalNativeIdentity(path: string, field: string): Promise<NativeIdentity | undefined> {
   try {
     const info = await lstat(path)
     if (info.isSymbolicLink()) throw new Error(`${field} must not be a symlink or reparse alias`)
     if (!info.isFile() && !info.isDirectory()) throw new Error(`${field} must be a regular file or directory`)
-    return { dev: info.dev, ino: info.ino, kind: info.isFile() ? 'file' : 'directory' }
+    return nativeIdentity(info)
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined
     throw error
   }
+}
+
+function optionalNativeIdentitySync(path: string, field: string): NativeIdentity | undefined {
+  try {
+    const info = lstatSync(path)
+    if (info.isSymbolicLink()) throw new Error(`${field} must not be a symlink or reparse alias`)
+    if (!info.isFile() && !info.isDirectory()) throw new Error(`${field} must be a regular file or directory`)
+    return nativeIdentity(info)
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined
+    throw error
+  }
+}
+
+function requireNativeDirectoryIdentitySync(path: string, field: string): NativeIdentity {
+  const identity = optionalNativeIdentitySync(path, field)
+  if (identity?.kind !== 'directory') throw new Error(`${field} must be a directory`)
+  return identity
+}
+
+function requireSameNativeStateSync(path: string, expected: NativeIdentity | undefined, field: string): void {
+  const current = optionalNativeIdentitySync(path, field)
+  if (expected === undefined ? current !== undefined : !sameNativeIdentity(expected, current) || current?.kind !== expected.kind) throw new Error(`${field} identity changed before commit`)
+}
+
+function nativeIdentity(info: Stats): NativeIdentity {
+  return { dev: info.dev, ino: info.ino, kind: info.isFile() ? 'file' : 'directory' }
 }
 
 async function requireNativeFileIdentity(path: string, field: string): Promise<NativeIdentity> {

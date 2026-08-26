@@ -111,9 +111,25 @@ describe('md2wechat_export', () => {
     await expect(readFile(destinationPath)).rejects.toMatchObject({ code: 'ENOENT' }); await expect(readFile(join(moved, 'new', 'article.html'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
+  it.each(['content', 'identity'] as const)('never publishes a temporary file whose %s changes after the commit hook', async mutation => {
+    const destinationPath = join(temporary, `temp-${mutation}-race.html`); await writeFile(destinationPath, 'approved target')
+    const selected = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat', { async beforeNativeCommit({ tempPath }) { if (mutation === 'identity') await rm(tempPath); await writeFile(tempPath, 'unverified bytes') } })
+    await expect(createExportTool(deps(selected)).execute({ manifestPath, previewReceiptId: receiptId, destinationPath }, exec())).rejects.toThrow('failed')
+    expect(await readFile(destinationPath, 'utf8')).toBe('approved target')
+  })
+
+  it.each(['symlink', 'directory'] as const)('rejects a %s inserted at an exclusively created destination segment', async race => {
+    const parent = join(temporary, `${race}-segment-parent`); const segment = join(parent, 'new'); const redirected = join(temporary, `${race}-redirected`); await mkdir(parent); await mkdir(redirected); let raced = false
+    const canonicalSegment = join(await realpath(parent), 'new')
+    const destinationPath = join(segment, 'article.html')
+    const selected = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat', { async beforeExportDirectoryCreate(paths) { if (paths.destinationPath !== canonicalSegment) return; raced = true; if (race === 'symlink') await symlink(redirected, segment); else await mkdir(segment) } })
+    await expect(createExportTool(deps(selected)).execute({ manifestPath, previewReceiptId: receiptId, destinationPath }, exec())).rejects.toThrow('failed')
+    expect(raced).toBe(true); await expect(readFile(destinationPath)).rejects.toMatchObject({ code: 'ENOENT' }); await expect(readFile(join(redirected, 'article.html'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('leaves no partial destination when the final atomic write fails', async () => {
     const destinationPath = join(temporary, 'write-failure.html')
-    const selected = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat', { rename: async () => { throw new Error('injected write failure') } })
+    const selected = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat', { renameAuthorizedSync: () => { throw new Error('injected write failure') } })
     await expect(createExportTool(deps(selected)).execute({ manifestPath, previewReceiptId: receiptId, destinationPath }, exec())).rejects.toThrow('failed')
     await expect(readFile(destinationPath)).rejects.toMatchObject({ code: 'ENOENT' })
   })
