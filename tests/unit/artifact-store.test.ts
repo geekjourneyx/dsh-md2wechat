@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, stat, symlink, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -124,47 +124,6 @@ describe('ArtifactStore', () => {
     await expect(store.createExclusive('claims/item.json', new TextEncoder().encode('replacement')))
       .rejects.toMatchObject({ code: 'ARTIFACT_EXISTS' })
     await expect(readFile(store.resolve('claims/item.json'), 'utf8')).resolves.toBe(published)
-  })
-
-  it('reserves private trust records from artifact APIs and rejects permission anomalies across restarts', async () => {
-    const bytes = new TextEncoder().encode('trusted plan')
-    const key = `image-plans/${'a'.repeat(64)}/${'b'.repeat(64)}.json`
-    await store.createTrustedRecord(key, bytes)
-    const restarted = new ArtifactStore(store.fs, workspace, '.dsh/md2wechat')
-    expect(Array.from(await restarted.readTrustedRecord(key, 1024))).toEqual(Array.from(bytes))
-    expect(() => store.resolve(`.trusted/${key}`)).toThrow('reserved')
-    await expect(store.read(`.trusted/${key}`)).rejects.toThrow('reserved')
-    await expect(store.readBounded(`.trusted/${key}`, 1024)).rejects.toThrow('reserved')
-    await expect(store.authorizeRead(`.trusted/${key}`, createHash('sha256').update(bytes).digest('hex'))).rejects.toThrow('reserved')
-    await expect(store.writeAtomic(`.trusted/${key}`, bytes)).rejects.toThrow('reserved')
-    await expect(store.writeAtomic(`.TRUSTED/${key}`, bytes)).rejects.toThrow('reserved')
-    await expect(store.writeIdenticalOrNew(`.trusted/${key}`, bytes)).rejects.toThrow('reserved')
-    await expect(store.createExclusive(`.trusted/${key}`, bytes)).rejects.toThrow('reserved')
-    await expect(store.removeIfMatching(`.trusted/${key}`, createHash('sha256').update(bytes).digest('hex'))).rejects.toThrow('reserved')
-    await expect(store.assertContainedWithin('revisions', `.trusted/${key}`)).rejects.toThrow('reserved')
-    const copySource = join(temporary, 'copy-source.txt')
-    await writeFile(copySource, bytes)
-    await expect(store.copyIn(copySource, `.trusted/${key}`)).rejects.toThrow('reserved')
-    await expect(store.copyOut(`.trusted/${key}`, join(temporary, 'leak.json'))).rejects.toThrow('reserved')
-    await expect(store.stageOutput(`.trusted/${key}`)).rejects.toThrow('reserved')
-    await expect(store.canonicalIdentity(`.trusted/${key}`)).rejects.toThrow('reserved')
-
-    const privateRoot = join(workspace, '.dsh/md2wechat/.trusted')
-    expect((await stat(privateRoot)).mode & 0o077).toBe(0)
-    const recordPath = join(privateRoot, key)
-    expect((await stat(recordPath)).mode & 0o077).toBe(0)
-    await chmod(recordPath, 0o644)
-    await expect(restarted.readTrustedRecord(key, 1024)).rejects.toThrow('permissions')
-    await chmod(recordPath, 0o600)
-    await chmod(privateRoot, 0o755)
-    await expect(restarted.readTrustedRecord(key, 1024)).rejects.toThrow('permissions')
-    await chmod(privateRoot, 0o700)
-
-    const siblingKey = `image-plans/${'a'.repeat(64)}/${'c'.repeat(64)}.json`
-    await store.createTrustedRecord(siblingKey, bytes)
-    await rm(recordPath)
-    await symlink(join(privateRoot, siblingKey), recordPath)
-    await expect(restarted.readTrustedRecord(key, 1024)).rejects.toThrow('regular file')
   })
 
   it('publishes exclusive artifacts only after a complete fsynced private file and cleans interrupted staging', async () => {

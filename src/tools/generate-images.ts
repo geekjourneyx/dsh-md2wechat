@@ -8,6 +8,7 @@ import type { CliGateway } from '../cli/gateway.ts'
 import { resolveOperationEnv } from '../security/credentials.ts'
 import type { OperationCredentialServices } from '../security/credentials.ts'
 import type { ArtifactPublicationOwnership, ArtifactStore } from '../workspace/artifact-store.ts'
+import type { ImagePlanStateStore } from '../workspace/image-plan-state.ts'
 import {
   acquireImageClaim,
   acquireRemoteImage,
@@ -17,7 +18,6 @@ import {
   loadImagePlan,
   loadVerifiedImageResult,
   releaseImageClaim,
-  verifyImagePlanTrust,
   validatePlannedImageTarget,
   validateRemoteImageUrl,
 } from '../workspace/images.ts'
@@ -44,6 +44,7 @@ const JOB_KIND = 'md2wechat-image'
 const JOB_OUTPUT_LIMIT_BYTES = 16 * 1024
 const MAX_PLAN_PATHS = 32
 const MAX_BATCH_ITEMS = 128
+const MAX_PLAN_INPUT_BYTES = 1024 * 1024
 const REQUIRED_CREDENTIALS = ['IMAGE_API_KEY', 'WECHAT_APPID', 'WECHAT_SECRET'] as const satisfies readonly CredentialEnvironmentName[]
 
 interface PreparedBatch {
@@ -57,6 +58,7 @@ interface PreparedBatch {
 export interface GenerateImagesToolDependencies {
   gateway: CliGateway
   store: ArtifactStore
+  state: ImagePlanStateStore
   credentialRefs: OperationCredentialServices['credentialRefs']
   credentials: OperationCredentialServices['credentials']
   approval: Pick<Context['approval'], 'request'>
@@ -76,6 +78,7 @@ export interface GenerateImagesToolDependencies {
 export function createGenerateImagesTool({
   gateway,
   store,
+  state,
   credentialRefs,
   credentials,
   approval,
@@ -96,7 +99,8 @@ export function createGenerateImagesTool({
   positiveInteger(imageAcquisitionTimeoutMs, 'image acquisition timeout')
   if (typeof jobs.start !== 'function' || typeof jobs.get !== 'function') throw new TypeError('background job registry is required')
   if (typeof gateway.run !== 'function') throw new TypeError('CLI gateway is required')
-  if (typeof store.read !== 'function' || typeof store.createExclusive !== 'function' || typeof store.readTrustedRecord !== 'function') throw new TypeError('artifact store is required')
+  if (typeof store.read !== 'function' || typeof store.createExclusive !== 'function') throw new TypeError('artifact store is required')
+  if (typeof state.initialize !== 'function' || typeof state.verify !== 'function') throw new TypeError('external image plan state store is required')
   if (typeof credentials.resolve !== 'function') throw new TypeError('credential resolver is required')
   if (typeof approval.request !== 'function') throw new TypeError('approval service is required')
   if (typeof reportAuditFailure !== 'function') throw new TypeError('image audit failure reporter is required')
@@ -131,7 +135,7 @@ export function createGenerateImagesTool({
         assertKnownArguments(args, ['manifestPath', 'planPaths'])
         exec.signal.throwIfAborted()
         const planPaths = validatePlanPaths(args.planPaths)
-        const prepared = await prepareBatch(gateway, store, args.manifestPath, planPaths, exec.signal)
+        const prepared = await prepareBatch(gateway, store, state, args.manifestPath, planPaths, exec.signal)
         const planIds = prepared.plans.map(plan => plan.planId)
         if (prepared.remaining.length === 0) {
           return domainResult({ kind: 'completed' as const, planIds, resultPaths: [...prepared.completedPaths] })
@@ -315,7 +319,8 @@ async function processImageItem(input: RunBatchInput, plan: LoadedImagePlan, ite
   }
 }
 
-async function prepareBatch(gateway: CliGateway, store: ArtifactStore, manifestPath: string, planPaths: readonly string[], signal: AbortSignal): Promise<PreparedBatch> {
+async function prepareBatch(gateway: CliGateway, store: ArtifactStore, state: ImagePlanStateStore, manifestPath: string, planPaths: readonly string[], signal: AbortSignal): Promise<PreparedBatch> {
+  await state.initialize(store, false, signal)
   const current = await loadCurrentArticleRevision(store, manifestPath, signal)
   const plans: LoadedImagePlan[] = []
   const remaining: Array<{ plan: LoadedImagePlan; item: LoadedImagePlanItem }> = []
@@ -325,7 +330,11 @@ async function prepareBatch(gateway: CliGateway, store: ArtifactStore, manifestP
   const targets = new Set<string>()
   for (const path of planPaths) {
     const plan = await loadImagePlan(store, path, current.revision.id, current.articlePath, signal)
-    await verifyImagePlanTrust(store, plan, signal)
+    const planBytes = await store.readBounded(path, MAX_PLAN_INPUT_BYTES, signal)
+    if (createHash('sha256').update(planBytes).digest('hex') !== plan.contentSha256) throw new Error('image plan changed while it was being authenticated')
+    await state.verify(store, {
+      planPath: plan.path, planId: plan.planId, revisionId: plan.revisionId, items: plan.canonicalItems, planBytes,
+    }, signal)
     if (planIds.has(plan.planId)) throw new Error('duplicate image plan IDs are not allowed')
     planIds.add(plan.planId)
     plans.push(plan)

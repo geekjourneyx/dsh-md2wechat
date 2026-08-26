@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { Config as ConfigSchema, resolveConfig, type Config } from '../../src/config.ts'
 
 const valid: Config = { binaryPath: '/opt/md2wechat' }
+
+afterEach(() => vi.unstubAllEnvs())
 
 describe('resolveConfig', () => {
   it('rejects unknown fields through the exported configuration schema', () => {
@@ -14,6 +18,17 @@ describe('resolveConfig', () => {
 
   it('rejects an artifacts directory outside the session workspace', () => {
     expect(() => resolveConfig({ ...valid, artifactsDir: '../outside' })).toThrow('session workspace')
+  })
+
+  it('rejects a relative external state directory', () => {
+    expect(() => resolveConfig({ ...valid, stateDir: '.dsh/state' })).toThrow('stateDir must be an absolute path')
+  })
+
+  it('uses an absolute DSH_HOME for the plugin-specific default and rejects a relative one', () => {
+    vi.stubEnv('DSH_HOME', '/srv/dsh-home')
+    expect(resolveConfig(valid).stateDir).toBe('/srv/dsh-home/plugins/dsh-md2wechat')
+    vi.stubEnv('DSH_HOME', 'workspace-home')
+    expect(() => resolveConfig(valid)).toThrow('DSH_HOME must be an absolute path')
   })
 
   it('rejects a non-positive foreground timeout', () => {
@@ -54,6 +69,7 @@ describe('resolveConfig', () => {
     expect(resolveConfig(valid)).toEqual({
       binaryPath: '/opt/md2wechat',
       artifactsDir: '.dsh/md2wechat',
+      stateDir: join(process.env.DSH_HOME?.trim() || join(homedir(), '.dsh'), 'plugins', 'dsh-md2wechat'),
       layoutBaseUrl: 'https://www.md2wechat.cn',
       previewTheme: 'default',
       previewFontSize: 'medium',

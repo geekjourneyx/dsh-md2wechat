@@ -12,6 +12,7 @@ const fakeCli = new URL('../fixtures/fake-md2wechat.mjs', import.meta.url).pathn
 const baseConfig: ResolvedConfig = {
   binaryPath: fakeCli,
   artifactsDir: '.dsh/md2wechat',
+  stateDir: '/var/lib/dsh/plugins/dsh-md2wechat',
   layoutBaseUrl: 'https://www.md2wechat.cn',
   previewTheme: 'default',
   previewFontSize: 'medium',

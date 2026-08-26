@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { link, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Context } from '../../../../web/deepseek-harness/vendor/cordis/src/index.ts'
@@ -13,6 +13,7 @@ import { createImproveArticleTool } from '../../src/tools/improve-article.ts'
 import { createPlanImagesTool } from '../../src/tools/plan-images.ts'
 import { createStartArticleTool } from '../../src/tools/start-article.ts'
 import { ArtifactStore } from '../../src/workspace/artifact-store.ts'
+import { ImagePlanStateStore } from '../../src/workspace/image-plan-state.ts'
 
 interface TestTarget {
   targetKey: string
@@ -213,6 +214,8 @@ describe('article preparation tools', () => {
   let workspace: string
   let fs: ReturnType<typeof createTestFileSystem>
   let store: ArtifactStore
+  let stateDir: string
+  let state: ImagePlanStateStore
   let ctx: Context
   let disposeContext: () => Promise<void>
 
@@ -222,6 +225,8 @@ describe('article preparation tools', () => {
     await mkdir(workspace, { recursive: true })
     fs = createTestFileSystem(workspace)
     store = new ArtifactStore(fs as never, workspace, '.dsh/md2wechat')
+    stateDir = await mkdtemp(join(process.cwd(), '.state-test-'))
+    state = new ImagePlanStateStore(stateDir)
     const setup = await setupToolContext()
     ctx = setup.ctx
     disposeContext = setup.dispose
@@ -230,6 +235,7 @@ describe('article preparation tools', () => {
   afterEach(async () => {
     await disposeContext()
     await rm(temporary, { recursive: true, force: true })
+    await rm(stateDir, { recursive: true, force: true })
   })
 
   it('registers exact strict schemas and replay-safe pure cards for all four tools', async () => {
@@ -239,7 +245,7 @@ describe('article preparation tools', () => {
       createDoctorTool({ gateway }),
       createStartArticleTool({ fs: fs as never, workspace, store, now }),
       createImproveArticleTool({ gateway, store, now }),
-      createPlanImagesTool({ gateway, store, now }),
+      createPlanImagesTool({ gateway, store, state, now }),
     ]
     for (const tool of tools) ctx.tools.register(tool)
 
@@ -557,6 +563,7 @@ describe('article preparation tools', () => {
     ctx.tools.register(createPlanImagesTool({
       gateway,
       store,
+      state,
       now: () => new Date(`2026-08-25T03:00:0${planClock++}.000Z`),
     }))
     const images = [
@@ -574,17 +581,15 @@ describe('article preparation tools', () => {
     expect(value.items).toHaveLength(4)
     expect(value.locations).toContain(value.planPath)
     expect(JSON.stringify(result)).not.toContain('.trusted')
-    const persisted = JSON.parse(decoder.decode(await store.read(value.planPath))) as { items: Array<Record<string, unknown>> }
+    const persistedBytes = await store.read(value.planPath)
+    const persisted = JSON.parse(decoder.decode(persistedBytes)) as { createdAt: string; items: Array<Record<string, unknown>> }
+    expect(persisted.createdAt).toBe('2026-08-25T00:00:00.000Z')
     expect(persisted.items[0]).toMatchObject({ original: images[0], cliPlan: { mode: 'plan', side_effects: false } })
     expect(persisted.items[3]).toMatchObject({ original: { targetPath: 'images/info.png' } })
     expect(JSON.stringify(persisted)).not.toContain(workspace)
-    const trustKey = `image-plans/${value.revisionId}/${value.planId}.json`
-    const trusted = await store.readTrustedRecord(trustKey, 1024 * 1024)
-    expect(JSON.parse(decoder.decode(trusted))).toMatchObject({
-      schemaVersion: 1, revisionId: value.revisionId, planId: value.planId, planPath: value.planPath, items: persisted.items,
-    })
-    const originalWorkspaceIdentity = (JSON.parse(decoder.decode(trusted)) as { workspaceIdentity: string }).workspaceIdentity
-    expect(originalWorkspaceIdentity).toMatch(/^[a-f0-9]{64}$/u)
+    await expect(state.verify(store, {
+      planPath: value.planPath, planId: value.planId, revisionId: value.revisionId, items: persisted.items, planBytes: persistedBytes,
+    })).resolves.toBeUndefined()
     const articleProcessPath = await realpath(store.resolve(manifestPath.replace('manifest.json', 'article.md')))
     expect(gateway.calls.map(call => call.argv)).toEqual([
       ['generate_image', 'A mountain', '--aspect', '1:1', '--plan', '--json'],
@@ -604,7 +609,7 @@ describe('article preparation tools', () => {
 
     const repeated = await execute(ctx, 'md2wechat_plan_images', { manifestPath, images })
     expect(repeated.value).toEqual(result.value)
-    expect(await store.readTrustedRecord(trustKey, 1024 * 1024)).toEqual(trusted)
+    expect(await store.read(value.planPath)).toEqual(persistedBytes)
 
     const movedWorkspace = join(temporary, 'moved-workspace')
     await mkdir(movedWorkspace)
@@ -623,16 +628,18 @@ describe('article preparation tools', () => {
     expect(movedRevision.isError).toBe(false)
     expect((movedRevision.value as { manifestPath: string }).manifestPath).toBe(manifestPath)
     const movedPlanContext = await setupToolContext()
-    movedPlanContext.ctx.tools.register(createPlanImagesTool({ gateway: new FakeGateway(), store: movedStore }))
+    movedPlanContext.ctx.tools.register(createPlanImagesTool({ gateway: new FakeGateway(), store: movedStore, state }))
     const movedPlan = await execute(movedPlanContext.ctx, 'md2wechat_plan_images', { manifestPath, images })
     expect(movedPlan.isError).toBe(false)
     expect((movedPlan.value as { planId: string }).planId).toBe(value.planId)
     const movedPlanPath = (movedPlan.value as { planPath: string }).planPath
     expect(decoder.decode(await movedStore.read(movedPlanPath))).not.toContain(movedWorkspace)
-    const movedTrust = JSON.parse(decoder.decode(await movedStore.readTrustedRecord(
-      `image-plans/${value.revisionId}/${value.planId}.json`, 1024 * 1024,
-    ))) as { workspaceIdentity: string }
-    expect(movedTrust.workspaceIdentity).not.toBe(originalWorkspaceIdentity)
+    const movedBytes = await movedStore.read(movedPlanPath)
+    const movedPersisted = JSON.parse(decoder.decode(movedBytes)) as { items: unknown[] }
+    await expect(state.verify(movedStore, {
+      planPath: movedPlanPath, planId: value.planId, revisionId: value.revisionId, items: movedPersisted.items, planBytes: movedBytes,
+    })).resolves.toBeUndefined()
+    expect((await readdir(join(stateDir, 'image-plans'))).filter(name => /^[a-f0-9]{64}$/u.test(name))).toHaveLength(2)
     await movedPlanContext.dispose()
     await movedStart.dispose()
   })
@@ -643,7 +650,7 @@ describe('article preparation tools', () => {
       const response = validCliResponse(argv)
       return { ...response, data: { ...response.data, mode: 'execute', side_effects: true, requires_provider: true } }
     })
-    ctx.tools.register(createPlanImagesTool({ gateway, store }))
+    ctx.tools.register(createPlanImagesTool({ gateway, store, state }))
     const base = { id: 'hero', kind: 'image' as const, prompt: 'Hero', targetPath: 'images/hero.png' }
 
     for (const images of [
@@ -682,7 +689,7 @@ describe('article preparation tools', () => {
     const freshGateway = new FakeGateway()
     const staleSetup = await setupToolContext()
     const staleContext = staleSetup.ctx
-    staleContext.tools.register(createPlanImagesTool({ gateway: freshGateway, store }))
+    staleContext.tools.register(createPlanImagesTool({ gateway: freshGateway, store, state }))
     await store.writeAtomic(manifestPath.replace('manifest.json', 'article.md'), encoder.encode('# Stale\n'))
     const stale = await execute(staleContext, 'md2wechat_plan_images', { manifestPath, images: [base] })
     expect(stale.isError).toBe(true)
@@ -699,7 +706,7 @@ describe('article preparation tools', () => {
       await writeFile(replacement, '# Replacement before spawn\n')
       await rename(replacement, articlePath)
     }
-    ctx.tools.register(createPlanImagesTool({ gateway, store }))
+    ctx.tools.register(createPlanImagesTool({ gateway, store, state }))
 
     const result = await execute(ctx, 'md2wechat_plan_images', {
       manifestPath,
@@ -715,7 +722,7 @@ describe('article preparation tools', () => {
       const response = validCliResponse(argv)
       return { ...response, data: { ...response.data, command: 'generate_cover' } }
     })
-    ctx.tools.register(createPlanImagesTool({ gateway, store }))
+    ctx.tools.register(createPlanImagesTool({ gateway, store, state }))
 
     const result = await execute(ctx, 'md2wechat_plan_images', {
       manifestPath,
@@ -739,7 +746,7 @@ describe('article preparation tools', () => {
         },
       }
     })
-    ctx.tools.register(createPlanImagesTool({ gateway, store }))
+    ctx.tools.register(createPlanImagesTool({ gateway, store, state }))
 
     const result = await execute(ctx, 'md2wechat_plan_images', {
       manifestPath,
@@ -758,7 +765,7 @@ describe('article preparation tools', () => {
       const response = validCliResponse(argv)
       return { ...response, data: { ...response.data, article: '' } }
     })
-    ctx.tools.register(createPlanImagesTool({ gateway, store }))
+    ctx.tools.register(createPlanImagesTool({ gateway, store, state }))
 
     const result = await execute(ctx, 'md2wechat_plan_images', {
       manifestPath,
@@ -773,7 +780,7 @@ describe('article preparation tools', () => {
       const response = validCliResponse(argv)
       return { ...response, data: { ...response.data, prompt: 'x'.repeat(600_000) } }
     })
-    ctx.tools.register(createPlanImagesTool({ gateway, store }))
+    ctx.tools.register(createPlanImagesTool({ gateway, store, state }))
 
     const result = await execute(ctx, 'md2wechat_plan_images', {
       manifestPath,
@@ -788,21 +795,21 @@ describe('article preparation tools', () => {
 
   it('serializes concurrent identical plan creation across separate stores without replacing bytes', async () => {
     const manifestPath = await startFixtureArticle()
-    let renameCount = 0
-    const trackedRename = async (source: string, destination: string): Promise<void> => {
-      renameCount += 1
-      await rename(source, destination)
+    let linkCount = 0
+    const trackedLink = async (source: string, destination: string): Promise<void> => {
+      linkCount += 1
+      await link(source, destination)
     }
-    const firstStore = new ArtifactStore(fs as never, workspace, '.dsh/md2wechat', { rename: trackedRename })
-    const secondStore = new ArtifactStore(fs as never, workspace, '.dsh/md2wechat', { rename: trackedRename })
+    const firstStore = new ArtifactStore(fs as never, workspace, '.dsh/md2wechat', { link: trackedLink })
+    const secondStore = new ArtifactStore(fs as never, workspace, '.dsh/md2wechat', { link: trackedLink })
     const firstSetup = await setupToolContext()
     const secondSetup = await setupToolContext()
     firstSetup.ctx.tools.register(createPlanImagesTool({
       gateway: new FakeGateway(),
-      store: firstStore, now: () => new Date('2026-08-25T04:00:00.000Z'),
+      store: firstStore, state: new ImagePlanStateStore(stateDir), now: () => new Date('2026-08-25T04:00:00.000Z'),
     }))
     secondSetup.ctx.tools.register(createPlanImagesTool({
-      gateway: new FakeGateway(), store: secondStore, now: () => new Date('2026-08-25T04:00:01.000Z'),
+      gateway: new FakeGateway(), store: secondStore, state: new ImagePlanStateStore(stateDir), now: () => new Date('2026-08-25T04:00:01.000Z'),
     }))
     const args = {
       manifestPath,
@@ -816,15 +823,98 @@ describe('article preparation tools', () => {
     expect(first.isError).toBe(false)
     expect(second.isError).toBe(false)
     expect(second.value).toEqual(first.value)
-    expect(renameCount).toBe(1)
+    expect(linkCount).toBe(2)
     const planPath = (first.value as { planPath: string }).planPath
+    const planId = (first.value as { planId: string }).planId
+    const authorityEntries = await readdir(stateDir, { recursive: true, withFileTypes: true })
+    const authorityPlan = authorityEntries.find(entry => entry.name === planId)!
+    expect(await readdir(join(authorityPlan.parentPath, authorityPlan.name))).toHaveLength(1)
     const afterConcurrent = await firstStore.read(planPath)
     const replay = await execute(secondSetup.ctx, 'md2wechat_plan_images', args)
     expect(await secondStore.read(planPath)).toEqual(afterConcurrent)
     expect(replay.isError).toBe(false)
-    expect(renameCount).toBe(1)
+    expect(linkCount).toBe(3)
     await firstSetup.dispose()
     await secondSetup.dispose()
+  })
+
+  it('reconstructs byte-identical plans after an authority-first publication crash', async () => {
+    const manifestPath = await startFixtureArticle()
+    let interrupted = true
+    const crashStore = new ArtifactStore(fs as never, workspace, '.dsh/md2wechat', {
+      beforeExclusiveLink({ destinationPath }) {
+        if (interrupted && destinationPath.includes('/plans/')) { interrupted = false; throw new Error('injected anchor-before-plan crash') }
+      },
+    })
+    const crashSetup = await setupToolContext()
+    crashSetup.ctx.tools.register(createPlanImagesTool({ gateway: new FakeGateway(), store: crashStore, state: new ImagePlanStateStore(stateDir) }))
+    const args = { manifestPath, images: [{ id: 'recovery', kind: 'image' as const, prompt: 'Recover', targetPath: 'images/recovery.png' }] }
+    const failed = await execute(crashSetup.ctx, 'md2wechat_plan_images', args)
+    expect(failed.isError).toBe(true)
+    const recoverySetup = await setupToolContext()
+    recoverySetup.ctx.tools.register(createPlanImagesTool({
+      gateway: new FakeGateway(), store: new ArtifactStore(fs as never, workspace, '.dsh/md2wechat'),
+      state: new ImagePlanStateStore(stateDir), now: () => new Date('2040-01-01T00:00:00.000Z'),
+    }))
+    const recovered = await execute(recoverySetup.ctx, 'md2wechat_plan_images', args)
+    expect(recovered.isError).toBe(false)
+    const value = recovered.value as { planPath: string }
+    expect(JSON.parse(decoder.decode(await store.read(value.planPath)))).toMatchObject({ createdAt: '2026-08-25T00:00:00.000Z' })
+    await recoverySetup.dispose()
+    await crashSetup.dispose()
+  })
+
+  it('never overwrites a different workspace plan preseeded after authority publication', async () => {
+    const manifestPath = await startFixtureArticle()
+    const setup = await setupToolContext()
+    setup.ctx.tools.register(createPlanImagesTool({ gateway: new FakeGateway(), store, state }))
+    const args = { manifestPath, images: [{ id: 'preseed', kind: 'image' as const, prompt: 'Stable', targetPath: 'images/preseed.png' }] }
+    const first = await execute(setup.ctx, 'md2wechat_plan_images', args)
+    const planPath = (first.value as { planPath: string }).planPath
+    const legitimate = await store.read(planPath)
+    await store.removeIfMatching(planPath, createHash('sha256').update(legitimate).digest('hex'))
+    const changed = JSON.parse(decoder.decode(legitimate)) as Record<string, unknown>
+    changed.createdAt = '2026-08-25T00:00:01.000Z'
+    const preseeded = encoder.encode(`${JSON.stringify(changed)}\n`)
+    await store.writeAtomic(planPath, preseeded)
+
+    const repeated = await execute(setup.ctx, 'md2wechat_plan_images', args)
+    expect(repeated.isError).toBe(true)
+    expect(Array.from(await store.read(planPath))).toEqual(Array.from(preseeded))
+    await setup.dispose()
+  })
+
+  it('keeps canonical plan bytes independent of clock, timezone, locale ordering, and plugin restart', async () => {
+    const manifestPath = await startFixtureArticle()
+    const args = { manifestPath, images: [{ id: 'deterministic', kind: 'image' as const, prompt: 'Stable', targetPath: 'images/stable.png' }] }
+    const firstSetup = await setupToolContext()
+    firstSetup.ctx.tools.register(createPlanImagesTool({
+      gateway: new FakeGateway(), store, state: new ImagePlanStateStore(stateDir), now: () => new Date('2030-01-01T00:00:00.000Z'),
+    }))
+    const first = await execute(firstSetup.ctx, 'md2wechat_plan_images', args)
+    const planPath = (first.value as { planPath: string }).planPath
+    const firstBytes = await store.read(planPath)
+    await firstSetup.dispose()
+
+    const previousTimezone = process.env.TZ
+    const localeCompare = String.prototype.localeCompare
+    process.env.TZ = 'Pacific/Kiritimati'
+    String.prototype.localeCompare = function forbiddenLocaleOrdering(): never { throw new Error('locale ordering must not be used') }
+    try {
+      const restarted = await setupToolContext()
+      restarted.ctx.tools.register(createPlanImagesTool({
+        gateway: new FakeGateway(), store: new ArtifactStore(fs as never, workspace, '.dsh/md2wechat'),
+        state: new ImagePlanStateStore(stateDir), now: () => new Date('2040-12-31T23:59:59.000Z'),
+      }))
+      const repeated = await execute(restarted.ctx, 'md2wechat_plan_images', args)
+      expect(repeated.isError).toBe(false)
+      expect(await store.read(planPath)).toEqual(firstBytes)
+      await restarted.dispose()
+    } finally {
+      String.prototype.localeCompare = localeCompare
+      if (previousTimezone === undefined) delete process.env.TZ
+      else process.env.TZ = previousTimezone
+    }
   })
 
   async function startFixtureArticle(): Promise<string> {

@@ -71,7 +71,10 @@ export function validateRevisionManifest(value: unknown): ArticleManifest {
   validateArtifactRelativePath(articlePath)
   validateArtifactRelativePath(manifestPath)
   const createdAt = requiredString(manifest.createdAt, 'createdAt')
-  if (Number.isNaN(Date.parse(createdAt))) throw new TypeError('revision manifest createdAt must be an ISO timestamp')
+  const createdAtDate = new Date(createdAt)
+  if (Number.isNaN(createdAtDate.getTime()) || createdAtDate.toISOString() !== createdAt) {
+    throw new TypeError('revision manifest createdAt must be a canonical ISO timestamp')
+  }
   const title = optionalString(manifest.title, 'title')
   const parentRevisionId = optionalString(manifest.parentRevisionId, 'parentRevisionId')
   if (parentRevisionId !== undefined) validateArtifactId(parentRevisionId)

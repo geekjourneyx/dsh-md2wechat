@@ -1,4 +1,5 @@
-import { isAbsolute } from 'node:path'
+import { homedir } from 'node:os'
+import { isAbsolute, join } from 'node:path'
 import Schema from '@deepseek-ai/schemastery'
 
 const DEFAULT_ARTIFACTS_DIR = '.dsh/md2wechat'
@@ -26,6 +27,7 @@ const credentialEnvironmentNames = new Set<CredentialEnvironmentName>([
 export interface Config {
   binaryPath: string
   artifactsDir?: string
+  stateDir?: string
   layoutBaseUrl?: string
   previewTheme?: string
   previewFontSize?: 'small' | 'medium' | 'large'
@@ -53,6 +55,7 @@ export type CredentialEnvironmentName =
 export interface ResolvedConfig {
   binaryPath: string
   artifactsDir: string
+  stateDir: string
   layoutBaseUrl: string
   previewTheme: string
   previewFontSize: 'small' | 'medium' | 'large'
@@ -72,6 +75,7 @@ export interface ResolvedConfig {
 const configFields = {
   binaryPath: Schema.string().required(),
   artifactsDir: Schema.string(),
+  stateDir: Schema.string(),
   layoutBaseUrl: Schema.string(),
   previewTheme: Schema.string(),
   previewFontSize: Schema.union(['small', 'medium', 'large']),
@@ -120,10 +124,13 @@ export function resolveConfig(input: Config): ResolvedConfig {
 
   const artifactsDir = optionalString(value.artifactsDir, DEFAULT_ARTIFACTS_DIR, 'artifactsDir must be a string')
   if (!isSessionWorkspacePath(artifactsDir)) throw new TypeError('artifactsDir must stay within the session workspace')
+  const stateDir = optionalString(value.stateDir, defaultStateDir(), 'stateDir must be a string')
+  if (!isAbsolute(stateDir)) throw new TypeError('stateDir must be an absolute path')
 
   return {
     binaryPath,
     artifactsDir,
+    stateDir,
     layoutBaseUrl: optionalString(value.layoutBaseUrl, DEFAULT_LAYOUT_BASE_URL, 'layoutBaseUrl must be a string'),
     previewTheme: optionalString(value.previewTheme, DEFAULT_PREVIEW_THEME, 'previewTheme must be a string'),
     previewFontSize: optionalEnum(value.previewFontSize, DEFAULT_PREVIEW_FONT_SIZE, ['small', 'medium', 'large'], 'previewFontSize must be a supported value'),
@@ -139,6 +146,13 @@ export function resolveConfig(input: Config): ResolvedConfig {
     imageAcquisitionTimeoutMs: optionalInteger(value.imageAcquisitionTimeoutMs, DEFAULT_IMAGE_ACQUISITION_TIMEOUT_MS, 1, 'imageAcquisitionTimeoutMs must be a positive integer'),
     credentialRefs: resolveCredentialRefs(value.credentialRefs),
   }
+}
+
+function defaultStateDir(): string {
+  const configuredHome = process.env.DSH_HOME?.trim()
+  const dshHome = configuredHome === undefined || configuredHome === '' ? join(homedir(), '.dsh') : configuredHome
+  if (!isAbsolute(dshHome)) throw new TypeError('DSH_HOME must be an absolute path when used for stateDir')
+  return join(dshHome, 'plugins', 'dsh-md2wechat')
 }
 
 function asPlainObject(value: unknown, message: string): Record<string, unknown> {

@@ -4,18 +4,19 @@ import type { JsonValue } from '@deepseek-ai/dsh-tools'
 import type { CliGateway } from '../cli/gateway.ts'
 import { validateArtifactId, validateArtifactRelativePath } from '../workspace/artifact-store.ts'
 import type { ArtifactStore } from '../workspace/artifact-store.ts'
-import { registerImagePlanTrust } from '../workspace/images.ts'
+import type { ImagePlanStateStore } from '../workspace/image-plan-state.ts'
+import { encodeCanonical } from '../workspace/images.ts'
 import { domainResult, genericCall, genericResult } from './shared.ts'
 import { loadCurrentArticleRevision } from './improve-article.ts'
 
 interface PlanImagesToolDependencies {
   gateway: CliGateway
   store: ArtifactStore
+  state: ImagePlanStateStore
   now?: () => Date
 }
 
 const MAX_PLAN_OUTPUT_BYTES = 1024 * 1024
-const planWriteQueues = new Map<string, Promise<void>>()
 
 const imageSchema = {
   type: 'object',
@@ -32,14 +33,11 @@ const imageSchema = {
 
 /**
  * Create the side-effect-free image planning tool.
- * @param dependencies - CLI gateway, artifact store, and plan clock.
+ * @param dependencies - CLI gateway, artifact store, and external plan authority.
  * @returns Registry-ready typed DSH tool.
  */
-export function createPlanImagesTool({
-  gateway,
-  store,
-  now = () => new Date(),
-}: PlanImagesToolDependencies) {
+export function createPlanImagesTool(dependencies: PlanImagesToolDependencies) {
+  const { gateway, store, state } = dependencies
   return defineTool({
     name: 'md2wechat_plan_images',
     description: 'Prepare replayable image plans for the current article without generating images or using credentials.',
@@ -69,6 +67,7 @@ export function createPlanImagesTool({
     },
     async execute(args, exec) {
       assertKnownArguments(args, ['manifestPath', 'images'])
+      await state.initialize(store, true, exec.signal)
       const current = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
       const normalized = normalizeImages(args.images, current.revision.id)
       const items: JsonValue[] = []
@@ -97,11 +96,12 @@ export function createPlanImagesTool({
         schemaVersion: 1,
         planId,
         revisionId: current.revision.id,
-        createdAt: now().toISOString(),
+        createdAt: current.revision.createdAt,
         items,
       }
-      await writeStablePlan(store, planPath, persisted, exec.signal)
-      await registerImagePlanTrust(store, { path: planPath, planId, revisionId: current.revision.id, items }, exec.signal)
+      const planBytes = encodeCanonical(persisted)
+      await state.publish(store, { planPath, planId, revisionId: current.revision.id, items, planBytes }, exec.signal)
+      await publishStablePlan(store, planPath, planBytes, exec.signal)
       return domainResult({
         revisionId: current.revision.id,
         manifestPath: current.manifestPath,
@@ -263,50 +263,20 @@ export function projectImagePlanResponse(
   }
 }
 
-async function writeStablePlan(
+async function publishStablePlan(
   store: ArtifactStore,
   path: string,
-  value: Readonly<Record<string, unknown>>,
+  bytes: Uint8Array,
   signal: AbortSignal,
 ): Promise<void> {
-  const bytes = new TextEncoder().encode(`${canonicalJson(value)}\n`)
-  const identity = await store.canonicalIdentity(path, signal)
-  await enqueuePlanWrite(identity, async () => {
-    try {
-      const existing = await store.read(path, signal)
-      const existingValue = parsePersistedPlan(existing)
-      const { createdAt: _existingCreatedAt, ...existingStable } = existingValue
-      const { createdAt: _candidateCreatedAt, ...candidateStable } = value
-      if (canonicalJson(existingStable) !== canonicalJson(candidateStable)) {
-        throw new Error('existing immutable image plan conflicts with the computed plan')
-      }
-      return
-    } catch (error) {
-      if (!(error instanceof Error && 'code' in error && error.code === 'FS_NOT_FOUND')) throw error
-    }
-    await store.writeAtomic(path, bytes, signal)
-  })
-}
-
-async function enqueuePlanWrite(identity: string, write: () => Promise<void>): Promise<void> {
-  const prior = planWriteQueues.get(identity) ?? Promise.resolve()
-  const current = prior.catch(() => undefined).then(write)
-  planWriteQueues.set(identity, current)
   try {
-    await current
-  } finally {
-    if (planWriteQueues.get(identity) === current) planWriteQueues.delete(identity)
-  }
-}
-
-function parsePersistedPlan(bytes: Uint8Array): Readonly<Record<string, JsonValue>> {
-  let value: unknown
-  try {
-    value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+    await store.createExclusive(path, bytes, signal)
+    return
   } catch (error) {
-    throw new Error('existing image plan must contain valid UTF-8 JSON', { cause: error })
+    if (!(error instanceof Error && 'code' in error && error.code === 'ARTIFACT_EXISTS')) throw error
   }
-  return requiredRecord(value, 'existing image plan')
+  const existing = await store.readBounded(path, MAX_PLAN_OUTPUT_BYTES, signal)
+  if (!Buffer.from(existing).equals(Buffer.from(bytes))) throw new Error('existing immutable image plan conflicts with the computed plan')
 }
 
 function canonicalJson(value: unknown): string {

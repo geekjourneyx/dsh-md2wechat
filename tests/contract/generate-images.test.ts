@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -9,7 +9,8 @@ import type { CliGateway, CliRunOptions } from '../../src/cli/gateway.ts'
 import { createGenerateImagesTool } from '../../src/tools/generate-images.ts'
 import { createPlanImagesTool } from '../../src/tools/plan-images.ts'
 import { ArtifactStore } from '../../src/workspace/artifact-store.ts'
-import { canonicalImagePlanId, encodeCanonical, registerImagePlanTrust } from '../../src/workspace/images.ts'
+import { ImagePlanStateStore } from '../../src/workspace/image-plan-state.ts'
+import { canonicalImagePlanId, encodeCanonical } from '../../src/workspace/images.ts'
 import { computeArticleRevision } from '../../src/workspace/revision.ts'
 import type { ArticleManifest } from '../../src/workspace/revision.ts'
 
@@ -80,19 +81,20 @@ class Gateway implements CliGateway {
 }
 
 describe('md2wechat_generate_images', () => {
-  let temporary: string; let workspace: string; let store: ArtifactStore; let manifestPath: string; let revisionId: string; let planPath: string
+  let temporary: string; let workspace: string; let store: ArtifactStore; let stateDir: string; let state: ImagePlanStateStore; let manifestPath: string; let revisionId: string; let planPath: string
   let approval: 'allowed-once' | 'rejected'; let approvals: Array<Record<string, unknown>>; let resolved: string[]; let starts: JobStart[]; let hooks: JobHooks | undefined
   const agent = { id: 'session-fixture' } as never
 
   beforeEach(async () => {
     temporary = await mkdtemp(join(tmpdir(), 'dsh-md2wechat-generate-images-')); workspace = join(temporary, 'workspace'); await mkdir(workspace)
     store = new ArtifactStore(createTestFileSystem(workspace) as never, workspace, '.dsh/md2wechat')
+    stateDir = await mkdtemp(join(process.cwd(), '.state-test-')); state = new ImagePlanStateStore(stateDir)
     const article = encoder.encode('# Fixture\n'); const manifest: ArticleManifest = { schemaVersion: 1, articlePath: 'article.md', manifestPath: 'manifest.json', createdAt: now.toISOString(), title: 'Fixture' }
     const revision = computeArticleRevision(article, manifest); revisionId = revision.id; manifestPath = `revisions/${revisionId}/manifest.json`
     await store.writeAtomic(`revisions/${revisionId}/article.md`, article); await store.writeAtomic(manifestPath, encoder.encode(`${JSON.stringify(manifest)}\n`)); planPath = await installPlan()
     approval = 'allowed-once'; approvals = []; resolved = []; starts = []; hooks = undefined
   })
-  afterEach(async () => { await import('node:fs/promises').then(fs => fs.rm(temporary, { recursive: true, force: true })) })
+  afterEach(async () => { await rm(temporary, { recursive: true, force: true }); await rm(stateDir, { recursive: true, force: true }) })
 
   async function installPlan(target = 'images/hero.png'): Promise<string> {
     const item = { original: { id: 'hero', kind: 'image', prompt: 'Hero raw', targetPath: target }, targetArtifactPath: `revisions/${revisionId}/${target}`,
@@ -134,12 +136,13 @@ describe('md2wechat_generate_images', () => {
   }
 
   async function publishTrustedPlan(path: string, planId: string, items: readonly Record<string, unknown>[], value: unknown): Promise<void> {
-    await store.writeAtomic(path, encodeCanonical(value))
-    await registerImagePlanTrust(store, { path, planId, revisionId, items: items as never })
+    const planBytes = encodeCanonical(value)
+    await state.publish(store, { planPath: path, planId, revisionId, items, planBytes })
+    await store.createExclusive(path, planBytes)
   }
 
   function dependencies(gateway: CliGateway, selectedStore = store, reportAuditFailure: (message: string) => void = () => {}) {
-    return { gateway, store: selectedStore, credentialRefs: { IMAGE_API_KEY: 'IMAGE_API_KEY', WECHAT_APPID: 'WECHAT_APPID', WECHAT_SECRET: 'WECHAT_SECRET' },
+    return { gateway, store: selectedStore, state: new ImagePlanStateStore(stateDir), credentialRefs: { IMAGE_API_KEY: 'IMAGE_API_KEY', WECHAT_APPID: 'WECHAT_APPID', WECHAT_SECRET: 'WECHAT_SECRET' },
       credentials: { resolve(ref: string) { resolved.push(ref); return Promise.resolve({ value: `secret-${ref}`, source: 'test' }) } },
       approval: { request(request: Record<string, unknown>) { approvals.push(request); return Promise.resolve(approval) } },
       jobs: { start(spec: JobStart) { starts.push(spec); hooks = spec.run(); return 'md2wechat-image-1' as JobId }, get() { throw new Error('not live') } },
@@ -166,7 +169,7 @@ describe('md2wechat_generate_images', () => {
 
   it('executes a legitimate Task 5 plan after idempotent planning and an ArtifactStore restart', async () => {
     const planningGateway = new Gateway()
-    const planner = createPlanImagesTool({ gateway: planningGateway, store, now: () => new Date(now) })
+    const planner = createPlanImagesTool({ gateway: planningGateway, store, state, now: () => new Date(now) })
     const request = { manifestPath, images: [{ id: 'task5', kind: 'image' as const, prompt: 'Task 5 raw', targetPath: 'images/task5.png' }] }
     const first = await planner.execute(request, exec())
     const repeated = await planner.execute(request, exec())
@@ -262,10 +265,11 @@ describe('md2wechat_generate_images', () => {
     expect(gateway.calls).toHaveLength(0); expect(approvals).toHaveLength(0)
   })
 
-  it('rejects a changed private trust record before any CLI, approval, credentials, or job work', async () => {
+  it('rejects a conflicting external authority digest before any CLI, approval, credentials, or job work', async () => {
     const planId = basename(planPath, '.json')
-    const trustPath = join(workspace, `.dsh/md2wechat/.trusted/image-plans/${revisionId}/${planId}.json`)
-    await writeFile(trustPath, encodeCanonical({ schemaVersion: 1, planId, revisionId, changed: true }))
+    const entries = await readdir(stateDir, { recursive: true, withFileTypes: true })
+    const planDirectory = entries.find(entry => entry.name === planId)!
+    await mkdir(join(planDirectory.parentPath, planDirectory.name, 'f'.repeat(64)))
     approval = 'rejected'
     const gateway = new Gateway()
     const tool = createGenerateImagesTool(dependencies(gateway))

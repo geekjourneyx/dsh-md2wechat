@@ -53,6 +53,11 @@ describe('article revisions', () => {
     expect(() => computeArticleRevision(Uint8Array.from([0xff]), manifest)).toThrow('UTF-8')
   })
 
+  it('requires the immutable revision timestamp to use canonical UTC ISO encoding', () => {
+    expect(() => validateRevisionManifest({ ...manifest, createdAt: '2026-08-25T08:00:00+08:00' })).toThrow('canonical ISO')
+    expect(() => validateRevisionManifest({ ...manifest, createdAt: '2026-08-25' })).toThrow('canonical ISO')
+  })
+
   it('rejects unknown schemas, unknown fields, parent segments, and separators in revision IDs', () => {
     expect(() => validateRevisionManifest({ ...manifest, schemaVersion: 2 })).toThrow('schema')
     expect(() => validateRevisionManifest({ ...manifest, unexpected: true })).toThrow('field')
