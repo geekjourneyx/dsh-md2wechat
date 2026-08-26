@@ -553,7 +553,7 @@ function validatePreviewAssets(value: unknown, snapshot: Pick<PreviewSnapshot, '
 }
 
 function boundedCodePoints(value: unknown, limit: number, field: string, empty: boolean): string {
-  if (typeof value !== 'string' || (!empty && value.length === 0) || [...value].length > limit || containsControl(value)) throw new TypeError(`${field} is invalid`)
+  if (typeof value !== 'string' || (!empty && value.trim().length === 0) || [...value].length > limit || containsControl(value)) throw new TypeError(`${field} is invalid`)
   return value
 }
 

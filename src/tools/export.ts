@@ -51,7 +51,7 @@ export function createExportTool(dependencies: ExportToolDependencies) {
         const before = await preparePreviewInputs(dependencies.store, args.manifestPath, exec.signal)
         const clock = (dependencies.now ?? (() => new Date()))()
         const structural = await preflightCurrentPreview(dependencies.store, before.current.revision.id, args.previewReceiptId, clock, exec.signal)
-        await dependencies.store.preflightCopyOut(structural.htmlPath, args.destinationPath, exec.signal)
+        const exportAuthorization = await dependencies.store.authorizeCopyOut(structural.htmlPath, structural.receipt.previewHtmlSha256, args.destinationPath, exec.signal)
         if (exec.agent === undefined) throw new SafeExportError('preview export requires an active agent')
         const outcome = await dependencies.approval.request({ agent: exec.agent, toolName: TOOL_NAME, callId: exec.callId, reason: `Write the current signed preview HTML locally to ${args.destinationPath}.`, signal: exec.signal })
         assertApproved(outcome)
@@ -66,8 +66,8 @@ export function createExportTool(dependencies: ExportToolDependencies) {
           snapshotInput: previewSnapshotInputFor(current, dependencies.layoutBaseUrl, reference, value, dependencies.previewTheme, dependencies.previewFontSize, dependencies.previewBackgroundType),
           credentialValue: value, now: (dependencies.now ?? (() => new Date()))(), signal: exec.signal,
         })
-        if (verified.receipt.id !== args.previewReceiptId) throw new SafeExportError('stale preview')
-        await dependencies.store.copyOut(verified.htmlPath, args.destinationPath, exec.signal)
+        if (verified.receipt.id !== args.previewReceiptId || verified.htmlPath !== exportAuthorization.sourceRelative || verified.receipt.previewHtmlSha256 !== exportAuthorization.expectedSha256) throw new SafeExportError('stale preview')
+        await exportAuthorization.commitVerified(verified.htmlBytes, exec.signal)
         return domainResult({ manifestPath: current.current.manifestPath, revisionId: current.current.revision.id, previewReceiptId: verified.receipt.id, sourcePath: verified.htmlPath, destinationPath: args.destinationPath, sha256: createHash('sha256').update(verified.htmlBytes).digest('hex') })
       } catch (error) {
         if (exec.signal.aborted || error instanceof ExportCancelledError) throw new Error('preview export cancelled')

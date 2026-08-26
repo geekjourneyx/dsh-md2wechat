@@ -175,11 +175,11 @@ describe('signed preview state', () => {
     expect(receipt.metadata).toEqual({ title: '文章标题', author: '作者', digest: '摘要' })
     expect(receipt.assets.map(asset => asset.kind)).toEqual(['local', 'online'])
     expect(JSON.stringify(receipt)).not.toContain('/private/')
-    expect(() => createPreviewReceipt({
+    for (const title of ['', '   ', '\u3000']) expect(() => createPreviewReceipt({
       snapshot,
       previewHtmlPath: `revisions/${snapshot.revisionId}/previews/html/${snapshot.id}.html`,
       previewHtmlBytes: encoder.encode('x'), credentialValue: 'secret-one', issuedAt: '2026-08-25T00:00:00.000Z', expiresAt: '2026-08-25T00:10:00.000Z',
-      metadata: { title: '', author: '', digest: '' }, assets: [],
+      metadata: { title, author: '', digest: '' }, assets: [{ index: 0, kind: 'local', source: 'images/a.png', path: `revisions/${'a'.repeat(64)}/images/a.png`, sha256: createHash('sha256').update(Uint8Array.from([1])).digest('hex') }],
     })).toThrow('title')
   })
 

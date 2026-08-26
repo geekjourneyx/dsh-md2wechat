@@ -23,6 +23,7 @@ const MAX_PLAN_PATHS = 128
 const MAX_DRAFT_HTML_BYTES = 8 * 1024 * 1024
 const MAX_REQUEST_BYTES = 9 * 1024 * 1024
 const decoder = new TextDecoder('utf-8', { fatal: true })
+const htmlDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 interface DraftToolDependencies {
   gateway: CliGateway
@@ -153,14 +154,15 @@ async function prepareDraft(dependencies: DraftToolDependencies, manifestPath: s
   const coverEntries = results.filter(entry => entry.plan.items.find(item => item.id === entry.result.itemId)?.kind === 'cover')
   if (coverEntries.length !== 1) throw new Error('exactly one verified cover is required')
   const finalizedHtml = finalizeHtml(preflight.receipt, results, preflight.receipt.previewHtmlSha256, await dependencies.store.read(preflight.htmlPath, signal))
+  const workspaceIdentity = sha256Text(await dependencies.store.canonicalIdentity('revisions', signal))
   const identityMaterial = {
-    revisionId: prepared.current.revision.id, credentialReferences: ['MD2WECHAT_API_KEY', 'WECHAT_APPID', 'WECHAT_SECRET'].map(name => sha256Text(`${name}\0${dependencies.credentialRefs[name] ?? ''}`)),
+    workspaceIdentity, revisionId: prepared.current.revision.id, credentialReferences: ['MD2WECHAT_API_KEY', 'WECHAT_APPID', 'WECHAT_SECRET'].map(name => sha256Text(`${name}\0${dependencies.credentialRefs[name] ?? ''}`)),
     receiptId: preflight.receipt.id, accountProvenance: preflight.receipt.accountProvenance, originalHtmlSha256: preflight.receipt.previewHtmlSha256, finalHtmlSha256: sha256(finalizedHtml), metadata: preflight.receipt.metadata,
     cover: { planId: coverEntries[0]!.result.planId, itemId: coverEntries[0]!.result.itemId, mediaId: coverEntries[0]!.result.mediaId, resultSha256: coverEntries[0]!.resultSha256 },
     results: results.map(entry => ({ planId: entry.plan.planId, planSha256: entry.plan.contentSha256, itemId: entry.result.itemId, targetPath: entry.result.targetPath, sha256: entry.result.sha256, mediaId: entry.result.mediaId, wechatUrl: entry.result.wechatUrl, resultSha256: entry.resultSha256 })), pluginVersion: PLUGIN_VERSION, cliVersion: SUPPORTED_CLI_VERSION,
   }
   const operationId = sha256(encodeCanonical(identityMaterial))
-  const article: Record<string, unknown> = { title: preflight.receipt.metadata.title, content: decoder.decode(finalizedHtml), thumb_media_id: coverEntries[0]!.result.mediaId, show_cover_pic: 1 }
+  const article: Record<string, unknown> = { title: preflight.receipt.metadata.title, content: htmlDecoder.decode(finalizedHtml), thumb_media_id: coverEntries[0]!.result.mediaId, show_cover_pic: 1 }
   if (preflight.receipt.metadata.author !== '') article.author = preflight.receipt.metadata.author
   if (preflight.receipt.metadata.digest !== '') article.digest = preflight.receipt.metadata.digest
   const request = encodeCanonical({ articles: [article] })
@@ -170,7 +172,7 @@ async function prepareDraft(dependencies: DraftToolDependencies, manifestPath: s
 
 function finalizeHtml(receipt: PreviewReceipt, results: PreparedDraft['results'], expectedHash: string, bytes: Uint8Array): Uint8Array {
   if (bytes.byteLength < 1 || bytes.byteLength > MAX_DRAFT_HTML_BYTES || sha256(bytes) !== expectedHash) throw new Error('preview HTML changed')
-  let html = decoder.decode(bytes)
+  const html = htmlDecoder.decode(bytes)
   const tags = [...html.matchAll(/<img\b[^>]*>/giu)]
   const sources = tags.map(match => {
     const attributes = match[0].match(/\bsrc=(?:"([^"]*)"|'([^']*)')/iu)
@@ -182,35 +184,41 @@ function finalizeHtml(receipt: PreviewReceipt, results: PreparedDraft['results']
     const expected = new Set([asset.source, escapeGoHtml(asset.source)])
     if (!expected.has(sources[index]!)) throw new Error('preview HTML image order does not match the signed assets')
   }
-  const byTarget = new Map<string, PersistedImageResult[]>()
-  for (const entry of results) { const list = byTarget.get(entry.result.targetPath) ?? []; list.push(entry.result); byTarget.set(entry.result.targetPath, list) }
+  const byTarget = new Map<string, PreparedDraft['results'][number][]>()
+  for (const entry of results) { const list = byTarget.get(entry.result.targetPath) ?? []; list.push(entry); byTarget.set(entry.result.targetPath, list) }
   const consumed = new Set<string>(); const seenSources = new Set<string>()
+  let finalized: Uint8Array<ArrayBufferLike> = new Uint8Array(bytes)
   for (const asset of receipt.assets) {
     if (asset.kind === 'ai') throw new Error('AI marker asset is unresolved')
     if (asset.kind === 'online') { validateWechatMaterialUrl(asset.source); continue }
     if (seenSources.has(asset.source)) throw new Error('duplicate local asset source is ambiguous'); seenSources.add(asset.source)
     const matches = byTarget.get(asset.path) ?? []
-    if (matches.length !== 1 || matches[0]!.sha256 !== asset.sha256) throw new Error('local asset does not match one verified image result')
-    const result = matches[0]!; consumed.add(`${result.planId}\0${result.itemId}`)
-    html = replaceExactImageSource(html, asset.source, validateWechatMaterialUrl(result.wechatUrl))
+    if (matches.length !== 1 || matches[0]!.result.sha256 !== asset.sha256) throw new Error('local asset does not match one verified image result')
+    const matched = matches[0]!; const item = matched.plan.items.find(candidate => candidate.id === matched.result.itemId)
+    if (item?.kind === 'cover') throw new Error('cover result cannot be consumed as a body image')
+    const result = matched.result; consumed.add(`${result.planId}\0${result.itemId}`)
+    finalized = replaceExactImageSourceBytes(finalized, asset.source, validateWechatMaterialUrl(result.wechatUrl))
   }
   for (const entry of results) {
     const item = entry.plan.items.find(candidate => candidate.id === entry.result.itemId)!
     if (item.kind !== 'cover' && !consumed.has(`${entry.result.planId}\0${entry.result.itemId}`)) throw new Error('image result is not represented by one signed local asset')
   }
-  return new TextEncoder().encode(html)
+  return finalized
 }
 
-function replaceExactImageSource(html: string, source: string, replacement: string): string {
-  const escaped = escapeGoHtml(source); const candidates = [...new Set([source, escaped])].flatMap(value => [[`src="${value}"`, `src="${replacement}"`], [`src='${value}'`, `src='${replacement}'`]] as const)
-  const counts = candidates.map(([needle]) => countOccurrences(html, needle)); const total = counts.reduce((sum, count) => sum + count, 0)
+function replaceExactImageSourceBytes(html: Uint8Array, source: string, replacement: string): Uint8Array {
+  const encoder = new TextEncoder()
+  const escaped = escapeGoHtml(source); const candidates = [...new Set([source, escaped])].flatMap(value => [[encoder.encode(`src="${value}"`), encoder.encode(`src="${replacement}"`)], [encoder.encode(`src='${value}'`), encoder.encode(`src='${replacement}'`)]] as const)
+  const counts = candidates.map(([needle]) => countByteOccurrences(html, needle)); const total = counts.reduce((sum, count) => sum + count, 0)
   if (total !== 1) throw new Error(total === 0 ? 'signed local asset is missing from preview HTML' : 'signed local asset appears ambiguously in preview HTML')
-  for (const [index, pair] of candidates.entries()) if (counts[index] === 1) return html.replace(pair[0], pair[1])
+  for (const [index, pair] of candidates.entries()) if (counts[index] === 1) return replaceOneByteSequence(html, pair[0], pair[1])
   throw new Error('signed local asset could not be replaced')
 }
 function escapeGoHtml(value: string): string { return value.replaceAll('&', '&amp;').replaceAll("'", '&#39;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&#34;') }
-function countOccurrences(haystack: string, needle: string): number { let count = 0; let offset = 0; while ((offset = haystack.indexOf(needle, offset)) !== -1) { count += 1; offset += needle.length } return count }
-function validateWechatMaterialUrl(value: string): string { let url: URL; try { url = new URL(value) } catch { throw new Error('asset URL is invalid') }; if (url.protocol !== 'https:' || url.hostname !== 'mmbiz.qpic.cn' || url.username !== '' || url.password !== '' || url.hash !== '' || url.href !== value) throw new Error('asset URL must be canonical WeChat material HTTPS'); return value }
+function countByteOccurrences(haystack: Uint8Array, needle: Uint8Array): number { let count = 0; for (let offset = 0; offset <= haystack.length - needle.length;) { const found = indexOfBytes(haystack, needle, offset); if (found < 0) break; count += 1; offset = found + needle.length } return count }
+function replaceOneByteSequence(haystack: Uint8Array, needle: Uint8Array, replacement: Uint8Array): Uint8Array { const offset = indexOfBytes(haystack, needle, 0); if (offset < 0) throw new Error('replacement source disappeared'); const result = new Uint8Array(haystack.length - needle.length + replacement.length); result.set(haystack.subarray(0, offset)); result.set(replacement, offset); result.set(haystack.subarray(offset + needle.length), offset + replacement.length); return result }
+function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, start: number): number { outer: for (let index = start; index <= haystack.length - needle.length; index += 1) { for (let byte = 0; byte < needle.length; byte += 1) if (haystack[index + byte] !== needle[byte]) continue outer; return index } return -1 }
+function validateWechatMaterialUrl(value: string): string { let url: URL; try { url = new URL(value) } catch { throw new Error('asset URL is invalid') }; if (url.protocol !== 'https:' || url.hostname !== 'mmbiz.qpic.cn' || url.port !== '' || url.username !== '' || url.password !== '' || url.hash !== '' || url.href !== value) throw new Error('asset URL must be canonical WeChat material HTTPS'); return value }
 
 function projectDraftResponse(response: CliEnvelope): { draftId: string; draftUrl?: string } {
   if (!response.success || response.code !== 'OK' || response.message !== 'Success' || response.schema_version !== 'v1' || response.status !== 'completed' || response.retryable !== false || response.error !== undefined || response.error_details !== undefined || response.next_actions !== undefined) throw new Error('md2wechat draft response is not a strict success')
@@ -239,7 +247,7 @@ class SafeDraftError extends Error {}
 class DraftCancelledError extends Error {}
 function assertApproved(value: ApprovalOutcome): void { if (value === 'allowed-once') return; if (value === 'cancelled') throw new DraftCancelledError(); throw new SafeDraftError(`WeChat draft approval ${value}`) }
 function assertExactArgs(value: object, keys: readonly string[]): void { const expected = new Set(keys); if (Object.keys(value).length !== keys.length || Object.keys(value).some(key => !expected.has(key))) throw new SafeDraftError('WeChat draft contains unknown or missing arguments') }
-function validatePlanPaths(value: readonly string[]): readonly string[] { if (!Array.isArray(value) || value.length === 0 || value.length > MAX_PLAN_PATHS || value.some(path => typeof path !== 'string' || path.length < 1 || path.length > 1200) || new Set(value).size !== value.length) throw new SafeDraftError('WeChat draft requires unique bounded non-empty plan paths'); return [...value] }
+function validatePlanPaths(value: readonly string[]): readonly string[] { if (!Array.isArray(value) || value.length === 0 || value.length > MAX_PLAN_PATHS || value.some(path => typeof path !== 'string' || path.length < 1 || path.length > 1200) || new Set(value).size !== value.length) throw new SafeDraftError('WeChat draft requires unique bounded non-empty plan paths'); return [...value].sort() }
 function record(value: unknown): Record<string, unknown> { if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new Error('value must be an object'); return value as Record<string, unknown> }
 function safeOpaque(value: unknown, field: string): string { if (typeof value !== 'string' || value.trim() === '' || new TextEncoder().encode(value).byteLength > 512 || [...value].some(character => character.codePointAt(0)! <= 0x1f || character.codePointAt(0) === 0x7f)) throw new Error(`${field} is invalid`); return value }
 function canonicalHttps(value: unknown): string { if (typeof value !== 'string') throw new Error('draft URL is invalid'); let url: URL; try { url = new URL(value) } catch { throw new Error('draft URL is invalid') }; if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.hash !== '' || url.href !== value || value.length > 4096) throw new Error('draft URL is invalid'); return value }
