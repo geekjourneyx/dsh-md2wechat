@@ -109,6 +109,13 @@ function baseInput(overrides: Partial<PreviewSnapshotInput> = {}): PreviewSnapsh
   }
 }
 
+function receiptProjection(input: PreviewSnapshotInput) {
+  return {
+    metadata: { title: 'Article', author: '', digest: '' },
+    assets: input.localImages.map((image, index) => ({ index, kind: 'local' as const, source: image.path.split('/').slice(-2).join('/'), path: image.path, sha256: createHash('sha256').update(image.bytes).digest('hex') })),
+  }
+}
+
 describe('signed preview state', () => {
   let temporary: string
   let workspace: string
@@ -150,6 +157,32 @@ describe('signed preview state', () => {
     expect(base.articleSha256).toBe(createHash('sha256').update(baseInput().articleBytes).digest('hex'))
   })
 
+  it('signs strict draft metadata and ordered asset inventory without machine paths', () => {
+    const snapshot = createPreviewSnapshot(baseInput({ localImages: [{ path: `revisions/${'a'.repeat(64)}/images/a.png`, bytes: Uint8Array.from([1]) }] }))
+    const receipt = createPreviewReceipt({
+      snapshot,
+      previewHtmlPath: `revisions/${snapshot.revisionId}/previews/html/${snapshot.id}.html`,
+      previewHtmlBytes: encoder.encode('<article><img src="images/a.png"></article>'),
+      credentialValue: 'secret-one',
+      issuedAt: '2026-08-25T00:00:00.000Z',
+      expiresAt: '2026-08-25T00:10:00.000Z',
+      metadata: { title: '文章标题', author: '作者', digest: '摘要' },
+      assets: [
+        { index: 0, kind: 'local', source: 'images/a.png', path: `revisions/${'a'.repeat(64)}/images/a.png`, sha256: createHash('sha256').update(Uint8Array.from([1])).digest('hex') },
+        { index: 1, kind: 'online', source: 'https://mmbiz.qpic.cn/existing.png' },
+      ],
+    })
+    expect(receipt.metadata).toEqual({ title: '文章标题', author: '作者', digest: '摘要' })
+    expect(receipt.assets.map(asset => asset.kind)).toEqual(['local', 'online'])
+    expect(JSON.stringify(receipt)).not.toContain('/private/')
+    expect(() => createPreviewReceipt({
+      snapshot,
+      previewHtmlPath: `revisions/${snapshot.revisionId}/previews/html/${snapshot.id}.html`,
+      previewHtmlBytes: encoder.encode('x'), credentialValue: 'secret-one', issuedAt: '2026-08-25T00:00:00.000Z', expiresAt: '2026-08-25T00:10:00.000Z',
+      metadata: { title: '', author: '', digest: '' }, assets: [],
+    })).toThrow('title')
+  })
+
   it('sorts artifact-relative images canonically and is independent of machine paths and input order', () => {
     const first = createPreviewSnapshot(baseInput())
     const reversed = createPreviewSnapshot(baseInput({ localImages: [...baseInput().localImages].reverse() }))
@@ -183,14 +216,17 @@ describe('signed preview state', () => {
       credentialValue: input.credentialValue,
       issuedAt: '2026-08-25T00:00:00.000Z',
       expiresAt: '2026-08-25T00:10:00.000Z',
+      ...receiptProjection(input),
     })
     await store.writeAtomic(previewHtmlPath, html)
     const committed = await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt, ownership: createPreviewPublicationOwnership() })
-    await expect(validateCurrentPreview(store, {
+    const verified = await validateCurrentPreview(store, {
       snapshotInput: input,
       credentialValue: input.credentialValue,
       now: new Date('2026-08-25T00:05:00.000Z'),
-    })).resolves.toEqual({ snapshot, receipt, manifestPath: committed.manifestPath })
+    })
+    expect(verified).toMatchObject({ snapshot, receipt, manifestPath: committed.manifestPath, htmlPath: previewHtmlPath })
+    expect(Array.from(verified.htmlBytes)).toEqual(Array.from(html))
 
     const staleInputs = [
       baseInput({ articleBytes: encoder.encode('# Changed\n') }),
@@ -274,6 +310,7 @@ describe('signed preview state', () => {
     const receipt = createPreviewReceipt({
       snapshot, previewHtmlPath, previewHtmlBytes: html, credentialValue: input.credentialValue,
       issuedAt: '2026-08-25T00:00:00.000Z', expiresAt: '2026-08-25T00:10:00.000Z',
+      ...receiptProjection(input),
     })
     await store.writeAtomic(previewHtmlPath, html)
     const committed = await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt, ownership: createPreviewPublicationOwnership() })
@@ -311,6 +348,7 @@ describe('signed preview state', () => {
     const invalidSignature = createPreviewReceipt({
       snapshot, previewHtmlPath, previewHtmlBytes: html, credentialValue: 'wrong-proof-key',
       issuedAt: '2026-08-25T00:00:00.000Z', expiresAt: '2026-08-25T00:10:00.000Z',
+      ...receiptProjection(input),
     })
     await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt: invalidSignature, ownership: createPreviewPublicationOwnership() })
     await assertStale()
@@ -324,6 +362,7 @@ describe('signed preview state', () => {
     const receipt = createPreviewReceipt({
       snapshot, previewHtmlPath, previewHtmlBytes: html, credentialValue: input.credentialValue,
       issuedAt: '2026-08-25T00:00:00.000Z', expiresAt: '2026-08-25T00:10:00.000Z',
+      ...receiptProjection(input),
     })
     const ownership = createPreviewPublicationOwnership()
     ownership.html.created = true
@@ -353,6 +392,7 @@ describe('signed preview state', () => {
     const receipt = createPreviewReceipt({
       snapshot, previewHtmlPath, previewHtmlBytes: html, credentialValue: input.credentialValue,
       issuedAt: '2026-08-25T00:00:00.000Z', expiresAt: '2026-08-25T00:10:00.000Z',
+      ...receiptProjection(input),
     })
     await store.writeAtomic(previewHtmlPath, html)
     await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt, ownership: createPreviewPublicationOwnership() })

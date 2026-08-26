@@ -63,6 +63,8 @@ export interface PreviewReceipt {
   revisionId: string
   previewHtmlPath: string
   previewHtmlSha256: string
+  metadata: PreviewMetadata
+  assets: readonly PreviewAsset[]
   accountProvenance: string
   issuedAt: string
   expiresAt: string
@@ -70,6 +72,15 @@ export interface PreviewReceipt {
   cliVersion: string
   signature: string
 }
+
+/** Strict article metadata signed by the preview receipt for later draft creation. */
+export interface PreviewMetadata { title: string; author: string; digest: string }
+
+/** Ordered Markdown asset inventory signed without retaining process paths. */
+export type PreviewAsset =
+  | { index: number; kind: 'local'; source: string; path: string; sha256: string }
+  | { index: number; kind: 'online'; source: string }
+  | { index: number; kind: 'ai'; source: string }
 
 /** Per-attempt ownership proof for each content-addressed preview artifact. */
 export interface PreviewPublicationOwnership {
@@ -92,6 +103,8 @@ export interface PreviewReceiptInput {
   credentialValue: string
   issuedAt: string
   expiresAt: string
+  metadata: PreviewMetadata
+  assets: readonly PreviewAsset[]
 }
 
 /** Currentness inputs that must reproduce the persisted snapshot and receipt. */
@@ -107,10 +120,35 @@ export interface CurrentPreview {
   snapshot: PreviewSnapshot
   receipt: PreviewReceipt
   manifestPath: string
+  htmlPath: string
+  htmlBytes: Uint8Array
 }
 
 /** Maximum complete preview HTML accepted from the external CLI. */
 export const PREVIEW_HTML_LIMIT_BYTES = MAX_PREVIEW_HTML_BYTES
+
+/** Structurally match the current pointer and receipt before asking for approval. */
+export async function preflightCurrentPreview(
+  store: ArtifactStore,
+  revisionId: string,
+  receiptId: string,
+  now: Date,
+  signal?: AbortSignal,
+): Promise<{ receipt: PreviewReceipt; htmlPath: string }> {
+  try {
+    hashString(revisionId, 'preview revision ID'); hashString(receiptId, 'preview receipt ID')
+    if (Number.isNaN(now.getTime())) throw new Error('invalid current time')
+    const pointer = parsePointer(await store.read(currentManifestPath(revisionId), signal), revisionId)
+    if (pointer.receiptId !== receiptId) throw new Error('receipt changed')
+    const receipt = parseReceipt(await store.read(pointer.receiptPath, signal))
+    if (receipt.id !== receiptId || receipt.revisionId !== revisionId || receipt.previewHtmlPath !== pointer.previewHtmlPath) throw new Error('receipt changed')
+    if (now.getTime() < Date.parse(receipt.issuedAt) || Date.parse(receipt.expiresAt) <= now.getTime()) throw new Error('receipt expired')
+    return { receipt, htmlPath: pointer.previewHtmlPath }
+  } catch {
+    if (signal?.aborted) throw safePreviewValidationError('preview validation cancelled')
+    throw safePreviewValidationError('stale preview')
+  }
+}
 
 /**
  * Create empty per-attempt ownership proof for content-addressed preview artifacts.
@@ -190,6 +228,8 @@ export function createPreviewReceipt(input: PreviewReceiptInput): PreviewReceipt
     revisionId: snapshot.revisionId,
     previewHtmlPath: input.previewHtmlPath,
     previewHtmlSha256: sha256(input.previewHtmlBytes),
+    metadata: validatePreviewMetadata(input.metadata),
+    assets: validatePreviewAssets(input.assets, snapshot),
     accountProvenance: snapshot.accountProvenance,
     issuedAt,
     expiresAt,
@@ -197,7 +237,9 @@ export function createPreviewReceipt(input: PreviewReceiptInput): PreviewReceipt
     cliVersion: snapshot.cliVersion,
   } as const
   const signature = sign(unsigned, input.credentialValue)
-  return { ...unsigned, signature, id: sha256Text(canonicalJson({ ...unsigned, signature })) }
+  const receipt = { ...unsigned, signature, id: sha256Text(canonicalJson({ ...unsigned, signature })) }
+  assertReceiptBindings(snapshot, receipt)
+  return receipt
 }
 
 /**
@@ -274,7 +316,7 @@ export async function validateCurrentPreview(store: ArtifactStore, input: Curren
     if (html.byteLength < 1 || html.byteLength > MAX_PREVIEW_HTML_BYTES || sha256(html) !== receipt.previewHtmlSha256) {
       throw new Error('preview HTML changed')
     }
-    return { snapshot, receipt, manifestPath }
+    return { snapshot, receipt, manifestPath, htmlPath: paths.previewHtmlPath, htmlBytes: html }
   } catch {
     if (input.signal?.aborted) throw safePreviewValidationError('preview validation cancelled')
     throw safePreviewValidationError('stale preview')
@@ -421,7 +463,7 @@ function validateReceipt(value: unknown): PreviewReceipt {
   const receipt = plainRecord(value, 'preview receipt must be an object')
   assertExactKeys(receipt, [
     'schemaVersion', 'id', 'snapshotId', 'revisionId', 'previewHtmlPath', 'previewHtmlSha256',
-    'accountProvenance', 'issuedAt', 'expiresAt', 'pluginVersion', 'cliVersion', 'signature',
+    'metadata', 'assets', 'accountProvenance', 'issuedAt', 'expiresAt', 'pluginVersion', 'cliVersion', 'signature',
   ], 'preview receipt')
   if (receipt.schemaVersion !== PREVIEW_SCHEMA_VERSION) throw new TypeError('unsupported preview receipt schema')
   const safe: Omit<PreviewReceipt, 'id'> = {
@@ -430,6 +472,8 @@ function validateReceipt(value: unknown): PreviewReceipt {
     revisionId: hashString(receipt.revisionId, 'preview receipt revision ID'),
     previewHtmlPath: requiredSafeString(receipt.previewHtmlPath, 'preview receipt HTML path'),
     previewHtmlSha256: hashString(receipt.previewHtmlSha256, 'preview receipt HTML hash'),
+    metadata: validatePreviewMetadata(receipt.metadata),
+    assets: validatePreviewAssets(receipt.assets, { revisionId: safeRevisionId(receipt.revisionId) }),
     accountProvenance: hashString(receipt.accountProvenance, 'preview receipt account provenance'),
     issuedAt: canonicalTimestamp(receipt.issuedAt, 'preview receipt issue time'),
     expiresAt: canonicalTimestamp(receipt.expiresAt, 'preview receipt expiry time'),
@@ -451,6 +495,9 @@ function assertReceiptBindings(snapshot: PreviewSnapshot, receipt: PreviewReceip
     || receipt.cliVersion !== snapshot.cliVersion) {
     throw new TypeError('preview receipt does not match its snapshot')
   }
+  const receiptLocals = receipt.assets.filter((asset): asset is Extract<PreviewAsset, { kind: 'local' }> => asset.kind === 'local')
+    .map(asset => ({ path: asset.path, sha256: asset.sha256 })).sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
+  if (canonicalJson(receiptLocals) !== canonicalJson(snapshot.localImages)) throw new TypeError('preview receipt local assets do not match its snapshot')
 }
 
 function unsignedReceipt(receipt: PreviewReceipt) {
@@ -460,12 +507,54 @@ function unsignedReceipt(receipt: PreviewReceipt) {
     revisionId: receipt.revisionId,
     previewHtmlPath: receipt.previewHtmlPath,
     previewHtmlSha256: receipt.previewHtmlSha256,
+    metadata: receipt.metadata,
+    assets: receipt.assets,
     accountProvenance: receipt.accountProvenance,
     issuedAt: receipt.issuedAt,
     expiresAt: receipt.expiresAt,
     pluginVersion: receipt.pluginVersion,
     cliVersion: receipt.cliVersion,
   }
+}
+
+function safeRevisionId(value: unknown): string { return hashString(value, 'preview receipt revision ID') }
+
+function validatePreviewMetadata(value: unknown): PreviewMetadata {
+  const metadata = plainRecord(value, 'preview metadata must be an object')
+  assertExactKeys(metadata, ['title', 'author', 'digest'], 'preview metadata')
+  const title = boundedCodePoints(metadata.title, 32, 'preview title', false)
+  const author = boundedCodePoints(metadata.author, 16, 'preview author', true)
+  const digest = boundedCodePoints(metadata.digest, 128, 'preview digest', true)
+  return { title, author, digest }
+}
+
+function validatePreviewAssets(value: unknown, snapshot: Pick<PreviewSnapshot, 'revisionId'>): readonly PreviewAsset[] {
+  const assets = requiredArray(value, 'preview assets')
+  if (assets.length > 512) throw new TypeError('preview asset inventory is too large')
+  const localPaths = new Set<string>()
+  return assets.map((entry, index) => {
+    const asset = plainRecord(entry, 'preview asset must be an object')
+    const kind = oneOf(asset.kind, ['local', 'online', 'ai'] as const, 'preview asset kind')
+    const source = boundedCodePoints(asset.source, 4096, 'preview asset source', false)
+    if (asset.index !== index) throw new TypeError('preview asset index is not canonical')
+    if (kind !== 'local') {
+      assertExactKeys(asset, ['index', 'kind', 'source'], 'preview asset')
+      return { index, kind, source }
+    }
+    assertExactKeys(asset, ['index', 'kind', 'source', 'path', 'sha256'], 'preview local asset')
+    const path = boundedCodePoints(asset.path, 1200, 'preview local asset path', false)
+    validateArtifactRelativePath(path)
+    if (!path.startsWith(`revisions/${snapshot.revisionId}/`)) throw new TypeError('preview local asset leaves its revision')
+    const portable = path.normalize('NFC').toLowerCase()
+    if (localPaths.has(portable)) throw new TypeError('preview local asset path is duplicated')
+    localPaths.add(portable)
+    return { index, kind: 'local', source, path, sha256: hashString(asset.sha256, 'preview local asset hash') }
+  })
+}
+
+function boundedCodePoints(value: unknown, limit: number, field: string, empty: boolean): string {
+  if (typeof value !== 'string' || (!empty && value.length === 0) || [...value].length > limit || containsControl(value)) throw new TypeError(`${field} is invalid`)
+  return value
 }
 
 function sign(value: ReturnType<typeof unsignedReceipt>, credentialValue: string): string {

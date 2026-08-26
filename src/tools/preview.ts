@@ -20,6 +20,7 @@ import {
   publishPreviewSnapshot,
 } from '../workspace/preview.ts'
 import type { PreviewSnapshotInput, PreviewTransaction } from '../workspace/preview.ts'
+import type { PreviewAsset, PreviewMetadata } from '../workspace/preview.ts'
 import { domainResult, genericCall, genericResult } from './shared.ts'
 import { loadCurrentArticleRevision } from './improve-article.ts'
 import type { CurrentArticleRevision } from './improve-article.ts'
@@ -63,7 +64,7 @@ type PreparedPreviewAsset =
   | { index: number; kind: 'online'; source: string }
   | { index: number; kind: 'ai'; source: string }
 
-interface PreparedPreviewInputs {
+export interface PreparedPreviewInputs {
   current: CurrentArticleRevision
   localImages: readonly LocalPreviewImage[]
   assets: readonly PreparedPreviewAsset[]
@@ -124,7 +125,7 @@ export function createPreviewTool({
       try {
         assertKnownArguments(args, ['manifestPath'])
         exec.signal.throwIfAborted()
-        const preparedBeforeApproval = await prepareInputs(store, args.manifestPath, exec.signal)
+        const preparedBeforeApproval = await preparePreviewInputs(store, args.manifestPath, exec.signal)
         if (exec.agent === undefined) throw new SafePreviewError('article preview requires an active agent')
         const outcome = await approval.request({
           agent: exec.agent,
@@ -152,11 +153,11 @@ export function createPreviewTool({
         )
         return await enqueuePreview(queueIdentity, async () => {
           exec.signal.throwIfAborted()
-          const prepared = await prepareInputs(store, args.manifestPath, exec.signal)
+          const prepared = await preparePreviewInputs(store, args.manifestPath, exec.signal)
           if (prepared.contentId !== preparedBeforeApproval.contentId) {
             throw new SafePreviewError('preview inputs changed after approval')
           }
-          const snapshotInput = snapshotInputFor(
+          const snapshotInput = previewSnapshotInputFor(
             prepared,
             layoutBaseUrl,
             credentialReference,
@@ -187,8 +188,8 @@ export function createPreviewTool({
                 await prepared.current.articleAuthorization.beforeSpawn(spawnSignal)
                 for (const image of prepared.localImages) await image.authorization.beforeSpawn(spawnSignal)
                 await stage.beforeSpawn(spawnSignal)
-                const current = await prepareInputs(store, args.manifestPath, spawnSignal)
-                const currentSnapshot = createPreviewSnapshot(snapshotInputFor(
+                const current = await preparePreviewInputs(store, args.manifestPath, spawnSignal)
+                const currentSnapshot = createPreviewSnapshot(previewSnapshotInputFor(
                   current,
                   layoutBaseUrl,
                   credentialReference,
@@ -201,7 +202,7 @@ export function createPreviewTool({
               },
             })
             exec.signal.throwIfAborted()
-            validatePreviewResponse(response, stage.processPath, prepared, {
+            const projection = validatePreviewResponse(response, stage.processPath, prepared, {
               theme: previewTheme,
               fontSize: previewFontSize,
               backgroundType: previewBackgroundType,
@@ -217,6 +218,8 @@ export function createPreviewTool({
               credentialValue,
               issuedAt: issued.toISOString(),
               expiresAt: expires.toISOString(),
+              metadata: projection.metadata,
+              assets: projection.assets,
             })
             const ownership = createPreviewPublicationOwnership()
             transaction = { state: 'published', snapshot, receipt, ownership }
@@ -274,7 +277,18 @@ export function createPreviewTool({
   })
 }
 
-function snapshotInputFor(
+/**
+ * Reconstruct the exact signed preview snapshot input from current bytes, config, and proof credential.
+ * @param prepared - Current immutable article and image bytes.
+ * @param layoutBaseUrl - Configured layout origin.
+ * @param credentialReference - Stable proof credential reference.
+ * @param credentialValue - Resolved proof credential value used only for one-way derivation.
+ * @param previewTheme - Exact preview theme.
+ * @param previewFontSize - Exact preview font size.
+ * @param previewBackgroundType - Exact preview background.
+ * @returns Complete snapshot input without persisting credential material.
+ */
+export function previewSnapshotInputFor(
   prepared: PreparedPreviewInputs,
   layoutBaseUrl: string,
   credentialReference: string,
@@ -303,7 +317,14 @@ function snapshotInputFor(
   }
 }
 
-async function prepareInputs(
+/**
+ * Load the current immutable revision and every exact Markdown image input used by preview validation.
+ * @param store - Contained artifact store.
+ * @param manifestPath - Current revision manifest artifact path.
+ * @param signal - Cancellation signal.
+ * @returns Current article, local bytes, ordered assets, and freshness identity.
+ */
+export async function preparePreviewInputs(
   store: ArtifactStore,
   manifestPath: string,
   signal: AbortSignal,
@@ -397,7 +418,7 @@ function validatePreviewResponse(
   expectedOutput: string,
   prepared: PreparedPreviewInputs,
   settings: { theme: string; fontSize: PreviewFontSize; backgroundType: PreviewBackgroundType },
-): void {
+): { metadata: PreviewMetadata; assets: readonly PreviewAsset[] } {
   if (!response.success
     || response.code !== 'PREVIEW_READY'
     || response.message !== 'Preview ready'
@@ -416,14 +437,14 @@ function validatePreviewResponse(
   if (render.mode !== 'api' || render.theme !== settings.theme || render.fidelity !== 'exact' || render.exact_html !== true) {
     throw new Error('preview render does not provide exact API HTML')
   }
-  validateInspect(data.inspect, prepared, settings)
+  return validateInspect(data.inspect, prepared, settings)
 }
 
 function validateInspect(
   value: unknown,
   prepared: PreparedPreviewInputs,
   settings: { theme: string; fontSize: PreviewFontSize; backgroundType: PreviewBackgroundType },
-): void {
+): { metadata: PreviewMetadata; assets: readonly PreviewAsset[] } {
   const inspect = requiredRecord(value, 'preview inspect')
   assertAllowedKeys(inspect, ['source_file', 'source_dir', 'context', 'metadata', 'structure', 'assets', 'readiness', 'checks'], ['source_file', 'source_dir', 'context', 'metadata', 'structure', 'readiness'], 'preview inspect')
   if (inspect.source_file !== prepared.current.articleAuthorization.processPath
@@ -468,6 +489,12 @@ function validateInspect(
     throw new TypeError('preview inspect checks do not match the prepared article')
   }
   validateReadiness(inspect.readiness, checks)
+  return {
+    metadata: { title: title.value, author: author.value, digest: digest.value },
+    assets: prepared.assets.map(asset => asset.kind === 'local'
+      ? { index: asset.index, kind: 'local' as const, source: asset.source, path: asset.image.path, sha256: createHash('sha256').update(asset.image.bytes).digest('hex') }
+      : { index: asset.index, kind: asset.kind, source: asset.source }),
+  }
 }
 
 function validateMetadataField(value: unknown, name: 'title' | 'author' | 'digest'): { value: string; source: string; valid: boolean } {

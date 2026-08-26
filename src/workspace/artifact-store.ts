@@ -334,6 +334,19 @@ export class ArtifactStore {
   }
 
   /**
+   * Reject a copy-out destination that currently aliases its contained source before approval.
+   * @param sourceRelative - Artifact-relative source path.
+   * @param destinationAbsolute - Explicit absolute external destination.
+   * @param signal - Optional cancellation signal.
+   */
+  async preflightCopyOut(sourceRelative: string, destinationAbsolute: string, signal?: AbortSignal): Promise<void> {
+    if (!isAbsolute(destinationAbsolute)) throw new TypeError('copyOut destination must be an absolute path')
+    const source = await this.resolveContained(sourceRelative, signal)
+    const destination = await this.fs.resolve(destinationAbsolute, resolveOptions(signal))
+    assertDifferentTargets(source, destination)
+  }
+
+  /**
    * Reserve a unique private output path for an external CLI process.
    *
    * Callers must pass only `processPath` to the CLI, then call `commit()` after
