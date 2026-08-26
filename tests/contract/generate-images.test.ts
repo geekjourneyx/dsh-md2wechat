@@ -52,6 +52,24 @@ class Gateway implements CliGateway {
     if (options?.beforeSpawn !== undefined) await options.beforeSpawn(options.signal ?? new AbortController().signal)
     this.calls.push({ argv: [...argv], options })
     const command = argv[0]!
+    if (argv.includes('--plan')) {
+      const value = (flag: string): string => argv[argv.indexOf(flag) + 1]!
+      const preset = argv.includes('--preset') ? value('--preset') : command === 'generate_cover' ? 'cover-default' : 'infographic-default'
+      const archetype = preset.startsWith('cover-') ? 'cover' : 'infographic'
+      const defaultAspect = archetype === 'cover' ? '16:9' : '3:4'
+      const aspect = argv.includes('--aspect') ? value('--aspect') : defaultAspect
+      return {
+        success: true, code: 'IMAGE_PLAN_READY', message: 'Image plan ready; generate the image with a host Agent or configured provider.',
+        schema_version: 'v1', status: 'action_required', retryable: false,
+        data: {
+          mode: 'plan', command, execution_owner: 'host_agent', side_effects: false, requires_provider: false, requires_image_api_key: false,
+          prompt: command === 'generate_cover' ? 'Prepared cover prompt' : 'Prepared preset prompt', raw_prompt: '', preset, archetype,
+          primary_use_case: archetype, compatible_use_cases: [archetype], recommended_aspect_ratios: [aspect], default_aspect_ratio: defaultAspect,
+          article: value('--article'), title: 'Fixture', summary: '', keywords: '', style: '', aspect, size: '', model_hint: '',
+          suggested_filename: `${command === 'generate_cover' ? 'cover' : command === 'generate_infographic' ? 'info' : 'preset'}.png`, alt_text: 'Fixture',
+        },
+      }
+    }
     const prompt = command === 'generate_image' && argv[1] !== '--preset' ? argv[1]! : command === 'generate_cover' ? 'Prepared cover prompt' : 'Prepared preset prompt'
     const response: CliEnvelope = { success: true, code: 'OK', message: 'Success', schema_version: 'v1', status: 'completed', retryable: false,
       data: { prompt, original_url: 'https://images.example/result.png', media_id: 'media-safe', wechat_url: 'https://mmbiz.qpic.cn/result.png', width: 0, height: 0 } }
@@ -144,12 +162,48 @@ describe('md2wechat_generate_images', () => {
     await tool.execute({ manifestPath, planPaths: [realPlan] }, exec()); const outcome = await hooks!.done
     expect(outcome.status).toBe('completed')
     const article = await realpath(store.resolve(`revisions/${revisionId}/article.md`))
-    expect(gateway.calls.map(call => call.argv)).toEqual([
+    expect(gateway.calls.filter(call => call.argv.includes('--plan')).map(call => call.argv)).toEqual([
+      ['generate_image', '--preset', 'cover-hero', '--article', article, '--aspect', '16:9', '--plan', '--json'],
+      ['generate_cover', '--article', article, '--plan', '--json'],
+      ['generate_infographic', '--article', article, '--plan', '--json'],
+    ])
+    expect(gateway.calls.filter(call => !call.argv.includes('--plan')).map(call => call.argv)).toEqual([
       ['generate_image', 'Raw prompt', '--json'],
       ['generate_image', '--preset', 'cover-hero', '--article', article, '--aspect', '16:9', '--json'],
       ['generate_cover', '--article', article, '--preset', 'cover-default', '--aspect', '16:9', '--json'],
       ['generate_infographic', '--article', article, '--preset', 'infographic-default', '--aspect', '3:4', '--json'],
     ])
+  })
+
+  it('rejects unknown presets and replaced rendered prompts even after recomputing the plan ID', async () => {
+    const sourcePath = await installRealSourceExecutionPlan()
+    const source = JSON.parse(decoder.decode(await store.read(sourcePath))) as {
+      schemaVersion: 1; planId: string; revisionId: string; createdAt: string;
+      items: Array<{ original: Record<string, unknown>; targetArtifactPath: string; cliPlan: Record<string, unknown> }>
+    }
+    const attacks: Array<[string, (items: typeof source.items) => void]> = [
+      ['unknown explicit preset', items => {
+        items[1]!.original.preset = 'not-a-3.3.0-preset'; items[1]!.original.aspect = '4:3'
+        items[1]!.cliPlan.preset = 'not-a-3.3.0-preset'; items[1]!.cliPlan.aspect = '4:3'
+        items[1]!.cliPlan.default_aspect_ratio = '4:3'; items[1]!.cliPlan.recommended_aspect_ratios = ['4:3']
+      }],
+      ['replaced rendered prompt', items => { items[2]!.cliPlan.prompt = 'Arbitrary attacker-controlled rendered prompt' }],
+    ]
+
+    for (const [name, mutate] of attacks) {
+      const candidate = structuredClone(source)
+      mutate(candidate.items)
+      candidate.planId = canonicalImagePlanId(revisionId, candidate.items)
+      const candidatePath = `revisions/${revisionId}/plans/${candidate.planId}.json`
+      await store.writeAtomic(candidatePath, encodeCanonical(candidate))
+      const gateway = new Gateway()
+      const tool = createGenerateImagesTool(dependencies(gateway))
+      await expect(tool.execute({ manifestPath, planPaths: [candidatePath] }, exec())).rejects.toThrow('could not be prepared')
+      expect(gateway.calls.filter(call => !call.argv.includes('--plan'))).toHaveLength(0)
+      if (name === 'unknown explicit preset') expect(gateway.calls).toHaveLength(0)
+      else expect(gateway.calls.every(call => call.argv.includes('--plan'))).toBe(true)
+      expect(approvals).toHaveLength(0); expect(resolved).toHaveLength(0); expect(starts).toHaveLength(0)
+    }
   })
 
   it('rejects recomputed plans that replace approved prompt, preset, or aspect before approval or work', async () => {

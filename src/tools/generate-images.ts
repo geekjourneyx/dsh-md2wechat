@@ -29,6 +29,7 @@ import type {
 import { appendOperation } from '../workspace/revision.ts'
 import { loadCurrentArticleRevision } from './improve-article.ts'
 import type { CurrentArticleRevision } from './improve-article.ts'
+import { imagePlanningArgv, projectImagePlanResponse } from './plan-images.ts'
 import { domainResult, genericCall, genericResult } from './shared.ts'
 
 declare module '@deepseek-ai/dsh-jobs' {
@@ -129,7 +130,7 @@ export function createGenerateImagesTool({
         assertKnownArguments(args, ['manifestPath', 'planPaths'])
         exec.signal.throwIfAborted()
         const planPaths = validatePlanPaths(args.planPaths)
-        const prepared = await prepareBatch(store, args.manifestPath, planPaths, exec.signal)
+        const prepared = await prepareBatch(gateway, store, args.manifestPath, planPaths, exec.signal)
         const planIds = prepared.plans.map(plan => plan.planId)
         if (prepared.remaining.length === 0) {
           return domainResult({ kind: 'completed' as const, planIds, resultPaths: [...prepared.completedPaths] })
@@ -313,7 +314,7 @@ async function processImageItem(input: RunBatchInput, plan: LoadedImagePlan, ite
   }
 }
 
-async function prepareBatch(store: ArtifactStore, manifestPath: string, planPaths: readonly string[], signal: AbortSignal): Promise<PreparedBatch> {
+async function prepareBatch(gateway: CliGateway, store: ArtifactStore, manifestPath: string, planPaths: readonly string[], signal: AbortSignal): Promise<PreparedBatch> {
   const current = await loadCurrentArticleRevision(store, manifestPath, signal)
   const plans: LoadedImagePlan[] = []
   const remaining: Array<{ plan: LoadedImagePlan; item: LoadedImagePlanItem }> = []
@@ -331,6 +332,7 @@ async function prepareBatch(store: ArtifactStore, manifestPath: string, planPath
       const targetKey = item.targetPath.normalize('NFC').toLowerCase()
       if (itemIds.has(itemKey) || [...targets].some(existing => targetKey === existing || targetKey.startsWith(`${existing}/`) || existing.startsWith(`${targetKey}/`))) throw new Error('duplicate image plan item or target alias')
       itemIds.add(itemKey); targets.add(targetKey)
+      await verifyPresetProjection(gateway, current, item, signal)
       const result = await loadVerifiedImageResult(store, plan, item, signal)
       if (result === undefined) remaining.push({ plan, item })
       else completedPaths.push(imageResultPath(plan, item))
@@ -340,6 +342,23 @@ async function prepareBatch(store: ArtifactStore, manifestPath: string, planPath
   const verified = await loadCurrentArticleRevision(store, manifestPath, signal)
   if (verified.revision.id !== current.revision.id) throw new Error('article revision changed while loading image plans')
   return { current, plans, remaining, completedPaths }
+}
+
+async function verifyPresetProjection(
+  gateway: CliGateway,
+  current: CurrentArticleRevision,
+  item: LoadedImagePlanItem,
+  signal: AbortSignal,
+): Promise<void> {
+  if (item.kind === 'image' && item.source.preset === undefined) return
+  const response = await gateway.run(imagePlanningArgv(item.source, current.articleAuthorization.processPath), {
+    signal,
+    beforeSpawn: current.articleAuthorization.beforeSpawn,
+  })
+  const projected = projectImagePlanResponse(response, item.source, current)
+  if (!Buffer.from(encodeCanonical(projected)).equals(Buffer.from(encodeCanonical(item.cliPlan)))) {
+    throw new Error('image CLI plan does not match the md2wechat 3.3.0 projection')
+  }
 }
 
 function executionArgv(item: LoadedImagePlanItem, article: string): readonly string[] {

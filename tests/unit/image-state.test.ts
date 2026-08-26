@@ -193,7 +193,7 @@ describe('image state', () => {
   })
 
   it.each([
-    { id: 'diagram', kind: 'image' as const, originalPreset: 'diagram', resolvedPreset: 'diagram', archetype: 'diagram', aspect: '4:3' },
+    { id: 'hero', kind: 'image' as const, originalPreset: 'cover-hero', resolvedPreset: 'cover-hero', archetype: 'cover', aspect: '16:9' },
     { id: 'info', kind: 'infographic' as const, originalPreset: undefined, resolvedPreset: 'infographic-default', archetype: 'infographic', aspect: '3:4' },
     { id: 'compatible-cover', kind: 'cover' as const, originalPreset: 'infographic-comparison', resolvedPreset: 'infographic-comparison', archetype: 'infographic', aspect: '16:9', defaultAspect: '3:4', compatible: ['infographic', 'cover'], recommended: ['3:4', '16:9'] },
   ])('accepts real 3.3.0 resolved $kind preset/aspect output', async fixture => {

@@ -49,6 +49,7 @@ export interface ImageResult {
 
 /** Strictly loaded plan item retaining the authoritative CLI projection. */
 export interface LoadedImagePlanItem extends ImagePlanItem {
+  readonly source: ImagePlanItem
   readonly cliPlan: Readonly<Record<string, JsonValue>>
 }
 
@@ -219,7 +220,9 @@ export async function loadImagePlan(
     canonicalItems.push({ original: canonicalOriginal, targetArtifactPath: targetPath, cliPlan })
     const resolvedPreset = boundedPlanString(cliPlan.preset, 'image plan CLI preset')
     const resolvedAspect = boundedPlanString(cliPlan.aspect, 'image plan CLI aspect')
-    return { id, kind, prompt: boundedPlanString(cliPlan.prompt, 'image plan CLI prompt', false), targetPath,
+    const source: ImagePlanItem = { id, kind, prompt: originalPrompt, targetPath: localTarget,
+      ...(preset === undefined ? {} : { preset }), ...(aspect === undefined ? {} : { aspect }) }
+    return { id, kind, prompt: boundedPlanString(cliPlan.prompt, 'image plan CLI prompt', false), targetPath, source,
       ...(resolvedPreset === '' ? {} : { preset: resolvedPreset }), ...(resolvedAspect === '' ? {} : { aspect: resolvedAspect }), cliPlan }
   })
   if (canonicalImagePlanId(revisionId, canonicalItems) !== planId) throw new Error('image plan ID does not match its canonical payload')
@@ -451,10 +454,10 @@ function validateCliPlan(value: unknown, expected: { kind: ImagePlanItem['kind']
     const approvedPreset = (expected.preset ?? (expected.kind === 'cover' ? 'cover-default' : 'infographic-default')).trim().toLowerCase()
     if (resolvedPreset.toLowerCase() !== approvedPreset) throw new Error('image CLI plan preset does not match the approved preset')
     const bundledDefault = BUNDLED_PRESET_DEFAULT_ASPECT.get(approvedPreset)
+    if (bundledDefault === undefined) throw new Error('image CLI plan preset is not bundled with md2wechat 3.3.0')
     const approvedAspect = expected.aspect?.trim() ?? bundledDefault
-    if (approvedAspect === undefined) throw new Error('image CLI plan requires an approved aspect for an unverifiable preset default')
     if (resolvedAspect !== approvedAspect) throw new Error('image CLI plan aspect does not match the approved or bundled default aspect')
-    if (bundledDefault !== undefined && defaultAspect !== bundledDefault) throw new Error('image CLI plan preset default aspect does not match md2wechat 3.3.0')
+    if (defaultAspect !== bundledDefault) throw new Error('image CLI plan preset default aspect does not match md2wechat 3.3.0')
     if (defaultAspect === '' || !recommendedAspects.includes(defaultAspect)) throw new Error('image CLI plan default aspect is not recommended by its preset')
   }
   if (expected.kind !== 'image' && ![archetype, primaryUseCase, ...compatibleUseCases].some(value => value.toLowerCase() === expected.kind)) {

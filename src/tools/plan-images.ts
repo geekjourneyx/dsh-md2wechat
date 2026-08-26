@@ -72,12 +72,12 @@ export function createPlanImagesTool({
       const normalized = normalizeImages(args.images, current.revision.id)
       const items: JsonValue[] = []
       for (const item of normalized) {
-        const argv = imageArgv(item, current.articleAuthorization.processPath)
+        const argv = imagePlanningArgv(item.original, current.articleAuthorization.processPath)
         const response = await gateway.run(argv, {
           signal: exec.signal,
           beforeSpawn: current.articleAuthorization.beforeSpawn,
         })
-        const cliPlan = validateCliPlan(response, item.original, current)
+        const cliPlan = projectImagePlanResponse(response, item.original, current)
         items.push({ original: item.original, targetArtifactPath: item.targetArtifactPath, cliPlan })
       }
       const verified = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
@@ -114,7 +114,8 @@ export function createPlanImagesTool({
   })
 }
 
-type ImageInput = {
+/** Approved image fields used to derive one md2wechat planning invocation. */
+export type ImagePlanSource = {
   id: string
   kind: 'image' | 'cover' | 'infographic'
   prompt: string
@@ -124,11 +125,11 @@ type ImageInput = {
 }
 
 interface NormalizedImage {
-  original: ImageInput
+  original: ImagePlanSource
   targetArtifactPath: string
 }
 
-function normalizeImages(images: readonly ImageInput[], revisionId: string): NormalizedImage[] {
+function normalizeImages(images: readonly ImagePlanSource[], revisionId: string): NormalizedImage[] {
   if (images.length === 0) throw new Error('image plan must contain at least one item')
   const ids = new Set<string>()
   const targets: string[] = []
@@ -174,8 +175,13 @@ function normalizeTargetPath(input: string): string {
   return normalized
 }
 
-function imageArgv(item: NormalizedImage, article: string): readonly string[] {
-  const { original } = item
+/**
+ * Derive side-effect-free md2wechat planning arguments from approved fields.
+ * @param original - Approved image request before CLI defaults or prompt rendering.
+ * @param article - Authorized process path for the immutable article revision.
+ * @returns Exact md2wechat 3.3.0 planning arguments.
+ */
+export function imagePlanningArgv(original: ImagePlanSource, article: string): readonly string[] {
   if (original.kind === 'image' && original.preset === undefined) {
     return [
       'generate_image',
@@ -196,9 +202,16 @@ function imageArgv(item: NormalizedImage, article: string): readonly string[] {
   return argv
 }
 
-function validateCliPlan(
+/**
+ * Validate and persist-normalize one md2wechat 3.3.0 planning response.
+ * @param response - Response returned by the configured CLI gateway.
+ * @param image - Approved source fields used for the planning invocation.
+ * @param current - Current immutable article revision and authorized process path.
+ * @returns Strict CLI plan data with the process article path replaced by its artifact path.
+ */
+export function projectImagePlanResponse(
   response: Awaited<ReturnType<CliGateway['run']>>,
-  image: ImageInput,
+  image: ImagePlanSource,
   current: Awaited<ReturnType<typeof loadCurrentArticleRevision>>,
 ): JsonValue {
   if (!response.success || response.code !== 'IMAGE_PLAN_READY' || response.status !== 'action_required') {
@@ -410,7 +423,7 @@ function assertKnownArguments(args: object, allowed: readonly string[]): void {
   }
 }
 
-function planLocations(manifestPath: string, images: readonly ImageInput[]): readonly string[] {
+function planLocations(manifestPath: string, images: readonly ImagePlanSource[]): readonly string[] {
   const revisionId = /^revisions\/([a-f0-9]{64})\/manifest\.json$/u.exec(manifestPath)?.[1]
   if (revisionId === undefined) return [manifestPath]
   return [
