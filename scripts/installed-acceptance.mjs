@@ -12,9 +12,16 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import {
+  createChildEnvironment,
+  createTaskRootGuard,
+  expectedWorkflowPrompt,
+  runBounded,
+  terminateProcessTree,
+} from './installed-acceptance-support.mjs'
 
 const PACKAGE_NAME = '@geekjourneyx/dsh-md2wechat'
 const PLUGIN_TOOLS = [
@@ -48,14 +55,22 @@ const REQUIRED_COMMANDS = [
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const inputs = validateInputs(process.env)
+const timeouts = validateTimeouts(process.env)
 const paths = {
   dshHome: join(inputs.taskRoot, 'dsh-home'),
   workspace: join(inputs.taskRoot, 'workspace'),
   tarballs: join(inputs.taskRoot, 'tarballs'),
   logs: join(inputs.taskRoot, 'logs'),
-  cliHome: join(inputs.taskRoot, 'cli-home'),
+  home: join(inputs.taskRoot, 'home'),
+  temp: join(inputs.taskRoot, 'tmp'),
+  xdg: join(inputs.taskRoot, 'xdg'),
+  pnpmHome: join(inputs.taskRoot, 'pnpm-home'),
+  corepackHome: join(inputs.taskRoot, 'corepack-home'),
+  npmCache: join(inputs.taskRoot, 'npm-cache'),
+  pnpmStore: join(inputs.taskRoot, 'pnpm-store'),
   stateDir: join(inputs.taskRoot, 'dsh-home', 'plugins', 'dsh-md2wechat'),
 }
+let taskRootGuard
 
 await main()
 
@@ -63,10 +78,8 @@ function validateInputs(environment) {
   const dshCheckout = absoluteInput(environment.DSH_CHECKOUT, 'DSH_CHECKOUT')
   const cliPath = absoluteInput(environment.MD2WECHAT_CLI, 'MD2WECHAT_CLI')
   const taskRoot = absoluteInput(environment.DSH_MD2WECHAT_TASK_ROOT, 'DSH_MD2WECHAT_TASK_ROOT')
-  if (inside(taskRoot, tmpdir())) {
-    throw new Error('DSH_MD2WECHAT_TASK_ROOT must stay outside the platform temporary directory')
-  }
-  return { dshCheckout, cliPath, taskRoot }
+  const sourceRoot = optionalAbsoluteInput(environment.MD2WECHAT_SOURCE_ROOT, 'MD2WECHAT_SOURCE_ROOT')
+  return { dshCheckout, cliPath, taskRoot, sourceRoot }
 }
 
 function absoluteInput(value, name) {
@@ -74,6 +87,28 @@ function absoluteInput(value, name) {
     throw new Error(`${name} must be an absolute path`)
   }
   return resolve(value)
+}
+
+function optionalAbsoluteInput(value, name) {
+  return value === undefined ? undefined : absoluteInput(value, name)
+}
+
+function validateTimeouts(environment) {
+  return {
+    command: durationInput(environment.DSH_MD2WECHAT_COMMAND_TIMEOUT_MS, 'DSH_MD2WECHAT_COMMAND_TIMEOUT_MS', 180_000),
+    webStartup: durationInput(environment.DSH_MD2WECHAT_WEB_STARTUP_TIMEOUT_MS, 'DSH_MD2WECHAT_WEB_STARTUP_TIMEOUT_MS', 120_000),
+    http: durationInput(environment.DSH_MD2WECHAT_HTTP_TIMEOUT_MS, 'DSH_MD2WECHAT_HTTP_TIMEOUT_MS', 10_000),
+    webShutdown: durationInput(environment.DSH_MD2WECHAT_WEB_SHUTDOWN_TIMEOUT_MS, 'DSH_MD2WECHAT_WEB_SHUTDOWN_TIMEOUT_MS', 10_000),
+    killGrace: durationInput(environment.DSH_MD2WECHAT_KILL_GRACE_MS, 'DSH_MD2WECHAT_KILL_GRACE_MS', 2_000),
+  }
+}
+
+function durationInput(value, name, fallback) {
+  if (value === undefined) return fallback
+  if (!/^[1-9]\d*$/u.test(value)) throw new Error(`${name} must be a positive integer`)
+  const milliseconds = Number(value)
+  if (!Number.isSafeInteger(milliseconds) || milliseconds > 900_000) throw new Error(`${name} exceeds the supported limit`)
+  return milliseconds
 }
 
 function inside(candidate, parent) {
@@ -84,24 +119,40 @@ function inside(candidate, parent) {
 async function main() {
   await assertReadable(join(inputs.dshCheckout, 'apps', 'cli', 'package.json'))
   await assertExecutable(inputs.cliPath)
+  taskRootGuard = await createTaskRootGuard(inputs.taskRoot, {
+    platformTempRoot: tmpdir(),
+    userHome: homedir(),
+    forbiddenRoots: [repositoryRoot, inputs.dshCheckout, process.env.DSH_HOME, inputs.sourceRoot].filter(Boolean),
+  })
   await assertPrivateTaskRoot()
   await resetRunDirectories()
 
   const cli = await probeRealCli()
-  await runLogged('plugin-build', 'pnpm', ['run', 'build'], { cwd: repositoryRoot })
+  await buildPlugin()
   const archive = await packPlugin()
   await assertArchive(archive)
 
-  await runLogged('dsh-build', 'pnpm', ['run', 'build'], { cwd: inputs.dshCheckout })
+  await buildDsh()
   const dshBin = join(inputs.dshCheckout, 'apps', 'cli', 'lib', 'bin.js')
   await assertReadable(dshBin)
 
-  const fake = await writeFakeExecutables()
-  const installation = await installArchive(dshBin, archive)
-  const install = await verifyInstalled(dshBin, archive)
-  const probe = await writeProbePlugin(fake)
-  const web = await runWebAcceptance(dshBin, probe)
-  const removal = await uninstallArchive(dshBin)
+  let installAttempted = false
+  let installation
+  let install
+  let web
+  let removal
+  try {
+    const fake = await writeFakeExecutables()
+    installAttempted = true
+    installation = await installArchive(dshBin, archive)
+    install = await verifyInstalled(dshBin, archive)
+    const probe = await writeProbePlugin(fake)
+    web = await runWebAcceptance(dshBin, probe)
+    removal = await uninstallArchive(dshBin)
+    installAttempted = false
+  } finally {
+    if (installAttempted) await bestEffortUninstall(dshBin)
+  }
 
   const result = {
     archive,
@@ -127,6 +178,7 @@ async function assertExecutable(path) {
 }
 
 async function assertPrivateTaskRoot() {
+  await taskRootGuard.assertCurrent()
   const root = await stat(inputs.taskRoot)
   if (!root.isDirectory()) throw new Error('DSH_MD2WECHAT_TASK_ROOT must be a directory')
   if (process.platform !== 'win32' && (root.mode & 0o077) !== 0) {
@@ -138,41 +190,59 @@ async function assertPrivateTaskRoot() {
 }
 
 async function resetRunDirectories() {
-  for (const path of [paths.dshHome, paths.workspace, paths.tarballs, paths.logs]) {
-    if (!inside(path, inputs.taskRoot) || path === inputs.taskRoot) throw new Error(`refusing to reset unsafe task path: ${path}`)
-    await rm(path, { recursive: true, force: true })
-    await mkdir(path, { recursive: true, mode: 0o700 })
-    await chmod(path, 0o700)
+  for (const path of [
+    paths.dshHome,
+    paths.workspace,
+    paths.tarballs,
+    paths.logs,
+    paths.home,
+    paths.temp,
+    paths.xdg,
+    paths.pnpmHome,
+    paths.corepackHome,
+    paths.npmCache,
+    paths.pnpmStore,
+    join(inputs.taskRoot, 'fake-cli'),
+    join(inputs.taskRoot, 'probe'),
+  ]) {
+    await resetTaskDirectory(path)
   }
-  await mkdir(paths.cliHome, { recursive: true, mode: 0o700 })
+  await mkdir(join(paths.xdg, 'config'), { recursive: true, mode: 0o700 })
+  await mkdir(join(paths.xdg, 'cache'), { recursive: true, mode: 0o700 })
+  await mkdir(join(paths.xdg, 'data'), { recursive: true, mode: 0o700 })
   await mkdir(paths.stateDir, { recursive: true, mode: 0o700 })
-  await chmod(paths.cliHome, 0o700)
+  await writeFile(join(inputs.taskRoot, 'npmrc'), `store-dir=${paths.pnpmStore}\n`, { mode: 0o600 })
   await chmod(paths.stateDir, 0o700)
 }
 
+async function resetTaskDirectory(path) {
+  await taskRootGuard.assertCleanupTarget(path)
+  await rm(path, { recursive: true, force: true })
+  await mkdir(path, { recursive: true, mode: 0o700 })
+  await chmod(path, 0o700)
+}
+
 function controlledEnvironment(extra = {}) {
-  return Object.fromEntries(Object.entries({
-    PATH: process.env.PATH ?? '',
-    HOME: process.env.HOME ?? paths.cliHome,
-    DSH_HOME: paths.dshHome,
-    DSH_TELEMETRY_DISABLED: '1',
-    DSH_PERMISSION_MODE: 'workspace-write',
-    MD2WECHAT_BINARY_PATH: extra.MD2WECHAT_BINARY_PATH ?? inputs.cliPath,
-    ...extra,
-  }).filter((entry) => entry[1] !== undefined))
+  return createChildEnvironment({
+    ambient: process.env,
+    taskRoot: inputs.taskRoot,
+    dshHome: paths.dshHome,
+    cliPath: inputs.cliPath,
+    extra,
+  })
 }
 
 async function probeRealCli() {
   const versionRun = await runLogged('cli-version', inputs.cliPath, ['version', '--json'], {
-    cwd: paths.cliHome,
-    env: controlledEnvironment({ HOME: paths.cliHome, DSH_HOME: undefined, MD2WECHAT_BINARY_PATH: undefined }),
+    cwd: paths.home,
+    env: controlledEnvironment({ DSH_HOME: undefined, DSH_PERMISSION_MODE: undefined, MD2WECHAT_BINARY_PATH: undefined }),
   })
   const version = parseCompletedEnvelope(versionRun.stdout, 'version')
   if (version.data?.version !== '3.3.0') throw new Error(`real CLI version is not 3.3.0: ${JSON.stringify(version.data)}`)
 
   const capabilitiesRun = await runLogged('cli-capabilities', inputs.cliPath, ['capabilities', '--json'], {
-    cwd: paths.cliHome,
-    env: controlledEnvironment({ HOME: paths.cliHome, DSH_HOME: undefined, MD2WECHAT_BINARY_PATH: undefined }),
+    cwd: paths.home,
+    env: controlledEnvironment({ DSH_HOME: undefined, DSH_PERMISSION_MODE: undefined, MD2WECHAT_BINARY_PATH: undefined }),
   })
   const capabilities = parseCompletedEnvelope(capabilitiesRun.stdout, 'capabilities')
   const commands = capabilities.data?.commands
@@ -180,6 +250,52 @@ async function probeRealCli() {
     throw new Error('real CLI capabilities omit a command required by the plugin')
   }
   return { version: version.data.version, commands }
+}
+
+async function buildPlugin() {
+  const environment = controlledEnvironment({
+    DSH_HOME: undefined,
+    DSH_PERMISSION_MODE: undefined,
+    MD2WECHAT_BINARY_PATH: undefined,
+  })
+  await runLogged('plugin-build-types', process.execPath, [
+    join(repositoryRoot, 'node_modules', 'typescript', 'bin', 'tsc'), '-b',
+  ], { cwd: repositoryRoot, env: environment })
+  await runLogged('plugin-build-runtime', process.execPath, [
+    join(repositoryRoot, 'node_modules', 'tsdown', 'dist', 'run.mjs'),
+  ], { cwd: repositoryRoot, env: environment })
+}
+
+async function buildDsh() {
+  const tsc = join(inputs.dshCheckout, 'node_modules', 'typescript', 'bin', 'tsc')
+  const tsdown = join(inputs.dshCheckout, 'node_modules', 'tsdown', 'dist', 'run.mjs')
+  const environment = controlledEnvironment({
+    DSH_HOME: undefined,
+    DSH_PERMISSION_MODE: undefined,
+    MD2WECHAT_BINARY_PATH: undefined,
+  })
+  await runLogged('dsh-build-host-types', process.execPath, [tsc, '-b', 'tsconfig.host.json'], {
+    cwd: inputs.dshCheckout,
+    env: environment,
+  })
+  await runLogged('dsh-build-host-runtime', process.execPath, [tsdown, '--env.DSH_BUILD_FACE', 'host'], {
+    cwd: inputs.dshCheckout,
+    env: environment,
+  })
+  await runLogged('dsh-build-client-types', process.execPath, [tsc, '-b', 'tsconfig.client.json'], {
+    cwd: inputs.dshCheckout,
+    env: environment,
+  })
+  await runLogged('dsh-build-client-runtime', process.execPath, [tsdown, '--env.DSH_BUILD_FACE', 'client'], {
+    cwd: inputs.dshCheckout,
+    env: environment,
+  })
+  await runLogged('dsh-build-web', process.execPath, [
+    join(inputs.dshCheckout, 'apps', 'web', 'node_modules', 'vite', 'bin', 'vite.js'), 'build',
+  ], {
+    cwd: join(inputs.dshCheckout, 'apps', 'web'),
+    env: environment,
+  })
 }
 
 function parseCompletedEnvelope(text, command) {
@@ -198,7 +314,7 @@ function parseCompletedEnvelope(text, command) {
 }
 
 async function packPlugin() {
-  await runLogged('plugin-pack', 'pnpm', ['pack', '--pack-destination', paths.tarballs], { cwd: repositoryRoot })
+  await runLogged('plugin-pack', 'npm', ['pack', '--ignore-scripts', '--pack-destination', paths.tarballs], { cwd: repositoryRoot })
   const archives = (await readdir(paths.tarballs)).filter(file => file.endsWith('.tgz'))
   if (archives.length !== 1) throw new Error(`expected one plugin archive, found ${archives.length}`)
   return join(paths.tarballs, archives[0])
@@ -216,8 +332,7 @@ async function assertArchive(archive) {
 
 async function writeFakeExecutables() {
   const directory = join(inputs.taskRoot, 'fake-cli')
-  await rm(directory, { recursive: true, force: true })
-  await mkdir(directory, { recursive: true, mode: 0o700 })
+  await resetTaskDirectory(directory)
   const log = join(paths.logs, 'fake-cli-calls.jsonl')
   const executables = {}
   for (const behavior of ['normal', 'malformed', 'wrong-version', 'missing-capability']) {
@@ -292,8 +407,7 @@ async function verifyInstalled(dshBin, archive) {
 
 async function writeProbePlugin(fake) {
   const directory = join(inputs.taskRoot, 'probe')
-  await rm(directory, { recursive: true, force: true })
-  await mkdir(directory, { recursive: true, mode: 0o700 })
+  await resetTaskDirectory(directory)
   const module = join(directory, 'installed-probe.mjs')
   const result = join(paths.logs, 'assembled-probe.json')
   await writeFile(module, probePluginSource({ fake, result }), { mode: 0o600 })
@@ -313,6 +427,11 @@ function probePluginSource({ fake, result }) {
     stateDir: paths.stateDir,
     safeReadRetries: 0,
   }
+  const prompts = {
+    base: expectedWorkflowPrompt(false, false),
+    write: expectedWorkflowPrompt(true, false),
+    all: expectedWorkflowPrompt(true, true),
+  }
   return `
 import { existsSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -327,6 +446,7 @@ const expected = {
   write: names.slice(0, 7),
   all: names,
 }
+const prompts = ${JSON.stringify(prompts)}
 
 export function apply(ctx) {
   void ctx.loader.await().then(() => run(ctx)).catch(error => finish({ ok: false, error: safeError(error) }))
@@ -342,13 +462,11 @@ async function run(ctx) {
     const tools = ctx.tools.schemas().map(tool => tool.name).filter(name => names.includes(name))
     if (JSON.stringify(tools) !== JSON.stringify(expectedTools)) throw new Error(label + ': unexpected tools ' + JSON.stringify(tools))
     const sections = (await ctx.systemPrompt.assemble()).sections.filter(section => section.name === 'tool:md2wechat')
-    const text = sections.map(section => section.text).join('\\n')
-    if ((sections.length === 1) !== (expectedTools.length > 0)) throw new Error(label + ': unexpected prompt section count')
-    if (expectedTools.length > 0) {
-      if (!text.includes('signed preview')) throw new Error(label + ': prompt omits signed preview')
-      if (text.includes('md2wechat_create_draft') !== write) throw new Error(label + ': draft prompt gate mismatch')
-      if (text.includes('md2wechat_generate_images') !== (write && fallback)) throw new Error(label + ': image prompt gate mismatch')
-    }
+    const text = sections[0]?.text ?? ''
+    if (expectedTools.length === 0 && sections.length !== 0) throw new Error(label + ': disabled prompt section remained')
+    if (expectedTools.length > 0 && sections.length !== 1) throw new Error(label + ': expected exactly one prompt section')
+    const expectedPrompt = write ? (fallback ? prompts.all : prompts.write) : prompts.base
+    if (expectedTools.length > 0 && text !== expectedPrompt) throw new Error(label + ': prompt does not match the exact gated workflow')
     snapshots.push({ label, tools, text })
   }
 
@@ -463,6 +581,7 @@ async function runWebAcceptance(dshBin, probe) {
     cwd: paths.workspace,
     env: controlledEnvironment({ MD2WECHAT_BINARY_PATH: fakePathFromProbe(probe) }),
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
   })
   let stdout = ''
   let stderr = ''
@@ -470,10 +589,14 @@ async function runWebAcceptance(dshBin, probe) {
   child.stderr.setEncoding('utf8')
   child.stdout.on('data', chunk => { stdout += chunk })
   child.stderr.on('data', chunk => { stderr += chunk })
-  const exited = new Promise(resolveExit => child.once('exit', (code, signal) => resolveExit({ code, signal })))
+  const exited = new Promise((resolveExit, rejectExit) => {
+    child.once('error', rejectExit)
+    child.once('exit', (code, signal) => resolveExit({ code, signal }))
+  })
+  let stopped = false
   try {
-    const [url] = await Promise.all([
-      waitFor(() => stdout.match(/dsh web: (http:\/\/127\.0\.0\.1:\d+)/u)?.[1], 120_000, 'Web URL'),
+    const readiness = Promise.all([
+      waitFor(() => stdout.match(/dsh web: (http:\/\/127\.0\.0\.1:\d+)/u)?.[1], timeouts.webStartup, 'Web URL'),
       waitFor(async () => {
         try {
           const value = JSON.parse(await readFile(probe.result, 'utf8'))
@@ -482,29 +605,40 @@ async function runWebAcceptance(dshBin, probe) {
           if (error?.code === 'ENOENT') return undefined
           throw error
         }
-      }, 120_000, 'assembled probe result'),
+      }, timeouts.webStartup, 'assembled probe result'),
+    ])
+    const [url] = await Promise.race([
+      readiness,
+      exited.then(outcome => { throw new Error(`Web exited before readiness: ${JSON.stringify(outcome)}`) }),
     ])
     const probeResult = JSON.parse(await readFile(probe.result, 'utf8'))
     if (probeResult.ok !== true) throw new Error(`assembled probe failed: ${probeResult.error ?? 'unknown failure'}`)
-    const response = await fetch(url)
+    const response = await fetch(url, { signal: AbortSignal.timeout(timeouts.http) })
     const html = await response.text()
     if (response.status !== 200 || !html.includes('window.__DSH_BOOT__')) {
       throw new Error(`Web readiness response was ${response.status} without boot payload`)
     }
-    child.kill('SIGTERM')
+    await terminateProcessTree(child, exited, timeouts.webShutdown)
+    stopped = true
     const termination = await exited
     if (termination.code !== 0 || termination.signal !== null) {
       throw new Error(`Web SIGTERM did not exit cleanly: ${JSON.stringify(termination)}`)
     }
-    await writeFile(join(paths.logs, 'web.stdout.log'), stdout, { mode: 0o600 })
-    await writeFile(join(paths.logs, 'web.stderr.log'), stderr, { mode: 0o600 })
     return { url, httpStatus: response.status, bootPayload: true, exitCode: termination.code, probe: probeResult }
   } catch (error) {
-    child.kill('SIGKILL')
-    await exited
+    if (!stopped) {
+      try {
+        await terminateProcessTree(child, exited, timeouts.killGrace)
+      } catch {
+        // The bounded failure below retains the original acceptance error.
+      }
+      await exited.catch(() => undefined)
+    }
+    stopped = true
+    throw new Error(`installed Web acceptance failed: ${error instanceof Error ? error.message : 'unknown'}\nstdout:\n${tail(stdout)}\nstderr:\n${tail(stderr)}`)
+  } finally {
     await writeFile(join(paths.logs, 'web.stdout.log'), stdout, { mode: 0o600 })
     await writeFile(join(paths.logs, 'web.stderr.log'), stderr, { mode: 0o600 })
-    throw new Error(`installed Web acceptance failed: ${error instanceof Error ? error.message : 'unknown'}\nstdout:\n${tail(stdout)}\nstderr:\n${tail(stderr)}`)
   }
 }
 
@@ -527,6 +661,16 @@ async function uninstallArchive(dshBin) {
   return { dependencyRemoved: true, rowRemoved: true }
 }
 
+async function bestEffortUninstall(dshBin) {
+  try {
+    await runAttemptLogged('plugin-remove-cleanup', process.execPath, [
+      dshBin, 'plugin', '--profile', 'web', 'remove', PACKAGE_NAME,
+    ], { cwd: paths.workspace, env: controlledEnvironment() })
+  } catch {
+    // The primary acceptance failure remains authoritative after bounded cleanup.
+  }
+}
+
 async function runLogged(label, command, args, options) {
   const result = await runAttemptLogged(label, command, args, options)
   if (result.code !== 0 || result.signal !== null) {
@@ -536,29 +680,23 @@ async function runLogged(label, command, args, options) {
 }
 
 async function runAttemptLogged(label, command, args, options) {
-  const result = await run(command, args, options)
   await mkdir(paths.logs, { recursive: true, mode: 0o700 })
-  await writeFile(join(paths.logs, `${label}.stdout.log`), result.stdout, { mode: 0o600 })
-  await writeFile(join(paths.logs, `${label}.stderr.log`), result.stderr, { mode: 0o600 })
-  return result
-}
-
-function run(command, args, options = {}) {
-  return new Promise((resolveRun, reject) => {
-    const child = spawn(command, args, {
+  try {
+    const result = await runBounded(command, args, {
       cwd: options.cwd,
-      env: options.env ?? process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      env: options.env ?? controlledEnvironment(),
+      timeoutMs: options.timeoutMs ?? timeouts.command,
+      killGraceMs: timeouts.killGrace,
+      label,
     })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.setEncoding('utf8')
-    child.stderr.setEncoding('utf8')
-    child.stdout.on('data', chunk => { stdout += chunk })
-    child.stderr.on('data', chunk => { stderr += chunk })
-    child.once('error', reject)
-    child.once('exit', (code, signal) => resolveRun({ code, signal, stdout, stderr }))
-  })
+    await writeFile(join(paths.logs, `${label}.stdout.log`), result.stdout, { mode: 0o600 })
+    await writeFile(join(paths.logs, `${label}.stderr.log`), result.stderr, { mode: 0o600 })
+    return result
+  } catch (error) {
+    await writeFile(join(paths.logs, `${label}.stdout.log`), error?.stdout ?? '', { mode: 0o600 })
+    await writeFile(join(paths.logs, `${label}.stderr.log`), error?.stderr ?? '', { mode: 0o600 })
+    throw error
+  }
 }
 
 async function waitFor(read, timeoutMs, label) {
