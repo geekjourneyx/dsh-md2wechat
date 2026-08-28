@@ -571,6 +571,7 @@ function finish(value) {
 }
 
 async function runWebAcceptance(dshBin, probe) {
+  const webEnvironment = controlledEnvironment({ MD2WECHAT_BINARY_PATH: fakePathFromProbe(probe) })
   const child = spawn(process.execPath, [
     dshBin,
     '--profile', 'web',
@@ -579,7 +580,7 @@ async function runWebAcceptance(dshBin, probe) {
     '--port', '0',
   ], {
     cwd: paths.workspace,
-    env: controlledEnvironment({ MD2WECHAT_BINARY_PATH: fakePathFromProbe(probe) }),
+    env: webEnvironment,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: process.platform !== 'win32',
   })
@@ -618,7 +619,7 @@ async function runWebAcceptance(dshBin, probe) {
     if (response.status !== 200 || !html.includes('window.__DSH_BOOT__')) {
       throw new Error(`Web readiness response was ${response.status} without boot payload`)
     }
-    await terminateProcessTree(child, exited, timeouts.webShutdown)
+    await terminateProcessTree(child, exited, timeouts.webShutdown, { environment: webEnvironment })
     stopped = true
     const termination = await exited
     if (termination.code !== 0 || termination.signal !== null) {
@@ -628,7 +629,7 @@ async function runWebAcceptance(dshBin, probe) {
   } catch (error) {
     if (!stopped) {
       try {
-        await terminateProcessTree(child, exited, timeouts.killGrace)
+        await terminateProcessTree(child, exited, timeouts.killGrace, { environment: webEnvironment })
       } catch {
         // The bounded failure below retains the original acceptance error.
       }

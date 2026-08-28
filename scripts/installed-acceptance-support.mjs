@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { lstat, realpath, stat } from 'node:fs/promises'
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, sep, win32 } from 'node:path'
 
 const WORKFLOW_BASE = 'Use this order: md2wechat_start_article or md2wechat_improve_article -> md2wechat_plan_images -> md2wechat_preview -> md2wechat_export.'
 const WORKFLOW_WRITE = 'Use this order: md2wechat_start_article or md2wechat_improve_article -> md2wechat_plan_images -> md2wechat_preview -> md2wechat_export or md2wechat_create_draft.'
@@ -180,17 +180,21 @@ export async function runBounded(command, args, options) {
   }
   if (first.timedOut !== true) return { ...first, stdout, stderr }
 
-  await terminateProcessTree(child, exit, options.killGraceMs)
+  await terminateProcessTree(child, exit, options.killGraceMs, {
+    environment: options.env,
+  })
   const error = new Error(`${options.label} timed out after ${options.timeoutMs} ms`)
   error.stdout = stdout
   error.stderr = stderr
   throw error
 }
 
-export async function terminateProcessTree(child, exit, killGraceMs) {
+export async function terminateProcessTree(child, exit, killGraceMs, options = {}) {
   if (child.pid === undefined) return
-  if (process.platform === 'win32') {
-    await taskkillProcessTree(child.pid, killGraceMs)
+  const platform = options.platform ?? process.platform
+  if (platform === 'win32') {
+    const cleanup = resolveWindowsCleanup(options.environment ?? {})
+    await taskkillProcessTree(child.pid, killGraceMs, cleanup.command, cleanup.environment, options.spawnProcess ?? spawn)
     await exit.catch(() => undefined)
     return
   }
@@ -233,8 +237,41 @@ function isProcessGroupAlive(pid) {
   }
 }
 
-async function taskkillProcessTree(pid, timeoutMs) {
-  const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+function resolveWindowsCleanup(environment) {
+  const systemRoot = validWindowsAbsolute(environment.SystemRoot) ? environment.SystemRoot : undefined
+  const windowsDirectory = validWindowsAbsolute(environment.WINDIR) ? environment.WINDIR : undefined
+  const commandInterpreter = validWindowsAbsolute(environment.ComSpec) ? environment.ComSpec : undefined
+  const root = systemRoot ?? windowsDirectory
+  const command = root === undefined
+    ? commandInterpreter === undefined
+      ? undefined
+      : win32.join(win32.dirname(commandInterpreter), 'taskkill.exe')
+    : win32.join(root, 'System32', 'taskkill.exe')
+  if (command === undefined) {
+    throw new Error('cannot locate Windows taskkill from an absolute SystemRoot, WINDIR, or ComSpec')
+  }
+  return {
+    command,
+    environment: {
+      ...(systemRoot === undefined ? {} : { SystemRoot: systemRoot }),
+      ...(windowsDirectory === undefined ? {} : { WINDIR: windowsDirectory }),
+      ...(commandInterpreter === undefined ? {} : { ComSpec: commandInterpreter }),
+    },
+  }
+}
+
+function validWindowsAbsolute(value) {
+  return typeof value === 'string'
+    && value.length > 0
+    && !value.includes('\0')
+    && !value.includes('\r')
+    && !value.includes('\n')
+    && win32.isAbsolute(value)
+}
+
+async function taskkillProcessTree(pid, timeoutMs, command, environment, spawnProcess) {
+  const killer = spawnProcess(command, ['/PID', String(pid), '/T', '/F'], {
+    env: environment,
     stdio: 'ignore',
     windowsHide: true,
   })

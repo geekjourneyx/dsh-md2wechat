@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
@@ -17,5 +18,10 @@ describe('installed acceptance harness', () => {
     await expect(execution).rejects.toMatchObject({
       stderr: expect.stringContaining('DSH_CHECKOUT must be an absolute path'),
     })
+  })
+
+  it('uses the Web child scrubbed environment for both normal and failure tree cleanup', async () => {
+    const source = await readFile(resolve(repositoryRoot, 'scripts/installed-acceptance.mjs'), 'utf8')
+    expect(source.match(/terminateProcessTree\(child, exited, [^,]+, \{ environment: webEnvironment \}\)/gu)).toHaveLength(2)
   })
 })
