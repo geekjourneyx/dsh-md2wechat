@@ -20,7 +20,7 @@ import {
   createTaskRootGuard,
   expectedWorkflowPrompt,
   runBounded,
-  terminateProcessTree,
+  stopProcessTreeBounded,
 } from './installed-acceptance-support.mjs'
 
 const PACKAGE_NAME = '@geekjourneyx/dsh-md2wechat'
@@ -570,6 +570,13 @@ function finish(value) {
 `
 }
 
+function failureMessage(error) {
+  if (error instanceof AggregateError) {
+    return `${error.message}: ${error.errors.map(failureMessage).join('; ')}`
+  }
+  return error instanceof Error ? error.message : 'unknown failure'
+}
+
 async function runWebAcceptance(dshBin, probe) {
   const webEnvironment = controlledEnvironment({ MD2WECHAT_BINARY_PATH: fakePathFromProbe(probe) })
   const child = spawn(process.execPath, [
@@ -619,24 +626,37 @@ async function runWebAcceptance(dshBin, probe) {
     if (response.status !== 200 || !html.includes('window.__DSH_BOOT__')) {
       throw new Error(`Web readiness response was ${response.status} without boot payload`)
     }
-    await terminateProcessTree(child, exited, timeouts.webShutdown, { environment: webEnvironment })
+    const termination = await stopProcessTreeBounded(child, exited, {
+      environment: webEnvironment,
+      killGraceMs: timeouts.killGrace,
+      exitTimeoutMs: timeouts.webShutdown,
+      label: 'installed Web',
+    })
     stopped = true
-    const termination = await exited
     if (termination.code !== 0 || termination.signal !== null) {
       throw new Error(`Web SIGTERM did not exit cleanly: ${JSON.stringify(termination)}`)
     }
     return { url, httpStatus: response.status, bootPayload: true, exitCode: termination.code, probe: probeResult }
   } catch (error) {
+    const acceptanceError = new Error(`installed Web acceptance failed: ${failureMessage(error)}\nstdout:\n${tail(stdout)}\nstderr:\n${tail(stderr)}`, { cause: error })
+    let cleanupError
     if (!stopped) {
       try {
-        await terminateProcessTree(child, exited, timeouts.killGrace, { environment: webEnvironment })
-      } catch {
-        // The bounded failure below retains the original acceptance error.
+        await stopProcessTreeBounded(child, exited, {
+          environment: webEnvironment,
+          killGraceMs: timeouts.killGrace,
+          exitTimeoutMs: timeouts.webShutdown,
+          label: 'failed installed Web',
+        })
+      } catch (error) {
+        cleanupError = error
       }
-      await exited.catch(() => undefined)
     }
     stopped = true
-    throw new Error(`installed Web acceptance failed: ${error instanceof Error ? error.message : 'unknown'}\nstdout:\n${tail(stdout)}\nstderr:\n${tail(stderr)}`)
+    if (cleanupError !== undefined) {
+      throw new AggregateError([acceptanceError, cleanupError], 'installed Web acceptance and cleanup failed')
+    }
+    throw acceptanceError
   } finally {
     await writeFile(join(paths.logs, 'web.stdout.log'), stdout, { mode: 0o600 })
     await writeFile(join(paths.logs, 'web.stderr.log'), stderr, { mode: 0o600 })

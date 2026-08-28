@@ -180,13 +180,58 @@ export async function runBounded(command, args, options) {
   }
   if (first.timedOut !== true) return { ...first, stdout, stderr }
 
-  await terminateProcessTree(child, exit, options.killGraceMs, {
-    environment: options.env,
-  })
   const error = new Error(`${options.label} timed out after ${options.timeoutMs} ms`)
   error.stdout = stdout
   error.stderr = stderr
+  try {
+    await stopProcessTreeBounded(child, exit, {
+      environment: options.env,
+      killGraceMs: options.killGraceMs,
+      exitTimeoutMs: options.killGraceMs,
+      label: options.label,
+    })
+  } catch (cleanupError) {
+    throw new AggregateError([error, cleanupError], `${options.label} timed out and cleanup failed`)
+  }
   throw error
+}
+
+export async function stopProcessTreeBounded(child, exit, options) {
+  const failures = []
+  const terminate = options.terminate ?? terminateProcessTree
+  try {
+    await withDeadline(
+      terminate(child, exit, options.killGraceMs, { environment: options.environment }),
+      options.exitTimeoutMs,
+      `${options.label} process-tree termination timed out after ${options.exitTimeoutMs} ms`,
+    )
+  } catch (error) {
+    failures.push(error)
+  }
+  let outcome
+  try {
+    outcome = await withDeadline(
+      exit,
+      options.exitTimeoutMs,
+      `${options.label} exit observation timed out after ${options.exitTimeoutMs} ms`,
+    )
+  } catch (error) {
+    failures.push(error)
+  }
+  if (failures.length > 0) throw new AggregateError(failures, `${options.label} cleanup failed`)
+  return outcome
+}
+
+async function withDeadline(promise, timeoutMs, message) {
+  let timer
+  const timeout = new Promise((_, rejectTimeout) => {
+    timer = setTimeout(() => rejectTimeout(new Error(message)), timeoutMs)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export async function terminateProcessTree(child, exit, killGraceMs, options = {}) {
@@ -195,18 +240,15 @@ export async function terminateProcessTree(child, exit, killGraceMs, options = {
   if (platform === 'win32') {
     const cleanup = resolveWindowsCleanup(options.environment ?? {})
     await taskkillProcessTree(child.pid, killGraceMs, cleanup.command, cleanup.environment, options.spawnProcess ?? spawn)
-    await exit.catch(() => undefined)
     return
   }
 
   signalPosixGroup(child.pid, 'SIGTERM')
   if (await waitForGroupExit(child.pid, killGraceMs)) {
-    await exit.catch(() => undefined)
     return
   }
   signalPosixGroup(child.pid, 'SIGKILL')
   const killed = await waitForGroupExit(child.pid, killGraceMs)
-  await exit.catch(() => undefined)
   if (!killed) throw new Error(`process group ${child.pid} survived SIGKILL`)
 }
 

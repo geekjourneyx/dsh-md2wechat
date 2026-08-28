@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -5,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   isProcessAlive,
   runBounded,
+  stopProcessTreeBounded,
   terminateProcessTree,
 } from '../../scripts/installed-acceptance-support.mjs'
 
@@ -23,6 +25,38 @@ afterEach(async () => {
 })
 
 describe('installed acceptance child timeout', () => {
+  it('bounds exit observation and retains cleanup failure when a child stays alive', async () => {
+    const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], {
+      stdio: 'ignore',
+    })
+    if (child.pid !== undefined) fixturePids.push(child.pid)
+    const exit = new Promise(resolveExit => child.once('exit', (code, signal) => resolveExit({ code, signal })))
+    const cleanupError = Object.assign(new Error('cleanup denied'), { code: 'EPERM' })
+
+    const startedAt = Date.now()
+    try {
+      await expect(stopProcessTreeBounded(child, exit, {
+        environment: { PATH: process.env.PATH ?? '' },
+        killGraceMs: 10,
+        exitTimeoutMs: 30,
+        label: 'injected fixture',
+        terminate: async () => { throw cleanupError },
+      })).rejects.toSatisfy((error: unknown) => {
+        expect(error).toBeInstanceOf(AggregateError)
+        expect((error as AggregateError).errors).toEqual([
+          cleanupError,
+          expect.objectContaining({ message: 'injected fixture exit observation timed out after 30 ms' }),
+        ])
+        return true
+      })
+      expect(Date.now() - startedAt).toBeLessThan(1_000)
+      expect(child.pid === undefined ? false : isProcessAlive(child.pid)).toBe(true)
+    } finally {
+      child.kill('SIGKILL')
+      await exit
+    }
+  })
+
   it('starts Windows tree cleanup with exact arguments and a scrubbed environment', async () => {
     const calls: Array<{ command: string, args: string[], options: Record<string, unknown> }> = []
     const spawnProcess = (command: string, args: string[], options: Record<string, unknown>) => {

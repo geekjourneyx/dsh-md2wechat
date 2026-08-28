@@ -22,6 +22,7 @@ describe('installed acceptance harness', () => {
 
   it('uses the Web child scrubbed environment for both normal and failure tree cleanup', async () => {
     const source = await readFile(resolve(repositoryRoot, 'scripts/installed-acceptance.mjs'), 'utf8')
-    expect(source.match(/terminateProcessTree\(child, exited, [^,]+, \{ environment: webEnvironment \}\)/gu)).toHaveLength(2)
+    expect(source.match(/stopProcessTreeBounded\(child, exited, \{\n\s+environment: webEnvironment,/gu)).toHaveLength(2)
+    expect(source).not.toContain('await exited.catch')
   })
 })
