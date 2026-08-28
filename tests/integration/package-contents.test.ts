@@ -55,6 +55,9 @@ describe('packed plugin artifact', () => {
     expect(fixture.entries).toContain('package/lib/index.js')
     expect(fixture.entries).toContain('package/lib/types/index.d.ts')
     expect(fixture.entries.filter(entry => entry === 'package/cordis.patch.yml')).toHaveLength(1)
+    for (const document of ['README.md', 'CHANGELOG.md', 'LICENSE']) {
+      expect(fixture.entries.filter(entry => entry === `package/${document}`)).toHaveLength(1)
+    }
     expect(fixture.entries).toContain('package/package.json')
     expect(fixture.entries.some(entry => /(?:^|\/)(?:tests?|fixtures?|artifacts?|node_modules|\.superpowers|md2wechat-skill|cmd)(?:\/|$)/u.test(entry))).toBe(false)
     expect(fixture.entries.some(entry => /(?:\.go|go\.mod|go\.sum|md2wechat(?:\.exe)?|\.dylib|\.so|\.dll)$/u.test(entry))).toBe(false)
@@ -67,6 +70,26 @@ describe('packed plugin artifact', () => {
     expect(manifest.exports['./cordis.patch.yml']).toBe('./cordis.patch.yml')
     expect(manifest.files.filter(file => file === 'cordis.patch.yml')).toHaveLength(1)
     expect(manifest.dsh.bundle.patch).toBe('./cordis.patch.yml')
+  }, 120_000)
+
+  it('ships release documents with the supported install path and product boundaries', async () => {
+    const fixture = await packedFixture()
+    const readme = await readFile(join(fixture.packageRoot, 'README.md'), 'utf8')
+    const changelog = await readFile(join(fixture.packageRoot, 'CHANGELOG.md'), 'utf8')
+    const license = await readFile(join(fixture.packageRoot, 'LICENSE'), 'utf8')
+
+    expect(readme.startsWith('# dsh-md2wechat\n')).toBe(true)
+    expect(readme).toContain('dsh plugin --profile web add https://github.com/geekjourneyx/dsh-md2wechat/releases/download/v1.0.0/geekjourneyx-dsh-md2wechat-1.0.0.tgz')
+    expect(readme).toContain('`md2wechat` CLI at exactly version `3.3.0`')
+    expect(readme).toContain('do not contain or install md2wechat')
+    expect(readme).toContain('never publishes or mass-sends')
+    expect(readme).toContain('no other image-generation capability')
+    expect(readme).not.toMatch(/(?:^|\n)npm (?:install|publish)\b/u)
+    expect(readme).not.toMatch(/\/Users\/|md2wechat-(?:darwin|linux|windows)|assets\//u)
+    expect(changelog.match(/^## 1\.0\.0\b/gmu)).toHaveLength(1)
+    expect(changelog.match(/^## \d/gmu)).toHaveLength(1)
+    expect(license.startsWith('MIT License\n')).toBe(true)
+    expect(license).toContain('Copyright (c) 2026 geekjourneyx')
   }, 120_000)
 
   it('imports and completes one lifecycle from the extracted archive under plain Node', async () => {
