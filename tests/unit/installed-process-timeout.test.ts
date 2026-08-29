@@ -25,6 +25,47 @@ afterEach(async () => {
 })
 
 describe('installed acceptance child timeout', () => {
+  it('keeps waiting when a POSIX group probe gets EPERM, then accepts ESRCH', async () => {
+    const signals: Array<NodeJS.Signals | 0> = []
+    let probes = 0
+    const signalProcessGroup = (_pid: number, signal: NodeJS.Signals | 0) => {
+      signals.push(signal)
+      if (signal !== 0) return
+      probes += 1
+      const code = probes === 1 ? 'EPERM' : 'ESRCH'
+      throw Object.assign(new Error(`probe ${code}`), { code })
+    }
+
+    await terminateProcessTree(
+      { pid: 2_147_483_643 } as never,
+      Promise.resolve({ code: 0, signal: null }),
+      100,
+      { platform: 'darwin', signalProcessGroup },
+    )
+
+    expect(signals).toEqual(['SIGTERM', 0, 0])
+  })
+
+  it('fails loud when SIGKILL itself gets EPERM after protected probes stay alive', async () => {
+    const signals: Array<NodeJS.Signals | 0> = []
+    const cleanupError = Object.assign(new Error('kill protected'), { code: 'EPERM' })
+    const signalProcessGroup = (_pid: number, signal: NodeJS.Signals | 0) => {
+      signals.push(signal)
+      if (signal === 0) throw Object.assign(new Error('probe protected'), { code: 'EPERM' })
+      if (signal === 'SIGKILL') throw cleanupError
+    }
+
+    await expect(terminateProcessTree(
+      { pid: 2_147_483_642 } as never,
+      Promise.resolve({ code: 0, signal: null }),
+      10,
+      { platform: 'darwin', signalProcessGroup },
+    )).rejects.toBe(cleanupError)
+    expect(signals[0]).toBe('SIGTERM')
+    expect(signals).toContain(0)
+    expect(signals.at(-1)).toBe('SIGKILL')
+  })
+
   it('bounds exit observation and retains cleanup failure when a child stays alive', async () => {
     const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], {
       stdio: 'ignore',

@@ -243,38 +243,40 @@ export async function terminateProcessTree(child, exit, killGraceMs, options = {
     return
   }
 
-  signalPosixGroup(child.pid, 'SIGTERM')
-  if (await waitForGroupExit(child.pid, killGraceMs)) {
+  const signalProcessGroup = options.signalProcessGroup ?? process.kill
+  signalPosixGroup(child.pid, 'SIGTERM', signalProcessGroup)
+  if (await waitForGroupExit(child.pid, killGraceMs, signalProcessGroup)) {
     return
   }
-  signalPosixGroup(child.pid, 'SIGKILL')
-  const killed = await waitForGroupExit(child.pid, killGraceMs)
+  signalPosixGroup(child.pid, 'SIGKILL', signalProcessGroup)
+  const killed = await waitForGroupExit(child.pid, killGraceMs, signalProcessGroup)
   if (!killed) throw new Error(`process group ${child.pid} survived SIGKILL`)
 }
 
-function signalPosixGroup(pid, signal) {
+function signalPosixGroup(pid, signal, signalProcessGroup) {
   try {
-    process.kill(-pid, signal)
+    signalProcessGroup(-pid, signal)
   } catch (error) {
     if (error?.code !== 'ESRCH') throw error
   }
 }
 
-async function waitForGroupExit(pid, timeoutMs) {
+async function waitForGroupExit(pid, timeoutMs, signalProcessGroup) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (!isProcessGroupAlive(pid)) return true
+    if (!isProcessGroupAlive(pid, signalProcessGroup)) return true
     await delay(10)
   }
-  return !isProcessGroupAlive(pid)
+  return !isProcessGroupAlive(pid, signalProcessGroup)
 }
 
-function isProcessGroupAlive(pid) {
+function isProcessGroupAlive(pid, signalProcessGroup) {
   try {
-    process.kill(-pid, 0)
+    signalProcessGroup(-pid, 0)
     return true
   } catch (error) {
     if (error?.code === 'ESRCH') return false
+    if (error?.code === 'EPERM') return true
     throw error
   }
 }
