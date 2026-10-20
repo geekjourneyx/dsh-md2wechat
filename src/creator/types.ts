@@ -8,7 +8,12 @@ export interface CreatorImageCandidate { id: string; revisionId: string; kind: '
 export interface CreatorImagePlacement { id: string; context: string; hasImage: boolean }
 export interface CreatorImageRequest { id: string; kind: 'cover' | 'body'; anchorId: string; status: 'pending' | 'ready' | 'error' }
 export interface CreatorDelivery { kind: 'export' | 'draft' | 'materials'; status: 'completed' | 'unknown'; path: string; message: string }
+export interface ArticleSummary { articleId: string; title: string; sourcePath: string; theme: string; version: number; updatedAt: string }
+export interface CreatorRevisionSummary { revisionId: string; manifestPath: string; title: string; createdAt: string }
+export interface CreatorOpenOptions { mode?: 'continue' | 'import-new' }
+export interface CreatorRecovery { message: string; sourceChanged: boolean; themeUnavailable: boolean }
 export interface CreatorView {
+  recovery?: CreatorRecovery | null
   schemaVersion: 1
   articleId: string
   version: number
@@ -46,4 +51,24 @@ export type CreatorAction =
   | { type: 'remove-image'; anchorId: string }
   | { type: 'import-local-image'; kind: 'cover' | 'body'; anchorId: string; sourcePath: string; alt: string }
   | { type: 'prepare-delivery' }
+  | { type: 'reconcile-delivery'; confirmed: boolean }
   | { type: 'create-draft'; confirmed: boolean }
+
+/** Durable artifact references only; restoring these never restores review or write authority. */
+export interface CreatorDocumentRevision { id: string; manifestPath: string }
+export interface CreatorDocumentV1 {
+  schemaVersion: 1
+  articleId: string
+  ownerSessionId: string
+  sourcePath: string
+  sourceSha256: string
+  title: string
+  revision: CreatorDocumentRevision
+  theme: string
+  /** Artifact-relative local image references, unlike CreatorView's display-prefixed paths. */
+  imageCandidates: CreatorImageCandidate[]
+  coverId: string
+  undo: CreatorDocumentRevision[]
+  version: number
+  updatedAt: string
+}

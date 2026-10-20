@@ -7,7 +7,7 @@
 Turn a Markdown article into a reviewed WeChat layout inside [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Compare themes, choose edits and images, then export the HTML you reviewed or save an unpublished draft.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![DSH target](https://img.shields.io/badge/DSH%20target-0.2.1--rc.2-475569.svg)](./package.json)
+[![DSH targets](https://img.shields.io/badge/DSH-0.2.0--rc.2%20%7C%200.2.1--rc.2-475569.svg)](./package.json)
 
 [Get started](#get-started) · [Choose images](#choose-images) · [Export or save a draft](#export-or-save-a-draft) · [Troubleshooting](#troubleshooting)
 
@@ -22,7 +22,7 @@ Open article.md in the WeChat creator workspace.
 Keep my source unchanged; let me review the layout and choose any changes.
 ```
 
-The agent opens one native workspace card. You stay in DSH, not a separate website.
+Use the fixed **文章 (Articles)** entry in DSH to open the article main panel. Select the session whose workspace contains your Markdown, then open the file or continue a saved article. The agent can also give you an **打开文章** shortcut in the conversation; the article itself is no longer confined to that message. You stay in DSH, not a separate website.
 
 1. **See the article.** Approve sending article content to the configured layout service, then compare real previews, available themes and 320, 375 or 390 px reading widths.
 2. **Choose what improves it.** Review up to three exact before/after suggestions. Apply one, keep the original or undo.
@@ -106,6 +106,16 @@ dsh plugin --profile web add https://github.com/geekjourneyx/dsh-md2wechat/relea
 
 </details>
 
+## Continue where you left off
+
+The article panel saves the article identity, immutable revision references, theme, selected cover, candidate references and undo history. Changing panels or restarting DSH does not require recreating that saved article. Select the same session and continue it. Two sessions sharing a directory still have separate article lists.
+
+Saved progress is not saved permission. On restart, pending suggestions and image jobs are not replayed, and previous preview reviews or approvals are not restored. Generate a fresh preview and review it before delivery. If the original Markdown changed, explicitly choose the saved version or import a new article; the plugin never overwrites the source.
+
+For older builds with revision files but no saved article record, compatible revisions can be recovered: choose **选择已保存版本** and select a validated revision in the current workspace. This creates a new article identity without deleting the old files. Older manifests did not store the original Markdown path; recovery therefore uses the existing revision’s article file rather than guessing that path. Old themes, image selections and undo history that were never saved cannot be reconstructed. An expired message shortcut does not guess which article you meant. If an older revision uses a different identity format and fails validation, explicitly import its preserved article.md as a new source; recovery never relaxes integrity checks.
+
+An interrupted upload or draft is different from an unsaved preview: its private pending-operation record survives restart and blocks another delivery attempt. Check the actual WeChat account before explicitly clearing that block. Reopening the panel never retries an external write.
+
 ## Review the real output
 
 Preview sends article content to the configured layout service after approval; it is not an offline Markdown renderer. Suggestions use your existing host agent.
@@ -186,10 +196,10 @@ Save the row in the profile's `cordis.patch.yml`. Setting `enableWechatWriteTool
 - **Host peer-version mismatch:** the creator package accepts DSH `0.2.0-rc.2` or `0.2.1-rc.2`; `0.1.0-rc.5` and other host versions do not satisfy that requirement. Resolve the host/plugin version choice explicitly, rather than forcing peer dependency installation. The plugin never upgrades the host.
 - **CLI activation failure:** check the configured executable file, the actual host PATH, `md2wechat version --json` and `md2wechat capabilities --json`. The JSON envelope and required commands are checked before plugin tools register; a different version number alone is not a rejection. The detected version is recorded in compatibility results and preview authority, so changing the CLI requires a new preview and review. Source-only article starts and generated image records report `cliVersion: unknown`: source-only work does not invoke the CLI, and a separate version probe cannot prove which executable produced an image. The plugin never installs or upgrades the CLI.
 - **Earlier build fails on `protocol/remote-info`:** install the corrected plugin package on a supported host. The generated contracts now use the official shared baseline, without that newer-only import. Do not patch host exports or force an incompatible peer range.
-- **Installed but no creator card:** after verifying host/client and CLI compatibility, restart the profile and open a new workspace card. Old generic tool cards do not turn into creator workspaces.
+- **Installed but no article entry:** after verifying matching host/client packages and CLI compatibility, restart the profile so the client extension reloads. Look for **文章** in the fixed navigation, select a session, and open the Markdown file. Conversation shortcuts are optional; old generic cards do not turn into an editor.
 - **Read-only or outside-workspace error:** creator actions respect the session's current sandbox policy and canonical workspace boundary. Use a permitted location or change policy through the host; the plugin does not grant itself access. Export can replace an existing destination only after the host approval.
-- **Upgrading an earlier source build:** reopen the original Markdown article and create/review a new preview. Source-only revisions no longer claim an unobserved CLI version; their IDs can change once. Existing artifacts are retained, but old manifest links are not migrated or trusted automatically.
-- **Restarted or reopened session:** active creator choices, pending suggestions and review authority are in memory. Reopen the article and review again; persisted revision files are not a promise of automatic UI-session recovery.
+- **Upgrading an earlier source build:** recover a compatible saved revision, or explicitly open the original Markdown (or a preserved revision’s article.md) as a new article, then create/review a fresh preview. Source-only revisions no longer claim an unobserved CLI version; their IDs can change once. A manifest using the older identity format cannot be restored by weakening validation. Existing artifacts are retained, not automatically migrated or trusted.
+- **Restarted or reopened session:** choose the same session in **文章** and continue a saved article. Files and saved choices can be restored; pending requests, previews and review authority cannot. For an older unsaved card, explicitly choose an existing revision or reopen the original Markdown. Permission, connection and invalid-file errors offer different recovery actions; none silently creates a replacement article.
 - **Missing credentials:** add the named reference in DSH. Do not paste secrets into the conversation.
 - **State directory rejected:** revision artifacts default to `.dsh/md2wechat` inside the workspace. Private image-plan and operation authority defaults to `$DSH_HOME/plugins/dsh-md2wechat` (or `~/.dsh/plugins/dsh-md2wechat`). Set an absolute `stateDir` outside workspaces, artifacts and temporary directories if those overlap.
 - **Upload or draft result unknown:** inspect the WeChat account before recovery. The plugin blocks automatic reissue, but the CLI can retry uploads internally; approval describes that boundary.
@@ -211,7 +221,7 @@ pnpm run build
 pnpm run pack:check
 ```
 
-The [installed acceptance harness](./scripts/creator-host-acceptance/README.md) exercises real packed-package loading and the official DSH host. The [browser workflow](./.github/workflows/creator-acceptance.yml) is designed to capture the actual installed card, including narrow layouts.
+The [installed acceptance harness](./scripts/creator-host-acceptance/README.md) exercises real packed-package loading and the official DSH host. The [browser workflow](./.github/workflows/creator-acceptance.yml) is designed to capture the actual installed article main panel, including narrow layouts and message shortcuts.
 
 Controlled fixtures and simulated writes do not verify paid image providers, a live WeChat account or completed real-browser acceptance. No passing CI or screenshot claim is implied by this README.
 

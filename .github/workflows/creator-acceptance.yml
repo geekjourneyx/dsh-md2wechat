@@ -31,7 +31,7 @@ jobs:
           package=$(find "$RUNNER_TEMP/creator-package" -maxdepth 1 -name '*.tgz' -print -quit)
           test -n "$package"
           echo "CREATOR_PACKAGE=$package" >> "$GITHUB_ENV"
-      - name: Exercise native tool card and authenticated Remote
+      - name: Exercise installed article panel, restart recovery and authenticated Remote
         run: |
           node scripts/creator-host-acceptance/run.mjs \
             --package "$CREATOR_PACKAGE" \

@@ -23,6 +23,12 @@ import {
   stopProcessTreeBounded,
 } from './installed-acceptance-support.mjs'
 
+// A supplied archive is the release acceptance path: no rebuild or replacement pack.
+if (process.argv.includes('--package')) {
+  await import('./creator-host-acceptance/run.mjs')
+} else {
+
+// Retained source-build diagnostics are deliberately not article-panel/browser acceptance.
 const PACKAGE_NAME = '@geekjourneyx/dsh-md2wechat'
 const PLUGIN_TOOLS = [
   'md2wechat_doctor',
@@ -159,6 +165,7 @@ async function main() {
   }
 
   const result = {
+    acceptanceScope: 'source-build-host-diagnostics; not installed article-panel/browser acceptance',
     archive,
     cli,
     install: { ...installation, ...install },
@@ -736,4 +743,5 @@ async function waitFor(read, timeoutMs, label) {
 
 function tail(text) {
   return text.length <= 8_000 ? text : text.slice(-8_000)
+}
 }

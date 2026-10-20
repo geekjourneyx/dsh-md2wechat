@@ -25,4 +25,15 @@ describe('installed acceptance harness', () => {
     expect(source.match(/stopProcessTreeBounded\(child, exited, \{\n\s+environment: webEnvironment,/gu)).toHaveLength(2)
     expect(source).not.toContain('await exited.catch')
   })
+
+  it('routes a supplied archive to the published-host acceptance without rebuilding a source checkout', async () => {
+    const execution = exec(process.execPath, ['scripts/installed-acceptance.mjs', '--package', '/missing-fixture.tgz'], {
+      cwd: repositoryRoot,
+      env: { PATH: process.env.PATH ?? '' },
+      timeout: 10_000,
+    })
+    await expect(execution).rejects.toMatchObject({
+      stderr: expect.stringContaining('--host absolute path required'),
+    })
+  })
 })

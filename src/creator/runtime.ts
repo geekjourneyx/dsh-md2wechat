@@ -1,18 +1,20 @@
+import { bindLegacyRevision, discoverLegacyRevisions } from './legacy.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { creatorImageProvider } from './image-provider.ts'
 import { preflightCurrentPreview } from '../workspace/preview.ts'
 import { createCreatorDelivery } from './delivery.ts'
 import type { DraftStateStore } from '../workspace/draft.ts'
 import { importCreatorImage } from './import-image.ts'
-import { rebindImageCandidate, createCoverRequests } from './image-choices.ts'
+import { rebindImageCandidate, createCoverRequests, verifyImageCandidate } from './image-choices.ts'
 import { createPlanImagesOperation } from '../tools/plan-images.ts'
 import { createGenerateImagesOperation } from '../tools/generate-images.ts'
 import type { ImagePlanStateStore } from '../workspace/image-plan-state.ts'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { createImproveArticleOperation, loadCurrentArticleRevision } from '../tools/improve-article.ts'
+import { createImproveArticleOperation } from '../tools/improve-article.ts'
 import { reviseCreatorArticle } from './revise.ts'
 import type { OperationTurnRunner } from './operation-turn.ts'
-import { basename } from 'node:path'
+import { basename, relative, sep } from 'node:path'
+import { DocumentStore } from './documents.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
@@ -21,7 +23,7 @@ import type { CliGateway } from '../cli/gateway.ts'
 import type { ResolvedConfig } from '../config.ts'
 import { ArtifactStore } from '../workspace/artifact-store.ts'
 import { createStartArticleOperation } from '../tools/start-article.ts'
-import { createPreviewOperation } from '../tools/preview.ts'
+import { createPreviewOperation, preparePreviewInputs } from '../tools/preview.ts'
 import { selectableThemes } from './session.ts'
 import type { CreatorOperations } from './service.ts'
 
@@ -44,6 +46,15 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
     }
     const assertWritable = async (signal: AbortSignal): Promise<void> => { signal.throwIfAborted(); await assertPathWritable(workspace) }
     const store = new ArtifactStore(ctx.fs, workspace, config.artifactsDir, {}, assertPathWritable)
+    const assertReadable = async (signal: AbortSignal): Promise<void> => {
+      signal.throwIfAborted()
+      if (!agent.session) throw new Error('文章会话已关闭，请重新选择会话。')
+      // Resolve against current policy on every access, never the workspace JSON's owner claim.
+      const currentWorkspace = agent.session.header.cwd ?? ctx.sandboxPolicy.resolve({ session: agent.session }).workspaceRoot
+      const current = await ctx.fs.resolve(currentWorkspace, { signal })
+      const bound = await ctx.fs.resolve(workspace, { signal })
+      if (current.targetKey !== bound.targetKey) throw new Error('会话工作区已变化，请重新打开文章。')
+    }
     const scopedGateway: CliGateway = {
       get version() { return gateway.version },
       ...(gateway.probeVersion === undefined ? {} : { probeVersion: (signal?: AbortSignal) => gateway.probeVersion!(signal) }),
@@ -58,6 +69,39 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
     })
     const delivery = createCreatorDelivery({ store, gateway: scopedGateway, state: draftState, approval: ctx.approval, credentialRefs: config.credentialRefs, credentials: ctx.credentials, layoutBaseUrl: config.layoutBaseUrl, previewFontSize: config.previewFontSize, previewBackgroundType: config.previewBackgroundType })
     const operations: CreatorOperations = {
+      documents: new DocumentStore(store, imagePlanState.stateDir, agent.id, signal => assertWritable(signal ?? new AbortController().signal)),
+      assertReadable,
+      async sourceSnapshot(source, signal) {
+        const root = await ctx.fs.resolve(workspace, { signal })
+        const target = await ctx.fs.resolve(source, { cwd: workspace, signal })
+        if (!ctx.fs.contains(root, target)) throw new Error('文章原文必须位于当前会话工作区内。')
+        const info = await ctx.fs.stat(target, signal)
+        if (!info || info.type !== 'file') throw Object.assign(new Error('文章原文不存在，请继续已保存版本或选择其他原文。'), { code: 'FS_NOT_FOUND' })
+        const bytes = await ctx.fs.readBytes(target, signal, 8 * 1024 * 1024)
+        const after = await ctx.fs.resolve(source, { cwd: workspace, signal })
+        if (target.targetKey !== after.targetKey) throw new Error('文章原文位置已变化，请重试。')
+        return { path: relative(ctx.fs.processPath(root), ctx.fs.processPath(target)).split(sep).join('/'), sha256: createHash('sha256').update(bytes).digest('hex') }
+      },
+      async discoverRevisions(signal) {
+        await assertReadable(signal)
+        const revisions = await discoverLegacyRevisions(store, signal)
+        await assertReadable(signal)
+        return revisions
+      },
+      async loadRevision(manifestPath, signal) {
+        await assertReadable(signal)
+        const verify = await bindLegacyRevision(store, manifestPath, signal)
+        const { current } = await preparePreviewInputs(store, manifestPath, signal)
+        const markdown = new TextDecoder('utf-8', { fatal: true }).decode(current.articleBytes)
+        await verify()
+        await assertReadable(signal)
+        return { id: current.revision.id, manifestPath, markdown, title: current.manifest.title ?? /^#\s+(.+)$/mu.exec(markdown)?.[1] ?? '文章' }
+      },
+      async validateCandidates(revision, candidates, signal) {
+        const verified = []
+        for (const candidate of candidates) verified.push(await verifyImageCandidate(store, revision.id, candidate, signal))
+        return verified
+      },
       assertWritable,
       prepareDelivery: (revision, theme, proof, cover, signal) => turns.run(agent, signal, signal => delivery.prepare({ revision, theme, previewReceiptId: proof.receipt, cover }, execution(signal))),
       async exportFinal(revision, theme, proof, coverId, destination, signal) {
@@ -67,7 +111,7 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
       },
       createDraft: (revision, theme, proof, coverId, signal) => turns.run(agent, signal, signal => delivery.createDraftFinal({ proof, revision, theme, coverId }, execution(signal))),
       async themes(signal) {
-        const result = await scopedGateway.run(['themes', 'list', '--json'], { signal })
+        const result = await gateway.run(['themes', 'list', '--json'], { signal, cwd: workspace, beforeSpawn: assertReadable })
         if (!result.success || result.status !== 'completed' || result.code !== 'THEMES_SHOWN') throw new Error('无法读取排版主题，请检查 md2wechat。')
         return selectableThemes(result.data)
       },
@@ -133,7 +177,7 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
       },
       revise: (revision, markdown, signal, candidates) => reviseCreatorArticle(store, revision, markdown, signal, candidates),
       async restore(revision, signal) {
-        const current = await loadCurrentArticleRevision(store, revision.manifestPath, signal)
+        const { current } = await preparePreviewInputs(store, revision.manifestPath, signal)
         if (new TextDecoder().decode(current.articleBytes) !== revision.markdown) throw new Error('历史版本已发生变化，不能撤回。')
         return revision
       },

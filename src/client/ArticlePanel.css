@@ -1,0 +1,106 @@
+.md2-article-panel {
+  --md2-panel-accent: #176d51;
+  --md2-panel-line: #dce5df;
+  container-name: md2-article-panel;
+  container-type: inline-size;
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  background: #f8faf7;
+  color: #23392e;
+  font: 14px/1.6 system-ui, sans-serif;
+  overflow-wrap: anywhere;
+}
+.md2-article-panel *, .md2-article-panel *::before, .md2-article-panel *::after { box-sizing: border-box; }
+.md2-article-panel button, .md2-article-panel select, .md2-article-panel input { font: inherit; }
+.md2-article-panel button { cursor: pointer; padding: 8px 12px; border: 1px solid #cbd9d0; border-radius: 8px; background: #fff; color: #23392e; }
+.md2-article-panel button:hover:not(:disabled) { background: #edf4ed; border-color: #7ba58c; }
+.md2-article-panel button:disabled { opacity: .5; cursor: not-allowed; }
+.md2-article-panel :is(button, select, input):focus-visible { outline: 3px solid #7ac9aa; outline-offset: 2px; }
+.md2-article-panel button.md2-article-primary { background: var(--md2-panel-accent); color: #fff; border-color: var(--md2-panel-accent); }
+.md2-article-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; padding: 26px 28px; border-bottom: 1px solid var(--md2-panel-line); background: #fff; }
+.md2-article-header h1 { margin: 4px 0; font-size: 26px; line-height: 1.4; letter-spacing: -.03em; }
+.md2-article-header p { margin: 4px 0 0; color: #607368; }
+.md2-article-eyebrow { font-size: 11px; font-weight: 600; letter-spacing: .09em; color: #65806c; }
+.md2-article-session-label { display: grid; gap: 6px; min-width: 200px; max-width: 100%; color: #607368; font-size: 12px; }
+.md2-article-session-label select { width: 100%; max-width: 360px; padding: 10px 32px 10px 12px; border: 1px solid #cbd9d0; border-radius: 8px; background: #fff; color: #23392e; text-overflow: ellipsis; }
+.md2-article-layout { display: grid; grid-template-columns: 256px minmax(0, 1fr); min-height: 650px; }
+.md2-article-library { min-width: 0; padding: 22px 18px; border-right: 1px solid var(--md2-panel-line); background: #f1f5f0; }
+.md2-article-library-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.md2-article-library h2 { margin: 0; font-size: 15px; }
+.md2-article-panel button.md2-article-quiet { padding: 4px 7px; background: transparent; border-color: transparent; font-size: 12px; }
+.md2-article-muted { color: #62766a; font-size: 12px; }
+.md2-article-session-caption { margin: 6px 0 18px; }
+.md2-article-session-caption span { display: block; font-size: 11px; }
+.md2-article-continue { width: 100%; text-align: left; }
+.md2-article-list { list-style: none; margin: 12px 0 24px; padding: 0; display: grid; gap: 7px; max-height: 380px; overflow: auto; }
+.md2-article-list button { display: grid; gap: 3px; width: 100%; padding: 12px; text-align: left; }
+.md2-article-list button[aria-current=page] { border-color: #176d51; box-shadow: inset 3px 0 #176d51; background: #e6f2e9; }
+.md2-article-list strong { font-size: 13px; font-weight: 600; }
+.md2-article-list span, .md2-article-list time { font-size: 11px; color: #62766a; }
+.md2-article-open-form { padding-top: 20px; margin-top: 20px; border-top: 1px solid var(--md2-panel-line); }
+.md2-article-open-form h3 { margin: 0 0 10px; font-size: 14px; }
+.md2-article-open-form label { display: grid; gap: 6px; font-size: 12px; }
+.md2-article-open-form input { min-width: 0; width: 100%; padding: 9px 10px; border: 1px solid #cbd9d0; border-radius: 8px; background: #fff; color: #23392e; }
+.md2-article-open-form > button { width: 100%; }
+.md2-article-empty-list { color: #62766a; padding: 12px 0; }
+.md2-article-content { min-width: 0; padding: 22px; }
+.md2-article-welcome, .md2-article-content-empty { max-width: 540px; margin: 70px auto; padding: 26px; text-align: center; }
+.md2-article-welcome h2, .md2-article-content-empty h2 { font-size: 22px; line-height: 1.4; margin: 12px 0; letter-spacing: -.02em; }
+.md2-article-welcome p, .md2-article-content-empty p { color: #62766a; }
+.md2-article-document-icon { display: grid; place-items: center; width: 52px; height: 64px; border: 1px solid #c3d4c6; border-radius: 7px 16px 7px 7px; color: #176d51; background: #e9f2e8; font-size: 21px; margin: 0 auto 20px; }
+.md2-article-status { padding: 0 28px; color: #62766a; }
+.md2-article-notice { padding: 12px; border: 1px solid #e2d0a6; border-radius: 8px; background: #fff6e1; font-size: 13px; }
+.md2-article-panel > .md2-article-notice { margin: 16px 28px; }
+.md2-article-notice p { margin: 0 0 10px; }
+.md2-article-error-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.md2-article-restore-note { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 16px; color: #62766a; font-size: 12px; }
+.md2-article-restore-note p { flex: 1; min-width: 180px; margin: 0; }
+.md2-article-restore-note button { font-size: 12px; }
+.md2-article-restore-error { max-width: 540px; margin: 40px auto; padding: 24px; }
+.md2-article-restore-error h2 { margin-top: 0; font-size: 18px; }
+.md2-article-workspace { min-width: 0; }
+.md2-article-workspace .md2-body { grid-template-columns: minmax(0, 1fr) minmax(210px, 270px); }
+.md2-article-workspace .md2-phone { max-width: 100%; }
+@container md2-article-panel (max-width: 1040px) {
+  .md2-article-layout { grid-template-columns: minmax(0, 1fr); }
+  .md2-article-library { border-right: 0; border-bottom: 1px solid var(--md2-panel-line); }
+  .md2-article-list { grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); max-height: 210px; margin-bottom: 16px; }
+  .md2-article-continue { width: auto; }
+  .md2-article-open-form { max-width: 560px; padding-top: 14px; margin-top: 14px; }
+  .md2-article-session-caption { margin-bottom: 10px; }
+}
+@container md2-article-panel (max-width: 720px) {
+  .md2-article-header { padding: 20px; gap: 16px; }
+  .md2-article-header h1 { font-size: 23px; }
+  .md2-article-content { padding: 16px; }
+  .md2-article-workspace .md2-body { grid-template-columns: minmax(0, 1fr); }
+  .md2-article-workspace .md2-controls { border-left: 0; border-top: 1px solid var(--md2-panel-line); }
+  .md2-article-workspace .md2-reading { padding: 14px 8px; }
+  .md2-article-workspace .md2-header { padding: 18px; }
+}
+@container md2-article-panel (max-width: 420px) {
+  .md2-article-header { padding: 18px 16px; }
+  .md2-article-session-label { width: 100%; min-width: 0; }
+  .md2-article-session-label select { max-width: 100%; }
+  .md2-article-content { padding: 12px 8px; }
+  .md2-article-welcome, .md2-article-content-empty { margin: 30px auto; padding: 20px; }
+  .md2-article-workspace .md2-theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* Fallback for older embedded browsers without container queries. */
+@supports not (container-type: inline-size) {
+  .md2-article-layout { grid-template-columns: minmax(0, 1fr); }
+  .md2-article-library { border-right: 0; border-bottom: 1px solid var(--md2-panel-line); }
+  .md2-article-workspace .md2-body { grid-template-columns: minmax(0, 1fr); }
+  .md2-article-workspace .md2-controls { border-left: 0; border-top: 1px solid var(--md2-panel-line); }
+}
+.md2-article-shortcut { padding: 12px 14px; border: 1px solid #dce5df; border-radius: 10px; background: #f5f8f3; color: #23392e; font: 13px/1.6 system-ui, sans-serif; }
+.md2-article-shortcut p { margin: 0 0 9px; }
+.md2-article-shortcut button { cursor: pointer; padding: 7px 12px; border: 1px solid #176d51; border-radius: 7px; background: #176d51; color: white; font: inherit; }
+.md2-article-shortcut button:focus-visible { outline: 3px solid #7ac9aa; outline-offset: 2px; }
+.md2-article-legacy { padding-top: 18px; margin-top: 20px; border-top: 1px solid var(--md2-panel-line); }
+.md2-article-legacy h3 { margin: 0 0 8px; font-size: 14px; }
+.md2-article-legacy-chooser { margin-top: 12px; }
+.md2-article-legacy-chooser label { display: grid; gap: 6px; font-size: 12px; }
+.md2-article-legacy-chooser select { width: 100%; min-width: 0; padding: 9px; border: 1px solid #cbd9d0; border-radius: 8px; background: #fff; color: #23392e; }
+.md2-article-legacy-chooser > button { width: 100%; }

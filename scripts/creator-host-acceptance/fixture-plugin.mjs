@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { writeFile, rename } from 'node:fs/promises';
+import { readFile, writeFile, rename } from 'node:fs/promises';
+import { historicalCardSeed, retainFixtureAgents, waitForFixtureCancellation } from './support.mjs';
 import { pathToFileURL } from 'node:url';
 const { LlmAdapter, createUserMessage }=await import(pathToFileURL(process.env.E2E_HOST_ROOT+'/node_modules/@deepseek-ai/dsh-llm/lib/index.js').href);
 // Test-only adapter emits a genuine tool call. The real loop owns execution,
 // tool/result presentationMeta, durable session events, and the native card.
 export const name='md2wechat-e2e-fixture';
-export const inject=['llm','agents','agentPresets','loader','tools'];
-let modelRequests=0;
+export const inject=['llm','agents','agentPresets','loader','tools','sessionPersistence'];
+let modelRequests=0,heldSuggestionRequests=0;
 class FixtureAdapter extends LlmAdapter {
   async listModels(provider){return [{provider,id:'fixture',name:'Offline creator fixture',inputModalities:['text']}];}
   async resolveModel(provider,id){return {provider,id,name:'Offline creator fixture',inputModalities:['text'],context:{contextWindow:131072}};}
@@ -16,6 +17,8 @@ class FixtureAdapter extends LlmAdapter {
     const lastUser=options.messages.findLastIndex(m=>m.role==='user');
     const userText=JSON.stringify(options.messages[lastUser]?.content??'');
     if(userText.includes('md2wechat_propose_changes')&&!options.messages.slice(lastUser+1).some(m=>m.role==='tool')){
+      const control=JSON.parse(await readFile(process.env.E2E_FIXTURE_CONTROL,'utf8'));
+      if(control.holdSuggestions){heldSuggestionRequests++;await waitForFixtureCancellation(options.signal);}
       const blocks=options.messages[lastUser].content;
       const text=typeof blocks==='string'?blocks:blocks.filter(b=>b.type==='text').map(b=>b.text).join('\n');
       const line=text.split('\n').find(line=>line.startsWith('{')&&line.includes('requestId'));
@@ -52,28 +55,57 @@ export function apply(ctx){
   const target=[...ctx.loader.entries()].find(e=>e.options.id==='dsh-md2wechat');
   if(!target)throw new Error('Installed plugin row missing');
   await ctx.loader.await();
-  const handle=await ctx.agents.create({sessionId:randomUUID(),agentOptions:{provider:'creator-fixture',model:'fixture'},meta:{cwd:process.env.E2E_WORKSPACE},setup:agentCtx=>ctx.agentPresets.mount(agentCtx).then(()=>undefined)});
-  const agent=handle.agent;
-  agent.session.append('model/selection',{provider:'creator-fixture',model:'fixture'});
-  agent.session.append('sandbox/mode',{mode:'workspace-write'});
-  agent.followup(createUserMessage({content:[{type:'text',text:'用原生文章工作区打开测试 Markdown。'}],source:{kind:'user'}}));
-  await agent.whenIdle();
-  agent.session.append('session/title',{title:'离线验收会话',messageSeqs:[],source:{kind:'user'}});
+  let saved;
+  try { saved=JSON.parse(await readFile(process.env.E2E_FIXTURE_STATE,'utf8')); }
+  catch(error) { if(error.code!=='ENOENT')throw error; }
+  const resumed=!!saved;
+  const handles=await retainFixtureAgents(ctx,saved?.sessions,process.env.E2E_WORKSPACE);
+  const agent=handles.primary.agent;
+  ctx.effect(()=>()=>Promise.all(Object.values(handles).map(handle=>handle.dispose())));
+  let denied=saved?.denied,outside=saved?.outside;
+  if(!saved){
+    for(const [name,handle] of Object.entries(handles)){
+      handle.agent.session.append('model/selection',{provider:'creator-fixture',model:'fixture'});
+      handle.agent.session.append('sandbox/mode',{mode:'workspace-write'});
+      handle.agent.session.append('session/title',{title:name==='primary'?'离线验收会话':'空白主面板会话',messageSeqs:[],source:{kind:'user'}});
+    }
+    // Only the primary fixture invokes a model. The panel fixture starts without any tool card.
+    agent.followup(createUserMessage({content:[{type:'text',text:'用原生文章工作区打开测试 Markdown。'}],source:{kind:'user'}}));
+    await agent.whenIdle();
+    const deniedHandle=await ctx.agents.create({sessionId:randomUUID(),agentOptions:{provider:'creator-fixture',model:'fixture'},meta:{cwd:process.env.E2E_WORKSPACE},setup:c=>ctx.agentPresets.mount(c).then(()=>undefined)});
+    try{
+      deniedHandle.agent.session.append('sandbox/mode',{mode:'read-only'});
+      denied=await ctx.tools.execute({callId:'e2e-readonly',name:process.env.E2E_TOOL||'md2wechat_open_workspace',arguments:{sourcePath:process.env.E2E_SOURCE},agent:deniedHandle.agent,signal:new AbortController().signal});
+    }finally{await deniedHandle.dispose();}
+    outside=await ctx.tools.execute({callId:'e2e-outside',name:process.env.E2E_TOOL||'md2wechat_open_workspace',arguments:{sourcePath:process.env.E2E_OUTSIDE_SOURCE},agent,signal:new AbortController().signal});
+    if(!process.env.E2E_TOOL){
+      // Explicit historical fixture, not evidence that the main tool trajectory was synthesized.
+      handles.legacy=await ctx.agents.create({sessionId:randomUUID(),agentOptions:{provider:'creator-fixture',model:'fixture'},meta:{cwd:process.env.E2E_WORKSPACE},seed:historicalCardSeed(agent.session.snapshotEvents(),'old-card-'+randomUUID()),setup:c=>ctx.agentPresets.mount(c).then(()=>undefined)});
+      handles.legacy.agent.session.append('session/title',{title:'历史卡片恢复测试',messageSeqs:[],source:{kind:'user'}});
+    }
+    saved={schemaVersion:1,sessions:Object.fromEntries(Object.entries(handles).map(([name,handle])=>[name,handle.agent.id])),denied,outside};
+    await writeFile(process.env.E2E_FIXTURE_STATE+'.tmp',JSON.stringify(saved),{mode:0o600});
+    await rename(process.env.E2E_FIXTURE_STATE+'.tmp',process.env.E2E_FIXTURE_STATE);
+  }
   const events=agent.session.snapshotEvents();
-  const calls=events.filter(e=>e.type==='tool/call');
-  const results=events.filter(e=>e.type==='tool/result');
+  const calls=events.filter(e=>e.type==='tool/call'),results=events.filter(e=>e.type==='tool/result');
   const result=results.find(e=>e.data.meta?.kind==='md2wechat-creator');
-  const deniedHandle=await ctx.agents.create({sessionId:randomUUID(),agentOptions:{provider:'creator-fixture',model:'fixture'},meta:{cwd:process.env.E2E_WORKSPACE},setup:c=>ctx.agentPresets.mount(c).then(()=>undefined)});
-  deniedHandle.agent.session.append('sandbox/mode',{mode:'read-only'});
-  const denied=await ctx.tools.execute({callId:'e2e-readonly',name:process.env.E2E_TOOL||'md2wechat_open_workspace',arguments:{sourcePath:process.env.E2E_SOURCE},agent:deniedHandle.agent,signal:new AbortController().signal});
-  await deniedHandle.dispose();
-  const outside=await ctx.tools.execute({callId:'e2e-outside',name:process.env.E2E_TOOL||'md2wechat_open_workspace',arguments:{sourcePath:process.env.E2E_OUTSIDE_SOURCE},agent,signal:new AbortController().signal});
-  const audit={events:events.filter(e=>['turn/start','turn/end','tool/call','tool/result','approval/asked','approval/decided'].includes(e.type)),denied,outside,sessionId:agent.id,calls,results,articleId:result?.data.meta?.articleId,toolCount:ctx.tools.schemas().length};
-  const persist=async()=>{audit.events=agent.session.snapshotEvents().filter(e=>['turn/start','turn/end','tool/call','tool/result','approval/asked','approval/decided'].includes(e.type));audit.modelRequests=modelRequests;audit.agentStatus=agent.status;audit.sampledAt=Date.now();await writeFile(process.env.E2E_FIXTURE_RESULT+'.tmp',JSON.stringify(audit,null,2));await rename(process.env.E2E_FIXTURE_RESULT+'.tmp',process.env.E2E_FIXTURE_RESULT);};
+  const audit={bootId:process.env.E2E_BOOT_ID,resumed,events:[],denied,outside,sessionId:agent.id,panelSessionId:handles.panel.agent.id,legacySessionId:handles.legacy?.agent.id,historicalFixture:handles.legacy?'seeded genuine fixture events with intentionally obsolete articleId':null,calls,results,articleId:result?.data.meta?.articleId,toolCount:ctx.tools.schemas().length,controlSequence:0};
+  const persist=async()=>{
+    const control=JSON.parse(await readFile(process.env.E2E_FIXTURE_CONTROL,'utf8'));
+    if(control.sequence>audit.controlSequence){
+      if(!['workspace-write','read-only'].includes(control.mode))throw new Error('Invalid fixture sandbox mode');
+      agent.session.append('sandbox/mode',{mode:control.mode});
+      audit.controlSequence=control.sequence;
+    }
+    audit.events=agent.session.snapshotEvents().filter(e=>['turn/start','turn/end','tool/call','tool/result','approval/asked','approval/decided'].includes(e.type));
+    audit.panelEvents=handles.panel.agent.session.snapshotEvents().filter(e=>['turn/start','turn/end','tool/call','tool/result','approval/asked','approval/decided'].includes(e.type));
+    audit.modelRequests=modelRequests;audit.heldSuggestionRequests=heldSuggestionRequests;audit.agentStatus=agent.status;audit.sampledAt=Date.now();
+    await writeFile(process.env.E2E_FIXTURE_RESULT+'.tmp',JSON.stringify(audit,null,2));
+    await rename(process.env.E2E_FIXTURE_RESULT+'.tmp',process.env.E2E_FIXTURE_RESULT);
+  };
   await persist();
-  let pending=false;const timer=setInterval(()=>{if(!pending){pending=true;persist().finally(()=>pending=false);}},100);
+  let pending=false;const timer=setInterval(()=>{if(!pending){pending=true;persist().catch(error=>console.error('fixture audit failed:',error.message)).finally(()=>pending=false);}},100);
   ctx.effect(()=>()=>clearInterval(timer));
-  // Keep handle active so session-bound Remote lookup uses the same real Agent.
-  ctx.effect(()=>()=>handle.dispose());
  }).catch(async e=>writeFile(process.env.E2E_FIXTURE_RESULT,JSON.stringify({error:e.stack||String(e)})));
 }
