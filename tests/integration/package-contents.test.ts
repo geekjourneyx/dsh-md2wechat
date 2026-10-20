@@ -43,7 +43,7 @@ describe('packed plugin artifact', () => {
       expect(fixture.entries).toContain(`package/lib/${entry}`)
     }
     expect(fixture.entries.filter(entry => entry === 'package/cordis.patch.yml')).toHaveLength(1)
-    for (const document of ['README.md', 'CHANGELOG.md', 'LICENSE']) {
+    for (const document of ['README.md', 'CHANGELOG.md', 'LICENSE', 'assets/readme/readme-hero.webp']) {
       expect(fixture.entries.filter(entry => entry === `package/${document}`)).toHaveLength(1)
     }
     expect(fixture.entries).toContain('package/package.json')
@@ -73,7 +73,12 @@ describe('packed plugin artifact', () => {
     expect(readme).toContain('never publishes or mass-sends')
     expect(readme).toContain('no other image-generation capability')
     expect(readme).not.toMatch(/(?:^|\n)npm (?:install|publish)\b/u)
-    expect(readme).not.toMatch(/\/Users\/|md2wechat-(?:darwin|linux|windows)|assets\//u)
+    expect(readme).not.toMatch(/\/Users\/|md2wechat-(?:darwin|linux|windows)/u)
+    expect(readme).toContain('src="./assets/readme/readme-hero.webp"')
+    const hero = await readFile(join(fixture.packageRoot, 'assets/readme/readme-hero.webp'))
+    expect(hero.subarray(0, 4).toString()).toBe('RIFF')
+    expect(hero.subarray(8, 12).toString()).toBe('WEBP')
+    expect(hero.byteLength).toBeLessThan(350_000)
     expect(changelog.match(/^## 1\.0\.0\b/gmu)).toHaveLength(1)
     expect(changelog.match(/^## \d/gmu)).toHaveLength(1)
     expect(license.startsWith('MIT License\n')).toBe(true)
