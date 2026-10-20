@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import type { CliGateway } from '../cli/gateway.ts'
 import type { CliEnvelope } from '../cli/protocol.ts'
@@ -25,7 +26,7 @@ const MAX_REQUEST_BYTES = 9 * 1024 * 1024
 const decoder = new TextDecoder('utf-8', { fatal: true })
 const htmlDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
-interface DraftToolDependencies {
+export interface DraftToolDependencies {
   gateway: CliGateway
   store: ArtifactStore
   state: DraftStateStore
@@ -54,25 +55,10 @@ interface PreparedDraft {
   resultPath: string
 }
 
-/**
- * Create one idempotent unpublished WeChat draft tool.
- * @param dependencies - Gateway, storage authorities, preview configuration, credentials, approval, and audit services.
- * @returns Registry-ready typed DSH tool.
- */
-export function createDraftTool(dependencies: DraftToolDependencies) {
+/** Shared domain operation; callers provide real approval-turn context, never a synthetic tool token. */
+export function createDraftOperation(dependencies: DraftToolDependencies) {
   if (typeof dependencies.reportAuditFailure !== 'function') throw new TypeError('draft audit failure reporter is required')
-  return defineTool({
-    name: TOOL_NAME,
-    description: 'Create one unpublished WeChat draft from the exact current signed preview and authenticated image results.',
-    parameters: {
-      manifestPath: { type: 'string', required: true },
-      previewReceiptId: { type: 'string', required: true },
-      planPaths: { type: 'array', required: true, items: { type: 'string' } },
-    },
-    output: { schema: { type: 'object', additionalProperties: false, properties: {
-      manifestPath: { type: 'string', required: true }, revisionId: { type: 'string', required: true }, previewReceiptId: { type: 'string', required: true }, draftId: { type: 'string', required: true }, draftUrl: { type: 'string' }, draftResultPath: { type: 'string', required: true }, pluginVersion: { type: 'string', const: '1.0.0', required: true }, cliVersion: { type: 'string', const: '3.3.0', required: true },
-    } }, render: (_args, value) => [{ type: 'text', text: `Unpublished WeChat draft ${value.draftId} is ready.` }] },
-    async execute(args, exec) {
+  return async (args: { manifestPath: string; previewReceiptId: string; planPaths: readonly string[] }, exec: Pick<ToolRunContext, 'agent' | 'callId' | 'signal'>) => {
       try {
         assertExactArgs(args, ['manifestPath', 'previewReceiptId', 'planPaths'])
         const planPaths = validatePlanPaths(args.planPaths)
@@ -122,7 +108,28 @@ export function createDraftTool(dependencies: DraftToolDependencies) {
         if (error instanceof SafeDraftError) throw new Error(error.message)
         throw new Error('WeChat draft creation failed')
       }
+  }
+}
+
+/**
+ * Create one idempotent unpublished WeChat draft tool.
+ * @param dependencies - Gateway, storage authorities, preview configuration, credentials, approval, and audit services.
+ * @returns Registry-ready typed DSH tool.
+ */
+export function createDraftTool(dependencies: DraftToolDependencies) {
+  const operation = createDraftOperation(dependencies)
+  return defineTool({
+    name: TOOL_NAME,
+    description: 'Create one unpublished WeChat draft from the exact current signed preview and authenticated image results.',
+    parameters: {
+      manifestPath: { type: 'string', required: true },
+      previewReceiptId: { type: 'string', required: true },
+      planPaths: { type: 'array', required: true, items: { type: 'string' } },
     },
+    output: { schema: { type: 'object', additionalProperties: false, properties: {
+      manifestPath: { type: 'string', required: true }, revisionId: { type: 'string', required: true }, previewReceiptId: { type: 'string', required: true }, draftId: { type: 'string', required: true }, draftUrl: { type: 'string' }, draftResultPath: { type: 'string', required: true }, pluginVersion: { type: 'string', const: '1.0.0', required: true }, cliVersion: { type: 'string', const: '3.3.0', required: true },
+    } }, render: (_args, value) => [{ type: 'text', text: `Unpublished WeChat draft ${value.draftId} is ready.` }] },
+    execute: operation,
     presentCall: args => genericCall('Create unpublished WeChat draft', 'edit', undefined, safeLocations(args.manifestPath, args.planPaths)),
     presentResult: () => genericResult('Unpublished WeChat draft ready'),
   })

@@ -1,3 +1,4 @@
+import { sandboxPolicyFixture } from '../fixtures/sandbox-policy.ts'
 import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -7,7 +8,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 const exec = promisify(execFile)
 const repositoryRoot = resolve(import.meta.dirname, '../..')
-const harnessRoot = resolve(repositoryRoot, '../../web/deepseek-harness')
 const temporaryRoots: string[] = []
 
 afterEach(async () => {
@@ -31,29 +31,17 @@ async function packedFixture(): Promise<{ archive: string; packageRoot: string; 
 }
 
 async function linkRuntimePackages(fixtureRoot: string): Promise<void> {
-  const packages: Record<string, string> = {
-    cordis: 'vendor/cordis',
-    'dsh-credentials': 'packages/credentials/credentials',
-    'dsh-fs': 'packages/fs/fs',
-    'dsh-jobs': 'packages/jobs/jobs',
-    'dsh-subprocess': 'packages/subprocess/subprocess',
-    'dsh-system-prompt': 'packages/core/system-prompt',
-    'dsh-tools': 'packages/core/tools',
-    'dsh-user-approval': 'packages/interaction/user-approval',
-    schemastery: 'vendor/schemastery',
-  }
-  const scope = join(fixtureRoot, 'node_modules', '@deepseek-ai')
-  await mkdir(scope, { recursive: true })
-  for (const [name, relative] of Object.entries(packages)) {
-    await symlink(join(harnessRoot, relative), join(scope, name), 'dir')
-  }
+  await symlink(join(repositoryRoot, 'node_modules'), join(fixtureRoot, 'node_modules'), 'dir')
 }
 
 describe('packed plugin artifact', () => {
-  it('contains only the built plugin entry, declarations, and one bundle patch', async () => {
+  it('contains the built host and client entries, generated Remote contracts, and one bundle patch', async () => {
     const fixture = await packedFixture()
     expect(fixture.entries).toContain('package/lib/index.js')
     expect(fixture.entries).toContain('package/lib/types/index.d.ts')
+    for (const entry of ['client.js', 'typert.host.js', 'typert.host.d.ts', 'typert.remote-client.js', 'typert.remote-client.d.ts']) {
+      expect(fixture.entries).toContain(`package/lib/${entry}`)
+    }
     expect(fixture.entries.filter(entry => entry === 'package/cordis.patch.yml')).toHaveLength(1)
     for (const document of ['README.md', 'CHANGELOG.md', 'LICENSE']) {
       expect(fixture.entries.filter(entry => entry === `package/${document}`)).toHaveLength(1)
@@ -117,10 +105,11 @@ describe('packed plugin artifact', () => {
         },
       })
       ctx.provide('fs', {})
+      ctx.provide('sandboxPolicy', (${sandboxPolicyFixture.toString()})(process.cwd()))
       ctx.provide('approval', { request: async () => 'rejected' })
       ctx.provide('credentials', { resolve: async () => undefined })
       ctx.provide('jobs', { start() { throw new Error('not used') }, get() { return undefined } })
-      const names = ['md2wechat_doctor','md2wechat_start_article','md2wechat_improve_article','md2wechat_plan_images','md2wechat_preview','md2wechat_export','md2wechat_create_draft','md2wechat_generate_images']
+      const names = ['md2wechat_doctor','md2wechat_start_article','md2wechat_improve_article','md2wechat_plan_images','md2wechat_preview','md2wechat_export','md2wechat_create_draft','md2wechat_generate_images','md2wechat_open_workspace','md2wechat_propose_changes','md2wechat_import_creator_image','md2wechat_generate_creator_images']
       const fiber = await ctx.plugin(plugin, { binaryPath: '/opt/md2wechat', stateDir: '/var/lib/dsh-md2wechat-packed-test', safeReadRetries: 0 })
       if (plugin.name !== 'dsh-md2wechat' || names.some(name => ctx.tools.get(name) === undefined)) throw new Error('packed plugin did not register expected tools')
       const sections = (await ctx.systemPrompt.assemble()).sections.filter(section => section.name === 'tool:md2wechat')

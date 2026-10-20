@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { JsonValue } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { CliGateway } from '../cli/gateway.ts'
 import { validateArtifactId, validateArtifactRelativePath } from '../workspace/artifact-store.ts'
 import type { ArtifactStore } from '../workspace/artifact-store.ts'
@@ -9,7 +10,7 @@ import { encodeCanonical } from '../workspace/images.ts'
 import { domainResult, genericCall, genericResult } from './shared.ts'
 import { loadCurrentArticleRevision } from './improve-article.ts'
 
-interface PlanImagesToolDependencies {
+export interface PlanImagesToolDependencies {
   gateway: CliGateway
   store: ArtifactStore
   state: ImagePlanStateStore
@@ -31,13 +32,67 @@ const imageSchema = {
   },
 } as const
 
+/** Run image planning against the caller-supplied artifact and authority stores. */
+export function createPlanImagesOperation(dependencies: PlanImagesToolDependencies) {
+  const { gateway, store, state } = dependencies
+  return async (
+    args: { manifestPath: string; images: readonly ImagePlanSource[] },
+    exec: Pick<ToolRunContext, 'signal'>,
+  ) => {
+  assertKnownArguments(args, ['manifestPath', 'images'])
+  await state.initialize(store, true, exec.signal)
+  const current = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
+  const normalized = normalizeImages(args.images, current.revision.id)
+  const items: JsonValue[] = []
+  for (const item of normalized) {
+    const argv = imagePlanningArgv(item.original, current.articleAuthorization.processPath)
+    const response = await gateway.run(argv, {
+      signal: exec.signal,
+      beforeSpawn: current.articleAuthorization.beforeSpawn,
+    })
+    const cliPlan = projectImagePlanResponse(response, item.original, current)
+    items.push({ original: item.original, targetArtifactPath: item.targetArtifactPath, cliPlan })
+  }
+  const verified = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
+  if (verified.revision.articleSha256 !== current.revision.articleSha256) {
+    throw new Error('stale revision: article changed while preparing the image plan')
+  }
+  if (new TextEncoder().encode(canonicalJson(items)).byteLength > MAX_PLAN_OUTPUT_BYTES) {
+    throw new Error('combined image plan exceeds the one-megabyte output limit')
+  }
+  const planId = sha256(canonicalJson({ revisionId: current.revision.id, items }))
+  const planPath = `revisions/${current.revision.id}/plans/${planId}.json`
+  if (new TextEncoder().encode(renderPlanItems(planPath, items)).byteLength > MAX_PLAN_OUTPUT_BYTES) {
+    throw new Error('rendered image plan exceeds the one-megabyte output limit')
+  }
+  const persisted = {
+    schemaVersion: 1,
+    planId,
+    revisionId: current.revision.id,
+    createdAt: current.revision.createdAt,
+    items,
+  }
+  const planBytes = encodeCanonical(persisted)
+  await state.publish(store, { planPath, planId, revisionId: current.revision.id, items, planBytes }, exec.signal)
+  await publishStablePlan(store, planPath, planBytes, exec.signal)
+  return domainResult({
+    revisionId: current.revision.id,
+    manifestPath: current.manifestPath,
+    planId,
+    planPath,
+    items,
+    locations: [current.articlePath, current.manifestPath, planPath, ...normalized.map(item => item.targetArtifactPath)],
+  })
+  }
+}
+
 /**
  * Create the side-effect-free image planning tool.
  * @param dependencies - CLI gateway, artifact store, and external plan authority.
  * @returns Registry-ready typed DSH tool.
  */
 export function createPlanImagesTool(dependencies: PlanImagesToolDependencies) {
-  const { gateway, store, state } = dependencies
+  const operation = createPlanImagesOperation(dependencies)
   return defineTool({
     name: 'md2wechat_plan_images',
     description: 'Prepare replayable image plans for the current article without generating images or using credentials.',
@@ -65,52 +120,7 @@ export function createPlanImagesTool(dependencies: PlanImagesToolDependencies) {
         text: renderPlanItems(value.planPath, value.items),
       }],
     },
-    async execute(args, exec) {
-      assertKnownArguments(args, ['manifestPath', 'images'])
-      await state.initialize(store, true, exec.signal)
-      const current = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
-      const normalized = normalizeImages(args.images, current.revision.id)
-      const items: JsonValue[] = []
-      for (const item of normalized) {
-        const argv = imagePlanningArgv(item.original, current.articleAuthorization.processPath)
-        const response = await gateway.run(argv, {
-          signal: exec.signal,
-          beforeSpawn: current.articleAuthorization.beforeSpawn,
-        })
-        const cliPlan = projectImagePlanResponse(response, item.original, current)
-        items.push({ original: item.original, targetArtifactPath: item.targetArtifactPath, cliPlan })
-      }
-      const verified = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
-      if (verified.revision.articleSha256 !== current.revision.articleSha256) {
-        throw new Error('stale revision: article changed while preparing the image plan')
-      }
-      if (new TextEncoder().encode(canonicalJson(items)).byteLength > MAX_PLAN_OUTPUT_BYTES) {
-        throw new Error('combined image plan exceeds the one-megabyte output limit')
-      }
-      const planId = sha256(canonicalJson({ revisionId: current.revision.id, items }))
-      const planPath = `revisions/${current.revision.id}/plans/${planId}.json`
-      if (new TextEncoder().encode(renderPlanItems(planPath, items)).byteLength > MAX_PLAN_OUTPUT_BYTES) {
-        throw new Error('rendered image plan exceeds the one-megabyte output limit')
-      }
-      const persisted = {
-        schemaVersion: 1,
-        planId,
-        revisionId: current.revision.id,
-        createdAt: current.revision.createdAt,
-        items,
-      }
-      const planBytes = encodeCanonical(persisted)
-      await state.publish(store, { planPath, planId, revisionId: current.revision.id, items, planBytes }, exec.signal)
-      await publishStablePlan(store, planPath, planBytes, exec.signal)
-      return domainResult({
-        revisionId: current.revision.id,
-        manifestPath: current.manifestPath,
-        planId,
-        planPath,
-        items,
-        locations: [current.articlePath, current.manifestPath, planPath, ...normalized.map(item => item.targetArtifactPath)],
-      })
-    },
+    execute: operation,
     presentCall: args => genericCall('Plan article images', 'edit', args.images, planLocations(args.manifestPath, args.images)),
     presentResult: () => genericResult('Image plan ready'),
   })

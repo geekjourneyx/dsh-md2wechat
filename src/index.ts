@@ -3,7 +3,13 @@
  * @module @geekjourneyx/dsh-md2wechat
  */
 
+import type {} from '@deepseek-ai/dsh-system-prompt'
 import type { Context } from '@deepseek-ai/cordis'
+import { CreatorService } from './creator/service.ts'
+import { creatorOperations } from './creator/runtime.ts'
+import { createOperationTurnRunner } from './creator/operation-turn.ts'
+import { createOpenWorkspaceTool, createProposeChangesTool, createImportCreatorImageTool, createGenerateCreatorImagesTool } from './creator/tool.ts'
+import { CreatorRemote } from './creator/remote.ts'
 import type { CliEnvelope } from './cli/protocol.ts'
 import { createCliGateway } from './cli/gateway.ts'
 import { resolveConfig } from './config.ts'
@@ -26,7 +32,7 @@ export { Config } from './config.ts'
 export const name = 'dsh-md2wechat'
 
 /** DSH services required before the plugin can activate. */
-export const inject = ['tools', 'subprocess', 'fs', 'approval', 'credentials', 'jobs', 'systemPrompt'] as const
+export const inject = ['tools', 'subprocess', 'fs', 'approval', 'credentials', 'jobs', 'systemPrompt', 'sandboxPolicy'] as const
 
 const SAFE_AUDIT_MESSAGES = new Set([
   'article preview operation history could not be recorded',
@@ -112,7 +118,14 @@ export async function apply(ctx: Context, input: PluginConfig): Promise<void> {
     }
   }
 
-  for (const tool of tools) ctx.tools.register(tool)
+  const turns = createOperationTurnRunner(ctx)
+  const creator = new CreatorService(creatorOperations(ctx, config, gateway, reportAuditFailure, turns, imagePlanState, draftState), config.previewTheme, config.artifactsDir, config.enableWechatWriteTools)
+  ctx.plugin(CreatorRemote, creator)
+  tools.push(createOpenWorkspaceTool(creator), createProposeChangesTool(creator), createImportCreatorImageTool(creator))
+  if (config.enableWechatWriteTools && config.enableFallbackImageTool) tools.push(createGenerateCreatorImagesTool(creator))
+
+  const primary = new Set(['md2wechat_open_workspace', 'md2wechat_propose_changes', 'md2wechat_import_creator_image', 'md2wechat_generate_creator_images'])
+  for (const tool of tools) ctx.tools.register(primary.has(tool.name) ? tool : { ...tool, deferLoading: true })
   ctx.systemPrompt.section({
     name: 'tool:md2wechat',
     order: 120,
@@ -129,18 +142,14 @@ function assertReadyProbe(name: 'version' | 'capabilities', response: CliEnvelop
 }
 
 function workflowPrompt(writeEnabled: boolean, fallbackEnabled: boolean): string {
-  const workflow = writeEnabled
-    ? 'Use this order: md2wechat_start_article or md2wechat_improve_article -> md2wechat_plan_images -> md2wechat_preview -> md2wechat_export or md2wechat_create_draft.'
-    : 'Use this order: md2wechat_start_article or md2wechat_improve_article -> md2wechat_plan_images -> md2wechat_preview -> md2wechat_export.'
   const lines = [
-    workflow,
-    'Treat the signed preview as the source of truth for review and approval.',
+    'For an article, open md2wechat_open_workspace first. The native workspace owns theme selection, exact suggestions, image choices, final review and delivery; do not ask the author to orchestrate a tool chain.',
+    'Only propose changes for a pending workspace request. Never silently rewrite source files. Treat the displayed signed preview as the review boundary; after final material preparation, review that exact final HTML again.',
+    'Legacy low-level tools are retained for explicit compatibility or diagnostics, not the default creator experience.',
   ]
   if (writeEnabled) {
-    lines.push('md2wechat_create_draft creates an unpublished WeChat draft and never publishes or mass-sends.')
-    if (fallbackEnabled) {
-      lines.push('Use md2wechat_generate_images only when image work is required and the current DSH agent has no other image-generation capability.')
-    }
+    lines.push('Saving a WeChat draft requires explicit native confirmation and approval. It creates an unpublished draft and never publishes or mass-sends.')
+    if (fallbackEnabled) lines.push('Prefer the current host image capability. md2wechat_generate_creator_images is fallback only and uploads every generated candidate to WeChat material storage; disclose this and obtain its one-time approval.')
   }
   return lines.join('\n')
 }
@@ -163,3 +172,5 @@ function createAuditReporter(ctx: Context): (message: string) => void {
     }
   }
 }
+
+export { CreatorRemote } from './creator/remote.ts'

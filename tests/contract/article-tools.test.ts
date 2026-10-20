@@ -2,16 +2,16 @@ import { createHash } from 'node:crypto'
 import { link, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import { Context } from '../../../../web/deepseek-harness/vendor/cordis/src/index.ts'
-import ToolRuntime from '../../../../web/deepseek-harness/packages/core/tools/src/index.ts'
-import SystemPrompt from '../../../../web/deepseek-harness/packages/core/system-prompt/src/index.ts'
+import { Context } from '@deepseek-ai/cordis'
+import ToolRuntime from '@deepseek-ai/dsh-tools'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { CliEnvelope } from '../../src/cli/protocol.ts'
 import type { CliGateway, CliRunOptions } from '../../src/cli/gateway.ts'
 import { createDoctorTool } from '../../src/tools/doctor.ts'
 import { createImproveArticleTool } from '../../src/tools/improve-article.ts'
 import { createPlanImagesTool } from '../../src/tools/plan-images.ts'
-import { createStartArticleTool } from '../../src/tools/start-article.ts'
+import { createStartArticleTool, createStartArticleOperation } from '../../src/tools/start-article.ts'
 import { ArtifactStore } from '../../src/workspace/artifact-store.ts'
 import { ImagePlanStateStore } from '../../src/workspace/image-plan-state.ts'
 
@@ -236,6 +236,21 @@ describe('article preparation tools', () => {
     await disposeContext()
     await rm(temporary, { recursive: true, force: true })
     await rm(stateDir, { recursive: true, force: true })
+  })
+
+  it('imports local images into the creator revision without changing the source', async () => {
+    await mkdir(join(workspace, 'images'))
+    const original = '# Article\n\n![photo](images/photo.png)\n'
+    await writeFile(join(workspace, 'article.md'), original)
+    await writeFile(join(workspace, 'images/photo.png'), 'image bytes')
+    const start = createStartArticleOperation({ fs: fs as never, workspace, store, importImages: true })
+    const result = await start({ sourcePath: 'article.md' }, { signal, callId: 'creator-open' as never })
+    expect(decoder.decode(await store.read(`revisions/${result.revisionId}/images/photo.png`))).toBe('image bytes')
+    expect(await readFile(join(workspace, 'article.md'), 'utf8')).toBe(original)
+    await symlink(join(temporary, 'outside.png'), join(workspace, 'images/outside.png'))
+    await writeFile(join(temporary, 'outside.png'), 'outside')
+    await writeFile(join(workspace, 'escape.md'), '![x](images/outside.png)')
+    await expect(start({ sourcePath: 'escape.md' }, { signal, callId: 'creator-open' as never })).rejects.toThrow()
   })
 
   it('registers exact strict schemas and replay-safe pure cards for all four tools', async () => {

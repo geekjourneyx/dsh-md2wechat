@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import type { OperationCredentialServices } from '../security/credentials.ts'
 import { resolveOperationEnv } from '../security/credentials.ts'
@@ -25,24 +26,9 @@ export interface ExportToolDependencies {
   now?: () => Date
 }
 
-/**
- * Create the exact-current-preview export tool.
- * @param dependencies - Storage, preview configuration, credentials, approval, and clock.
- * @returns Registry-ready typed DSH tool.
- */
-export function createExportTool(dependencies: ExportToolDependencies) {
-  return defineTool({
-    name: TOOL_NAME,
-    description: 'Export the exact current signed md2wechat preview HTML to one explicit local destination.',
-    parameters: {
-      manifestPath: { type: 'string', required: true },
-      previewReceiptId: { type: 'string', required: true },
-      destinationPath: { type: 'string', required: true },
-    },
-    output: { schema: { type: 'object', additionalProperties: false, properties: {
-      manifestPath: { type: 'string', required: true }, revisionId: { type: 'string', required: true }, previewReceiptId: { type: 'string', required: true }, sourcePath: { type: 'string', required: true }, destinationPath: { type: 'string', required: true }, sha256: { type: 'string', required: true }, pluginVersion: { type: 'string', const: '1.0.0', required: true }, cliVersion: { type: 'string', const: '3.3.0', required: true },
-    } }, render: (_args, value) => [{ type: 'text', text: `Signed preview exported to ${value.destinationPath}.` }] },
-    async execute(args, exec) {
+/** Shared domain operation; callers provide real approval-turn context, never a synthetic tool token. */
+export function createExportOperation(dependencies: ExportToolDependencies) {
+  return async (args: { manifestPath: string; previewReceiptId: string; destinationPath: string }, exec: Pick<ToolRunContext, 'agent' | 'callId' | 'signal'>) => {
       try {
         assertExactArgs(args, ['manifestPath', 'previewReceiptId', 'destinationPath'])
         if (typeof args.destinationPath !== 'string' || !isAbsolute(args.destinationPath)) throw new SafeExportError('export destination must be an absolute path')
@@ -74,7 +60,28 @@ export function createExportTool(dependencies: ExportToolDependencies) {
         if (error instanceof SafeExportError) throw new Error(error.message)
         throw new Error('preview export failed')
       }
+  }
+}
+
+/**
+ * Create the exact-current-preview export tool.
+ * @param dependencies - Storage, preview configuration, credentials, approval, and clock.
+ * @returns Registry-ready typed DSH tool.
+ */
+export function createExportTool(dependencies: ExportToolDependencies) {
+  const operation = createExportOperation(dependencies)
+  return defineTool({
+    name: TOOL_NAME,
+    description: 'Export the exact current signed md2wechat preview HTML to one explicit local destination.',
+    parameters: {
+      manifestPath: { type: 'string', required: true },
+      previewReceiptId: { type: 'string', required: true },
+      destinationPath: { type: 'string', required: true },
     },
+    output: { schema: { type: 'object', additionalProperties: false, properties: {
+      manifestPath: { type: 'string', required: true }, revisionId: { type: 'string', required: true }, previewReceiptId: { type: 'string', required: true }, sourcePath: { type: 'string', required: true }, destinationPath: { type: 'string', required: true }, sha256: { type: 'string', required: true }, pluginVersion: { type: 'string', const: '1.0.0', required: true }, cliVersion: { type: 'string', const: '3.3.0', required: true },
+    } }, render: (_args, value) => [{ type: 'text', text: `Signed preview exported to ${value.destinationPath}.` }] },
+    execute: operation,
     presentCall: args => genericCall('Export signed md2wechat preview', 'edit', safeDestination(args.destinationPath), safeExportLocations(args.manifestPath, args.destinationPath)),
     presentResult: () => genericResult('Signed preview exported'),
   })

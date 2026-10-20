@@ -3,6 +3,7 @@ import { dirname, posix } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import type { CredentialEnvironmentName } from '../config.ts'
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { CliGateway } from '../cli/gateway.ts'
 import type { CliEnvelope } from '../cli/protocol.ts'
@@ -37,7 +38,7 @@ class PreviewCancelledError extends Error {}
 type PreviewFontSize = 'small' | 'medium' | 'large'
 type PreviewBackgroundType = 'default' | 'grid' | 'none'
 
-interface PreviewToolDependencies {
+export interface PreviewToolDependencies {
   gateway: CliGateway
   store: ArtifactStore
   layoutBaseUrl: string
@@ -76,7 +77,7 @@ export interface PreparedPreviewInputs {
  * @param dependencies - Gateway, storage, rendering config, credentials, approval service, clock, and TTL.
  * @returns Registry-ready typed DSH tool.
  */
-export function createPreviewTool({
+export function createPreviewOperation({
   gateway,
   store,
   layoutBaseUrl,
@@ -96,32 +97,7 @@ export function createPreviewTool({
   oneOf(previewFontSize, ['small', 'medium', 'large'], 'preview font size')
   oneOf(previewBackgroundType, ['default', 'grid', 'none'], 'preview background type')
   if (typeof reportAuditFailure !== 'function') throw new TypeError('preview audit failure reporter is required')
-  return defineTool({
-    name: TOOL_NAME,
-    description: 'Generate an expiring, signed HTML preview for one immutable md2wechat article revision after one-time approval.',
-    parameters: {
-      manifestPath: { type: 'string', required: true, description: 'Manifest path returned by md2wechat_start_article.' },
-    },
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          manifestPath: { type: 'string', required: true },
-          previewHtmlPath: { type: 'string', required: true },
-          revisionId: { type: 'string', required: true },
-          previewReceiptId: { type: 'string', required: true },
-          previewUrl: { type: 'string' },
-          pluginVersion: { type: 'string', const: '1.0.0', required: true },
-          cliVersion: { type: 'string', const: '3.3.0', required: true },
-        },
-      },
-      render: (_args, value) => [{
-        type: 'text',
-        text: `Article preview is ready at ${value.previewHtmlPath}.`,
-      }],
-    },
-    async execute(args, exec) {
+  return async (args: { manifestPath: string }, exec: Pick<ToolRunContext, 'agent' | 'callId' | 'signal'>) => {
       try {
         assertKnownArguments(args, ['manifestPath'])
         exec.signal.throwIfAborted()
@@ -131,7 +107,7 @@ export function createPreviewTool({
           agent: exec.agent,
           toolName: TOOL_NAME,
           callId: exec.callId,
-          reason: 'Generate an article preview using the configured md2wechat provider.',
+          reason: `Send this article to ${layoutBaseUrl} to generate its preview using the configured md2wechat credential.`,
           signal: exec.signal,
         })
         assertApproved(outcome)
@@ -181,7 +157,7 @@ export function createPreviewTool({
               '--json',
             ] as const
             const response = await gateway.run(argv, {
-              env: { MD2WECHAT_API_KEY: credentialValue },
+              env: { MD2WECHAT_API_KEY: credentialValue, MD2WECHAT_BASE_URL: layoutBaseUrl },
               secrets: resolved.secrets,
               signal: exec.signal,
               beforeSpawn: async (spawnSignal) => {
@@ -271,7 +247,37 @@ export function createPreviewTool({
         if (error instanceof SafePreviewError) throw new Error(error.message)
         throw new Error('article preview failed')
       }
+  }
+}
+
+export function createPreviewTool(dependencies: PreviewToolDependencies) {
+  const operation = createPreviewOperation(dependencies)
+  return defineTool({
+    name: TOOL_NAME,
+    description: 'Generate an expiring, signed HTML preview for one immutable md2wechat article revision after one-time approval.',
+    parameters: {
+      manifestPath: { type: 'string', required: true, description: 'Manifest path returned by md2wechat_start_article.' },
     },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          manifestPath: { type: 'string', required: true },
+          previewHtmlPath: { type: 'string', required: true },
+          revisionId: { type: 'string', required: true },
+          previewReceiptId: { type: 'string', required: true },
+          previewUrl: { type: 'string' },
+          pluginVersion: { type: 'string', const: '1.0.0', required: true },
+          cliVersion: { type: 'string', const: '3.3.0', required: true },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Article preview is ready at ${value.previewHtmlPath}.`,
+      }],
+    },
+    execute: operation,
     presentCall: args => genericCall('Preview md2wechat article', 'edit', args.manifestPath, previewCallLocations(args.manifestPath)),
     presentResult: () => genericResult('Article preview ready'),
   })
@@ -376,7 +382,7 @@ export async function preparePreviewInputs(
   }
 }
 
-function discoverMarkdownImageDestinations(bytes: Uint8Array): readonly string[] {
+export function discoverMarkdownImageDestinations(bytes: Uint8Array): readonly string[] {
   let markdown: string
   try {
     markdown = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
@@ -400,7 +406,7 @@ function discoverMarkdownImageDestinations(bytes: Uint8Array): readonly string[]
   }
 }
 
-function resolveLocalImagePath(revisionRoot: string, destination: string): string {
+export function resolveLocalImagePath(revisionRoot: string, destination: string): string {
   if (containsControl(destination)) throw new Error('local Markdown image destination contains a control character')
   if (destination.includes('\\') || destination.includes('?') || destination.includes('#') || destination.includes('%')) {
     throw new Error('local Markdown image destination is ambiguous or non-portable')

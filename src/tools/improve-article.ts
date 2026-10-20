@@ -1,5 +1,6 @@
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { JsonValue } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { CliGateway } from '../cli/gateway.ts'
 import type { CliEnvelope } from '../cli/protocol.ts'
 import { domainResult, genericCall, genericResult } from './shared.ts'
@@ -13,7 +14,7 @@ import type { ArticleManifest, ArticleRevision } from '../workspace/revision.ts'
 
 const manifestPattern = /^revisions\/([a-f0-9]{64})\/manifest\.json$/u
 
-interface ImproveArticleToolDependencies {
+export interface ImproveArticleToolDependencies {
   gateway: CliGateway
   store: ArtifactStore
   now?: () => Date
@@ -61,11 +62,45 @@ export async function loadCurrentArticleRevision(
  * @param dependencies - CLI gateway, artifact store, and operation clock.
  * @returns Registry-ready typed DSH tool.
  */
-export function createImproveArticleTool({
+export function createImproveArticleOperation({
   gateway,
   store,
   now = () => new Date(),
 }: ImproveArticleToolDependencies) {
+  return async (args: { manifestPath: string; operation: 'advise' | 'title' | 'humanize' | 'writer_style' }, exec: Pick<ToolRunContext, 'signal'>) => {
+      assertKnownArguments(args, ['manifestPath', 'operation'])
+      const current = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
+      const argv = improvementArgv(args.operation, current.articleAuthorization.processPath)
+      const response = await gateway.run(argv, {
+        signal: exec.signal,
+        beforeSpawn: current.articleAuthorization.beforeSpawn,
+      })
+      const preparedRequest = projectImprovementResponse(args.operation, response, current)
+      const verified = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
+      if (verified.revision.articleSha256 !== current.revision.articleSha256) {
+        throw new Error('stale revision: article changed while preparing the request')
+      }
+      const recordPath = `revisions/${current.revision.id}/operations.jsonl`
+      await appendOperation(store, current.revision, {
+        operation: args.operation,
+        createdAt: now().toISOString(),
+        details: { cliCode: response.code, preparedRequest },
+      }, [])
+      return domainResult({
+        revisionId: current.revision.id,
+        manifestPath: current.manifestPath,
+        articlePath: current.articlePath,
+        operation: args.operation,
+        cliCode: response.code,
+        preparedRequest,
+        recordPath,
+        locations: [current.articlePath, current.manifestPath, recordPath],
+      })
+    }
+}
+
+export function createImproveArticleTool(dependencies: ImproveArticleToolDependencies) {
+  const operation = createImproveArticleOperation(dependencies)
   return defineTool({
     name: 'md2wechat_improve_article',
     description: 'Prepare advice or an AI rewrite request for the current immutable article; never changes article bytes.',
@@ -98,36 +133,7 @@ export function createImproveArticleTool({
         text: `Prepared ${value.operation} request for the current DSH Agent:\n${JSON.stringify(value.preparedRequest)}`,
       }],
     },
-    async execute(args, exec) {
-      assertKnownArguments(args, ['manifestPath', 'operation'])
-      const current = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
-      const argv = improvementArgv(args.operation, current.articleAuthorization.processPath)
-      const response = await gateway.run(argv, {
-        signal: exec.signal,
-        beforeSpawn: current.articleAuthorization.beforeSpawn,
-      })
-      const preparedRequest = projectImprovementResponse(args.operation, response, current)
-      const verified = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
-      if (verified.revision.articleSha256 !== current.revision.articleSha256) {
-        throw new Error('stale revision: article changed while preparing the request')
-      }
-      const recordPath = `revisions/${current.revision.id}/operations.jsonl`
-      await appendOperation(store, current.revision, {
-        operation: args.operation,
-        createdAt: now().toISOString(),
-        details: { cliCode: response.code, preparedRequest },
-      }, [])
-      return domainResult({
-        revisionId: current.revision.id,
-        manifestPath: current.manifestPath,
-        articlePath: current.articlePath,
-        operation: args.operation,
-        cliCode: response.code,
-        preparedRequest,
-        recordPath,
-        locations: [current.articlePath, current.manifestPath, recordPath],
-      })
-    },
+    execute: operation,
     presentCall: args => genericCall('Prepare article improvement', 'read', args.operation, revisionLocations(args.manifestPath)),
     presentResult: () => genericResult('Article improvement prepared'),
   })

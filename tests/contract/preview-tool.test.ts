@@ -276,7 +276,7 @@ describe('md2wechat_preview', () => {
       '--json',
     ])
     expect(isAbsolute(call.argv[11]!)).toBe(true)
-    expect(call.options?.env).toEqual({ MD2WECHAT_API_KEY: credentialValue })
+    expect(call.options?.env).toEqual({ MD2WECHAT_API_KEY: credentialValue, MD2WECHAT_BASE_URL: 'https://www.md2wechat.cn' })
     expect(call.options?.secrets).toEqual([credentialValue])
     expect(call.options?.beforeSpawn).toBeTypeOf('function')
 

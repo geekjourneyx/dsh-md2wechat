@@ -33,6 +33,10 @@ const PLUGIN_TOOLS = [
   'md2wechat_export',
   'md2wechat_create_draft',
   'md2wechat_generate_images',
+  'md2wechat_open_workspace',
+  'md2wechat_propose_changes',
+  'md2wechat_import_creator_image',
+  'md2wechat_generate_creator_images',
 ]
 const REQUIRED_COMMANDS = [
   'inspect',
