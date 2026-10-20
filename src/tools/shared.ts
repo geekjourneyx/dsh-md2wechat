@@ -3,17 +3,19 @@ import type {
   GenericResultView,
   ToolCallKind,
 } from '@deepseek-ai/dsh-tools/presentation'
-import { PLUGIN_VERSION, SUPPORTED_CLI_VERSION } from '../version.ts'
+import { PLUGIN_VERSION, UNKNOWN_CLI_VERSION } from '../version.ts'
 
 /**
  * Add independently versioned plugin and CLI diagnosis fields.
  * @param fields - Canonical domain result fields.
- * @returns A fresh result with plugin and compatible CLI versions.
+ * @param cliVersion - Observed CLI version, or unknown when no CLI was involved.
+ * @returns A fresh result with plugin and observed CLI versions.
  */
 export function domainResult<T extends Readonly<Record<string, unknown>>>(
   fields: T,
-): T & { pluginVersion: typeof PLUGIN_VERSION; cliVersion: typeof SUPPORTED_CLI_VERSION } {
-  return { ...fields, pluginVersion: PLUGIN_VERSION, cliVersion: SUPPORTED_CLI_VERSION }
+  cliVersion: string = UNKNOWN_CLI_VERSION,
+): T & { pluginVersion: typeof PLUGIN_VERSION; cliVersion: string } {
+  return { ...fields, pluginVersion: PLUGIN_VERSION, cliVersion }
 }
 
 /**

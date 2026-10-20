@@ -132,6 +132,7 @@ function mutateInspectResponse(response: CliEnvelope, mutate: (inspect: Record<s
 }
 
 class PreviewGateway implements CliGateway {
+  version = '3.3.0'
   readonly calls: Array<{ argv: readonly string[]; options?: CliRunOptions }> = []
   beforeSpawn?: (argv: readonly string[], options?: CliRunOptions) => void | Promise<void>
   mutate?: (response: CliEnvelope) => CliEnvelope
@@ -253,6 +254,31 @@ describe('md2wechat_preview', () => {
       cliVersion: '3.3.0',
     }
   }
+
+  it('rejects a CLI version change immediately before rendering without publishing a receipt', async () => {
+    const gateway = new PreviewGateway()
+    gateway.beforeSpawn = () => { gateway.version = '3.8.0' }
+    await expect(createPreviewTool(dependencies(gateway)).execute({ manifestPath }, exec())).rejects.toThrow('preview inputs changed before spawn')
+    await expect(store.read(`revisions/${revisionId}/previews/current.json`)).rejects.toThrow()
+  })
+
+  it('binds the actual compatible CLI version into results, snapshots, and receipts', async () => {
+    const gateway = new PreviewGateway()
+    gateway.version = '3.8.0'
+    const tool = createPreviewTool(dependencies(gateway))
+    const result = await tool.execute({ manifestPath }, exec())
+    expect(result.cliVersion).toBe('3.8.0')
+    const current = await validateCurrentPreview(store, {
+      snapshotInput: { ...await currentSnapshotInput(), cliVersion: '3.8.0' },
+      credentialValue, now: new Date(fixedNow),
+    })
+    expect(current.snapshot.cliVersion).toBe('3.8.0')
+    expect(current.receipt.cliVersion).toBe('3.8.0')
+    await expect(validateCurrentPreview(store, {
+      snapshotInput: { ...await currentSnapshotInput(), cliVersion: '3.9.0' },
+      credentialValue, now: new Date(fixedNow),
+    })).rejects.toThrow('stale preview')
+  })
 
   it('uses one approval, one credential, exact command and isolated environment, then commits only safe artifacts', async () => {
     const gateway = new PreviewGateway()

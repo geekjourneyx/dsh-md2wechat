@@ -102,6 +102,7 @@ function envelope(overrides: Partial<CliEnvelope> = {}): CliEnvelope {
 }
 
 class FakeGateway implements CliGateway {
+  version = '3.3.0'
   readonly calls: Array<{ argv: readonly string[]; options: CliRunOptions | undefined }> = []
   beforeAuthorization?: (argv: readonly string[], options: CliRunOptions | undefined) => void | Promise<void>
   constructor(private readonly respond: (argv: readonly string[], options?: CliRunOptions) => CliEnvelope | Promise<CliEnvelope> = validCliResponse) {}
@@ -399,7 +400,7 @@ describe('article preparation tools', () => {
     const result = await execute(ctx, 'md2wechat_start_article', { sourcePath: 'article.md', title: 'Source' })
     expect(result.isError).toBe(false)
     expect(result.value).toMatchObject({
-      title: 'Source', pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0', articleSha256: sourceHash,
+      title: 'Source', pluginVersion: PLUGIN_VERSION, cliVersion: 'unknown', articleSha256: sourceHash,
     })
     const value = result.value as { revisionId: string; articlePath: string; manifestPath: string; locations: string[] }
     expect(value.revisionId).toMatch(/^[a-f0-9]{64}$/u)
@@ -434,6 +435,32 @@ describe('article preparation tools', () => {
       const result = await execute(ctx, 'md2wechat_start_article', { sourcePath })
       expect(result.isError, sourcePath).toBe(true)
     }
+  })
+
+  it('reports the version returned by this doctor probe rather than another concurrent observation', async () => {
+    const gateway = new FakeGateway(argv => {
+      if (argv[0] === 'version') return envelope({ code: 'VERSION_SHOWN', data: { version: '3.8.0' } })
+      gateway.version = '3.9.0'
+      if (argv[0] === 'capabilities') return envelope({ code: 'CAPABILITIES_SHOWN', data: { commands: [] } })
+      return envelope({ code: argv[0] === 'config' ? 'CONFIG_VALIDATED' : 'PROVIDERS_SHOWN' })
+    })
+    ctx.tools.register(createDoctorTool({ gateway }))
+    const result = await execute(ctx, 'md2wechat_doctor', {})
+    expect(result.isError).toBe(false)
+    expect(result.value).toMatchObject({ cliVersion: '3.8.0' })
+  })
+
+  it('preserves this improvement operation version if another call updates the gateway observation', async () => {
+    const manifestPath = await startFixtureArticle()
+    const gateway = new FakeGateway(argv => {
+      gateway.version = '3.9.0'
+      return validCliResponse(argv)
+    })
+    gateway.version = '3.8.0'
+    ctx.tools.register(createImproveArticleTool({ gateway, store }))
+    const result = await execute(ctx, 'md2wechat_improve_article', { manifestPath, operation: 'advise' })
+    expect(result.isError).toBe(false)
+    expect(result.value).toMatchObject({ cliVersion: '3.8.0' })
   })
 
   it('prepares all four improvement operations with exact argv and records without changing article bytes', async () => {

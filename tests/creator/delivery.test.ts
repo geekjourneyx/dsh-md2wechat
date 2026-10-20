@@ -74,7 +74,7 @@ async function fixture(localOnly = false, bodyBytes = png, onlineSource?: string
     beforeApproval?: () => Promise<void>
     respond?: (argv: readonly string[], index: number) => CliEnvelope
   } = { approval: 'allowed-once', account: 'wx-account', clock: new Date(now.getTime() + 1000), previewKey: 'preview-key' }
-  const gateway = {
+  const gateway = { version: '3.3.0',
     resolve: async () => '/fixture/md2wechat',
     async run(argv: readonly string[], options?: CliRunOptions) {
       await options?.beforeSpawn?.(options.signal ?? signal)

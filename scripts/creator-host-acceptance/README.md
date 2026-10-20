@@ -1,7 +1,7 @@
 # Installed creator acceptance
 
 This harness installs the supplied package into an isolated profile using published
-DSH 0.2.1-rc.2. A test-only LlmAdapter emits a genuine tool call: the real Agent loop
+DSH 0.2.0-rc.2 or 0.2.1-rc.2. A test-only LlmAdapter emits a genuine tool call: the real Agent loop
 executes the tool and persists its native card. No synthetic tool/result event or
 standalone mock UI substitutes for the installed extension.
 
@@ -19,12 +19,15 @@ pnpm exec node scripts/creator-host-acceptance/run.mjs \
 The host prefix must contain node_modules/@deepseek-ai/dsh. Install official pinned
 packages with npm --prefix into dedicated directories. Each harness run creates an
 append-only child directory under --root; it never cleans existing directories.
+Choose a root outside the platform temporary directory (for example, not under
+`/tmp` on Linux): the real plugin correctly rejects temporary state authority.
 Omit --online to use cached dependencies; optionally supply --store /absolute/path
 and the XDG cache/data/state directories associated with that pnpm store.
 
 This command is separate from the historical `pnpm test:installed` source-build test.
 The CI workflow `.github/workflows/creator-acceptance.yml` pins Node 24, pnpm 11.7.0,
-DSH 0.2.1-rc.2, md2wechat 3.3.0 and Playwright 1.58.2. No account secrets are required.
+Playwright 1.58.2 and the four combinations of DSH 0.2.0-rc.2 / 0.2.1-rc.2
+with md2wechat 3.3.0 / 3.8.0. No account secrets are required.
 
 ## Safety boundaries
 

@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
-import { PLUGIN_VERSION, SUPPORTED_CLI_VERSION } from '../version.ts'
+import { PLUGIN_VERSION } from '../version.ts'
 import { validateArtifactId, validateArtifactRelativePath } from './artifact-store.ts'
 import type { ArtifactPublicationOwnership, ArtifactStore } from './artifact-store.ts'
 
@@ -291,7 +291,7 @@ export async function validateCurrentPreview(store: ArtifactStore, input: Curren
     input.signal?.throwIfAborted()
     if (Number.isNaN(input.now.getTime())) throw new Error('invalid current time')
     const expected = createPreviewSnapshot(input.snapshotInput)
-    if (expected.pluginVersion !== PLUGIN_VERSION || expected.cliVersion !== SUPPORTED_CLI_VERSION) throw new Error('version changed')
+    if (expected.pluginVersion !== PLUGIN_VERSION) throw new Error('version changed')
     const manifestPath = currentManifestPath(expected.revisionId)
     const pointer = parsePointer(await store.read(manifestPath, input.signal), expected.revisionId)
     if (pointer.snapshotId !== expected.id) throw new Error('snapshot changed')
@@ -305,7 +305,7 @@ export async function validateCurrentPreview(store: ArtifactStore, input: Curren
     if (sha256(receiptBytes) !== sha256(encodeCanonical(receipt))) throw new Error('receipt artifact bytes changed')
     assertReceiptBindings(snapshot, receipt)
     if (receipt.id !== pointer.receiptId || receipt.previewHtmlPath !== paths.previewHtmlPath) throw new Error('receipt path changed')
-    if (receipt.pluginVersion !== PLUGIN_VERSION || receipt.cliVersion !== SUPPORTED_CLI_VERSION) throw new Error('version changed')
+    if (receipt.pluginVersion !== PLUGIN_VERSION || receipt.cliVersion !== expected.cliVersion) throw new Error('version changed')
     if (input.now.getTime() < Date.parse(receipt.issuedAt) || Date.parse(receipt.expiresAt) <= input.now.getTime()) {
       throw new Error('receipt is outside its validity interval')
     }

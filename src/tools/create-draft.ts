@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
+import { probeCliVersion } from '../cli/gateway.ts'
 import type { CliGateway } from '../cli/gateway.ts'
 import type { CliEnvelope } from '../cli/protocol.ts'
 import type { OperationCredentialServices } from '../security/credentials.ts'
@@ -15,7 +16,7 @@ import type { LoadedImagePlan, PersistedImageResult } from '../workspace/images.
 import { preflightCurrentPreview, validateCurrentPreview } from '../workspace/preview.ts'
 import type { PreviewReceipt } from '../workspace/preview.ts'
 import { appendOperation } from '../workspace/revision.ts'
-import { PLUGIN_VERSION, SUPPORTED_CLI_VERSION } from '../version.ts'
+import { PLUGIN_VERSION } from '../version.ts'
 import { preparePreviewInputs, previewSnapshotInputFor } from './preview.ts'
 import { domainResult, genericCall, genericResult } from './shared.ts'
 
@@ -77,7 +78,7 @@ export function createDraftOperation(dependencies: DraftToolDependencies) {
         if (md2wechatKey === undefined || resolved.env.WECHAT_APPID === undefined || resolved.env.WECHAT_SECRET === undefined) throw new SafeDraftError('WeChat draft credentials are incomplete')
         const currentInputs = await preparePreviewInputs(dependencies.store, args.manifestPath, exec.signal)
         const current = await validateCurrentPreview(dependencies.store, {
-          snapshotInput: previewSnapshotInputFor(currentInputs, dependencies.layoutBaseUrl, dependencies.credentialRefs.MD2WECHAT_API_KEY!, md2wechatKey, dependencies.previewTheme, dependencies.previewFontSize, dependencies.previewBackgroundType),
+          snapshotInput: previewSnapshotInputFor(currentInputs, dependencies.layoutBaseUrl, dependencies.credentialRefs.MD2WECHAT_API_KEY!, md2wechatKey, dependencies.previewTheme, dependencies.previewFontSize, dependencies.previewBackgroundType, await probeCliVersion(dependencies.gateway, exec.signal)),
           credentialValue: md2wechatKey, now: validNow(dependencies.now), signal: exec.signal,
         })
         if (current.receipt.id !== args.previewReceiptId || currentInputs.contentId !== preparedBefore.prepared.contentId) throw new SafeDraftError('draft inputs changed after approval')
@@ -97,7 +98,7 @@ export function createDraftOperation(dependencies: DraftToolDependencies) {
           beforeSpawn: async signal => { await requestAuthorization.beforeSpawn(signal); await dependencies.state.validateEmptyRuntime(runtime, signal) },
         })
         const projected = projectDraftResponse(response)
-        const resultRecord = encodeCanonical({ schemaVersion: 1, operationId: prepared.operationId, revisionId: prepared.prepared.current.revision.id, previewReceiptId: prepared.receipt.id, requestPath: prepared.requestPath, requestSha256: sha256(prepared.request), draftId: projected.draftId, ...(projected.draftUrl === undefined ? {} : { draftUrl: projected.draftUrl }), pluginVersion: PLUGIN_VERSION, cliVersion: SUPPORTED_CLI_VERSION, createdAt: validNow(dependencies.now).toISOString() })
+        const resultRecord = encodeCanonical({ schemaVersion: 1, operationId: prepared.operationId, revisionId: prepared.prepared.current.revision.id, previewReceiptId: prepared.receipt.id, requestPath: prepared.requestPath, requestSha256: sha256(prepared.request), draftId: projected.draftId, ...(projected.draftUrl === undefined ? {} : { draftUrl: projected.draftUrl }), pluginVersion: PLUGIN_VERSION, cliVersion: prepared.receipt.cliVersion, createdAt: validNow(dependencies.now).toISOString() })
         await dependencies.store.writeIdenticalOrNew(prepared.resultPath, resultRecord, exec.signal)
         const resultDigest = sha256(resultRecord)
         await dependencies.state.complete(dependencies.store, prepared.operationId, resultDigest, exec.signal)
@@ -127,7 +128,7 @@ export function createDraftTool(dependencies: DraftToolDependencies) {
       planPaths: { type: 'array', required: true, items: { type: 'string' } },
     },
     output: { schema: { type: 'object', additionalProperties: false, properties: {
-      manifestPath: { type: 'string', required: true }, revisionId: { type: 'string', required: true }, previewReceiptId: { type: 'string', required: true }, draftId: { type: 'string', required: true }, draftUrl: { type: 'string' }, draftResultPath: { type: 'string', required: true }, pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true }, cliVersion: { type: 'string', const: '3.3.0', required: true },
+      manifestPath: { type: 'string', required: true }, revisionId: { type: 'string', required: true }, previewReceiptId: { type: 'string', required: true }, draftId: { type: 'string', required: true }, draftUrl: { type: 'string' }, draftResultPath: { type: 'string', required: true }, pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true }, cliVersion: { type: 'string', required: true },
     } }, render: (_args, value) => [{ type: 'text', text: `Unpublished WeChat draft ${value.draftId} is ready.` }] },
     execute: operation,
     presentCall: args => genericCall('Create unpublished WeChat draft', 'edit', undefined, safeLocations(args.manifestPath, args.planPaths)),
@@ -166,7 +167,7 @@ async function prepareDraft(dependencies: DraftToolDependencies, manifestPath: s
     workspaceIdentity, revisionId: prepared.current.revision.id, credentialReferences: ['MD2WECHAT_API_KEY', 'WECHAT_APPID', 'WECHAT_SECRET'].map(name => sha256Text(`${name}\0${dependencies.credentialRefs[name] ?? ''}`)),
     receiptId: preflight.receipt.id, accountProvenance: preflight.receipt.accountProvenance, originalHtmlSha256: preflight.receipt.previewHtmlSha256, finalHtmlSha256: sha256(finalizedHtml), metadata: preflight.receipt.metadata,
     cover: { planId: coverEntries[0]!.result.planId, itemId: coverEntries[0]!.result.itemId, mediaId: coverEntries[0]!.result.mediaId, resultSha256: coverEntries[0]!.resultSha256 },
-    results: results.map(entry => ({ planId: entry.plan.planId, planSha256: entry.plan.contentSha256, itemId: entry.result.itemId, targetPath: entry.result.targetPath, sha256: entry.result.sha256, mediaId: entry.result.mediaId, wechatUrl: entry.result.wechatUrl, resultSha256: entry.resultSha256 })), pluginVersion: PLUGIN_VERSION, cliVersion: SUPPORTED_CLI_VERSION,
+    results: results.map(entry => ({ planId: entry.plan.planId, planSha256: entry.plan.contentSha256, itemId: entry.result.itemId, targetPath: entry.result.targetPath, sha256: entry.result.sha256, mediaId: entry.result.mediaId, wechatUrl: entry.result.wechatUrl, resultSha256: entry.resultSha256 })), pluginVersion: PLUGIN_VERSION, cliVersion: preflight.receipt.cliVersion,
   }
   const operationId = sha256(encodeCanonical(identityMaterial))
   const article: Record<string, unknown> = { title: preflight.receipt.metadata.title, content: htmlDecoder.decode(finalizedHtml), thumb_media_id: coverEntries[0]!.result.mediaId, show_cover_pic: 1 }
@@ -241,7 +242,7 @@ async function replayCompleted(store: ArtifactStore, prepared: PreparedDraft, di
   if (!Buffer.from(bytes).equals(Buffer.from(encodeCanonical(value)))) throw new SafeDraftError('completed draft record is missing or corrupt')
   const required = ['schemaVersion', 'operationId', 'revisionId', 'previewReceiptId', 'requestPath', 'requestSha256', 'draftId', 'pluginVersion', 'cliVersion', 'createdAt']; const optional = ['draftUrl']
   if (Object.keys(value).some(key => !required.includes(key) && !optional.includes(key)) || required.some(key => !(key in value))) throw new SafeDraftError('completed draft record is missing or corrupt')
-  if (value.schemaVersion !== 1 || value.operationId !== prepared.operationId || value.revisionId !== prepared.prepared.current.revision.id || value.previewReceiptId !== prepared.receipt.id || value.requestPath !== prepared.requestPath || value.requestSha256 !== sha256(prepared.request) || value.pluginVersion !== PLUGIN_VERSION || value.cliVersion !== SUPPORTED_CLI_VERSION) throw new SafeDraftError('completed draft record is missing or corrupt')
+  if (value.schemaVersion !== 1 || value.operationId !== prepared.operationId || value.revisionId !== prepared.prepared.current.revision.id || value.previewReceiptId !== prepared.receipt.id || value.requestPath !== prepared.requestPath || value.requestSha256 !== sha256(prepared.request) || value.pluginVersion !== PLUGIN_VERSION || value.cliVersion !== prepared.receipt.cliVersion) throw new SafeDraftError('completed draft record is missing or corrupt')
   if (typeof value.createdAt !== 'string') throw new SafeDraftError('completed draft record is missing or corrupt')
   const createdAt = new Date(value.createdAt)
   if (Number.isNaN(createdAt.getTime()) || createdAt.toISOString() !== value.createdAt) throw new SafeDraftError('completed draft record is missing or corrupt')
@@ -249,7 +250,7 @@ async function replayCompleted(store: ArtifactStore, prepared: PreparedDraft, di
   return draftOutput(prepared, draftId, draftUrl)
 }
 
-function draftOutput(prepared: PreparedDraft, draftId: string, draftUrl?: string) { return domainResult({ manifestPath: prepared.prepared.current.manifestPath, revisionId: prepared.prepared.current.revision.id, previewReceiptId: prepared.receipt.id, draftId, ...(draftUrl === undefined ? {} : { draftUrl }), draftResultPath: prepared.resultPath }) }
+function draftOutput(prepared: PreparedDraft, draftId: string, draftUrl?: string) { return domainResult({ manifestPath: prepared.prepared.current.manifestPath, revisionId: prepared.prepared.current.revision.id, previewReceiptId: prepared.receipt.id, draftId, ...(draftUrl === undefined ? {} : { draftUrl }), draftResultPath: prepared.resultPath }, prepared.receipt.cliVersion) }
 class SafeDraftError extends Error {}
 class DraftCancelledError extends Error {}
 function assertApproved(value: ApprovalOutcome): void { if (value === 'allowed-once') return; if (value === 'cancelled') throw new DraftCancelledError(); throw new SafeDraftError(`WeChat draft approval ${value}`) }

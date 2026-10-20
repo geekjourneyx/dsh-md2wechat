@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { isIP } from 'node:net'
 import { request as httpsRequest } from 'node:https'
 import type { JobId } from '@deepseek-ai/dsh-jobs'
-import { PLUGIN_VERSION, SUPPORTED_CLI_VERSION } from '../version.ts'
+import { PLUGIN_VERSION, UNKNOWN_CLI_VERSION } from '../version.ts'
 import { validateArtifactId, validateArtifactRelativePath } from './artifact-store.ts'
 import type { ArtifactPublicationOwnership, ArtifactStore } from './artifact-store.ts'
 
@@ -75,7 +75,7 @@ export interface PersistedImageResult extends ImageResult {
   readonly contentType: SupportedImageMime
   readonly byteSize: number
   readonly pluginVersion: typeof PLUGIN_VERSION
-  readonly cliVersion: typeof SUPPORTED_CLI_VERSION
+  readonly cliVersion: string
   readonly createdAt: string
 }
 
@@ -399,7 +399,7 @@ export async function acquireRemoteImage(input: string, options: RemoteImageAcqu
 /** Build a strict immutable result record after bytes and response fields are validated. */
 export function createPersistedImageResult(input: {
   plan: LoadedImagePlan; item: LoadedImagePlanItem; bytes: Uint8Array; mimeType: SupportedImageMime;
-  remoteUrl: string; mediaId: string; wechatUrl: string; createdAt: Date
+  remoteUrl: string; mediaId: string; wechatUrl: string; createdAt: Date; cliVersion?: string | undefined
 }): PersistedImageResult {
   validateImageBytes(input.mimeType, input.bytes)
   return {
@@ -407,7 +407,7 @@ export function createPersistedImageResult(input: {
     targetPath: input.item.targetPath, sha256: sha256(input.bytes), remoteUrl: validateRemoteImageUrl(input.remoteUrl),
     mediaId: safeOpaque(input.mediaId, 'image media ID'), wechatUrl: validateRemoteImageUrl(input.wechatUrl),
     contentType: input.mimeType, byteSize: input.bytes.byteLength,
-    pluginVersion: PLUGIN_VERSION, cliVersion: SUPPORTED_CLI_VERSION,
+    pluginVersion: PLUGIN_VERSION, cliVersion: input.cliVersion ?? UNKNOWN_CLI_VERSION,
     createdAt: validDate(input.createdAt, 'image result clock').toISOString(),
   }
 }
@@ -454,10 +454,10 @@ function validateCliPlan(value: unknown, expected: { kind: ImagePlanItem['kind']
     const approvedPreset = (expected.preset ?? (expected.kind === 'cover' ? 'cover-default' : 'infographic-default')).trim().toLowerCase()
     if (resolvedPreset.toLowerCase() !== approvedPreset) throw new Error('image CLI plan preset does not match the approved preset')
     const bundledDefault = BUNDLED_PRESET_DEFAULT_ASPECT.get(approvedPreset)
-    if (bundledDefault === undefined) throw new Error('image CLI plan preset is not bundled with md2wechat 3.3.0')
+    if (bundledDefault === undefined) throw new Error('image CLI plan preset is not part of the validated image-plan contract')
     const approvedAspect = expected.aspect?.trim() ?? bundledDefault
     if (resolvedAspect !== approvedAspect) throw new Error('image CLI plan aspect does not match the approved or bundled default aspect')
-    if (defaultAspect !== bundledDefault) throw new Error('image CLI plan preset default aspect does not match md2wechat 3.3.0')
+    if (defaultAspect !== bundledDefault) throw new Error('image CLI plan preset default aspect does not match the validated image-plan contract')
     if (defaultAspect === '' || !recommendedAspects.includes(defaultAspect)) throw new Error('image CLI plan default aspect is not recommended by its preset')
   }
   if (expected.kind !== 'image' && ![archetype, primaryUseCase, ...compatibleUseCases].some(value => value.toLowerCase() === expected.kind)) {
@@ -483,7 +483,7 @@ function validatePersistedImageResult(value: unknown, plan: LoadedImagePlan, ite
     sha256: hash(result.sha256, 'image result sha256'), mediaId: safeOpaque(result.mediaId, 'image result media ID'),
     wechatUrl: validateRemoteImageUrl(stringValue(result.wechatUrl, 'image result WeChat URL')),
     contentType, byteSize, pluginVersion: literal(result.pluginVersion, PLUGIN_VERSION, 'image result pluginVersion'),
-    cliVersion: literal(result.cliVersion, SUPPORTED_CLI_VERSION, 'image result cliVersion'),
+    cliVersion: boundedText(result.cliVersion, 'image result cliVersion', 128),
     createdAt: canonicalTimestamp(result.createdAt, 'image result createdAt'),
     ...(remoteUrl === undefined ? {} : { remoteUrl }),
   }

@@ -47,6 +47,7 @@ function createTestFileSystem(cwd: string) {
 }
 
 class Gateway implements CliGateway {
+  version = '3.3.0'
   readonly calls: Array<{ argv: readonly string[]; options?: CliRunOptions }> = []
   mutate?: (response: CliEnvelope) => CliEnvelope
   resolve(): Promise<string> { return Promise.resolve('/fixture/md2wechat') }
@@ -151,6 +152,22 @@ describe('md2wechat_generate_images', () => {
       now: () => new Date(now), claimNonce: () => 'claim-nonce', reportAuditFailure }
   }
   function exec(signal = new AbortController().signal) { return { signal, callId: 'image-call' as never, name: 'md2wechat_generate_images', arguments: {}, rootCallId: 'image-call' as never, token: Symbol('image') as never, agent, deferContext() {}, concludeTurn() {} } }
+
+  it('keeps per-image version provenance when another probe changes gateway identity during download', async () => {
+    const gateway = new Gateway()
+    gateway.version = '3.8.0'
+    const deps = dependencies(gateway)
+    const tool = createGenerateImagesTool({ ...deps, acquire: async () => {
+      gateway.version = '3.9.0'
+      return deps.acquire()
+    } })
+    const result = await tool.execute({ manifestPath, planPaths: [planPath] }, exec())
+    expect(result.cliVersion).toBe('3.8.0')
+    await expect(hooks!.done).resolves.toMatchObject({ status: 'completed' })
+    const resultPath = `revisions/${revisionId}/image-results/${basename(planPath, '.json')}/hero.json`
+    expect(JSON.parse(decoder.decode(await store.read(resultPath))).cliVersion).toBe('3.8.0')
+    expect(gateway.version).toBe('3.9.0')
+  })
 
   it('asks once, resolves exactly three credentials, returns an owner-scoped job and publishes a verified result', async () => {
     const gateway = new Gateway(); const tool = createGenerateImagesTool(dependencies(gateway)); const result = await tool.execute({ manifestPath, planPaths: [planPath] }, exec())

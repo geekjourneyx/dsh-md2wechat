@@ -82,7 +82,7 @@ describe('CLI gateway', () => {
     })
     const error = await unresolved.resolve().catch((failure: unknown) => failure)
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('configured md2wechat executable could not be resolved')
+    expect((error as Error).message).toContain('configured md2wechat executable could not be resolved')
     expect((error as Error).message).not.toContain('needle')
 
     await expect(unresolved.resolve(AbortSignal.abort('needle-cancel-reason')))
@@ -94,6 +94,51 @@ describe('CLI gateway', () => {
     await expect(gateway().run(['capabilities', '--json'])).resolves.toMatchObject({
       data: { commands: expect.any(Array) },
     })
+  })
+
+  it.each(['3.3.0', '3.8.0', '99.0.0-compatible'])('records actual version %s on this gateway only', async (version) => {
+    const current = gateway()
+    const other = gateway()
+    expect(current.version).toBeUndefined()
+    await current.run(['version', '--json'], { env: { FAKE_MD2WECHAT_VERSION: version } })
+    expect(current.version).toBe(version)
+    expect(other.version).toBeUndefined()
+  })
+
+  it('refreshes the version and checks capabilities when probing compatibility', async () => {
+    const current = gateway()
+    await expect(current.probeVersion!()).resolves.toBe('3.3.0')
+    expect(current.version).toBe('3.3.0')
+  })
+
+  it.each([
+    ['version', { retryable: true }],
+    ['version', { error: 'incomplete' }],
+    ['capabilities', { error_details: {} }],
+    ['capabilities', { next_actions: ['configure'] }],
+  ])('rejects %s compatibility probes that are not strictly ready: %j', async (command, extra) => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-md2wechat-probe-'))
+    const binaryPath = join(directory, 'cli.mjs')
+    const base = { success: true, code: 'OK', message: 'Ready', schema_version: 'v1', status: 'completed', retryable: false }
+    const version = { ...base, data: { version: '3.8.0' }, ...(command === 'version' ? extra : {}) }
+    const capabilities = { ...base, data: { commands: REQUIRED_CLI_COMMANDS }, ...(command === 'capabilities' ? extra : {}) }
+    await writeFile(binaryPath, `#!/usr/bin/env node\nconsole.log(JSON.stringify(process.argv[2] === 'version' ? ${JSON.stringify(version)} : ${JSON.stringify(capabilities)}))\n`, { mode: 0o755 })
+    await expect(gateway({ binaryPath }).probeVersion!()).rejects.toThrow('did not report ready')
+  })
+
+  it('freshly observes replacement binary versions instead of caching activation identity', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-md2wechat-version-refresh-'))
+    const binaryPath = join(directory, 'cli.mjs')
+    const writeVersion = async (version: string) => {
+      const data = { success: true, code: 'OK', message: 'Ready', schema_version: 'v1', status: 'completed', retryable: false, data: { version, commands: REQUIRED_CLI_COMMANDS } }
+      await writeFile(binaryPath, `#!/usr/bin/env node\nconsole.log(${JSON.stringify(JSON.stringify(data))})\n`, { mode: 0o755 })
+    }
+    await writeVersion('3.3.0')
+    const current = gateway({ binaryPath })
+    expect(await current.probeVersion!()).toBe('3.3.0')
+    await writeVersion('3.8.0')
+    expect(await current.probeVersion!()).toBe('3.8.0')
+    expect(current.version).toBe('3.8.0')
   })
 
   it('exports the one complete required-command list used by capability validation', async () => {
@@ -112,7 +157,7 @@ describe('CLI gateway', () => {
     ['multiple-json', 'JSON'],
     ['oversize', 'output limit'],
     ['signal', 'SIGTERM'],
-    ['version-mismatch', '3.3.0'],
+    ['invalid-version', 'version'],
   ])('rejects %s process output', async (behavior, message) => {
     await expect(gateway({ safeReadRetries: 0 }).run(['version', '--json'], {
       env: { FAKE_MD2WECHAT_BEHAVIOR: behavior },

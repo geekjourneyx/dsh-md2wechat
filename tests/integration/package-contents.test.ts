@@ -68,7 +68,7 @@ describe('packed plugin artifact', () => {
 
     expect(readme.startsWith('# dsh-md2wechat\n')).toBe(true)
     expect(readme).toContain('dsh plugin --profile web add https://github.com/geekjourneyx/dsh-md2wechat/releases/download/v1.0.0/geekjourneyx-dsh-md2wechat-1.0.0.tgz')
-    expect(readme).toContain('`md2wechat` CLI at exactly version `3.3.0`')
+    expect(readme).toContain('`md2wechat` CLI with the supported `v1` JSON protocol')
     expect(readme).toContain('do not contain or install md2wechat')
     expect(readme).toContain('never publishes or mass-sends')
     expect(readme).toContain('no other image-generation capability')

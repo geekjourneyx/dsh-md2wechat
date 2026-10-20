@@ -13,7 +13,7 @@ describe('resolveConfig', () => {
   })
 
   it('rejects a relative binary path', () => {
-    expect(() => resolveConfig({ ...valid, binaryPath: 'md2wechat' })).toThrow('absolute path')
+    expect(() => resolveConfig({ ...valid, binaryPath: './md2wechat' })).toThrow('absolute executable path')
   })
 
   it('rejects an artifacts directory outside the session workspace', () => {

@@ -25,7 +25,7 @@ const credentialEnvironmentNames = new Set<CredentialEnvironmentName>([
 
 /** Plugin configuration supplied by the host. */
 export interface Config {
-  binaryPath: string
+  binaryPath?: string
   artifactsDir?: string
   stateDir?: string
   layoutBaseUrl?: string
@@ -73,7 +73,7 @@ export interface ResolvedConfig {
 }
 
 const configFields = {
-  binaryPath: Schema.string().required(),
+  binaryPath: Schema.string(),
   artifactsDir: Schema.string(),
   stateDir: Schema.string(),
   layoutBaseUrl: Schema.string(),
@@ -100,7 +100,7 @@ Schema.extend('dsh-md2wechat-config', (data, schema, options) => {
   return [resolved]
 })
 
-/** Host-facing configuration schema with an explicit required binary path. */
+/** Host-facing configuration schema with optional explicit executable selection. */
 export const Config: Schema<Config> = Schema<Config>({
   type: 'dsh-md2wechat-config',
   dict: configFields,
@@ -119,8 +119,8 @@ export function resolveConfig(input: Config): ResolvedConfig {
     if (!configKeys.has(key as keyof Config)) throw new TypeError('unknown configuration field')
   }
 
-  const binaryPath = requiredString(value.binaryPath, 'binaryPath must be a string')
-  if (!isAbsolute(binaryPath)) throw new TypeError('binaryPath must be an absolute path')
+  const binaryPath = value.binaryPath === undefined ? 'md2wechat' : requiredString(value.binaryPath, 'binaryPath must be a string')
+  if (binaryPath !== 'md2wechat' && !isAbsolute(binaryPath)) throw new TypeError('binaryPath must be an absolute executable path or the host PATH command md2wechat')
 
   const artifactsDir = optionalString(value.artifactsDir, DEFAULT_ARTIFACTS_DIR, 'artifactsDir must be a string')
   if (!isSessionWorkspacePath(artifactsDir)) throw new TypeError('artifactsDir must stay within the session workspace')

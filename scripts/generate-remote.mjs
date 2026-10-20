@@ -2,11 +2,12 @@ import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from '
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { WorkspaceAnalyzer, FaceModelEmitter, writePackageArtifacts } from '@deepseek-ai/dsh-typert-generator'
+import { WorkspaceAnalyzer, FaceModelEmitter } from '@deepseek-ai/dsh-typert-generator'
 
-// DSH 0.2.1-rc.2's public generator recognizes protocol types by workspace
-// identity. Stage authentic published declarations for analysis only. No host
-// source checkout, runtime shim, handwritten wire codec, or extra server ships.
+// Use the official 0.2.0-rc.2 emitter as the baseline contract: its generated
+// descriptors also load on 0.2.1-rc.2 without the newer /remote-info helper.
+// The public analyzer recognizes protocol types by workspace identity. Stage
+// authentic published declarations for analysis only; no runtime shim ships.
 const root = resolve(import.meta.dirname, '..')
 const name = '@geekjourneyx/dsh-md2wechat'
 const stage = await mkdtemp(join(tmpdir(), 'md2wechat-typert-'))
@@ -49,5 +50,17 @@ try {
   const model = new WorkspaceAnalyzer({ root: stage, packages: [name], faces: ['host'] }).analyze()
   const artifacts = model.faces.map(face => ({ ...new FaceModelEmitter(face).emit(name), packageRoot: pkgRoot }))
   if (!artifacts.some(artifact => artifact.remote)) throw new Error('Creator Remote methods were not generated')
-  writePackageArtifacts(root, artifacts)
+  // 0.2.0 exposes the emitter, but not 0.2.1's writePackageArtifacts helper.
+  // Persist the official emitter's bytes unchanged, including declaration maps.
+  const output = join(root, 'lib')
+  await mkdir(output, { recursive: true })
+  for (const artifact of artifacts) {
+    await writeFile(join(output, `typert.${artifact.face}.js`), artifact.js)
+    await writeFile(join(output, `typert.${artifact.face}.d.ts`), artifact.dts)
+    if (artifact.remote) {
+      await writeFile(join(output, 'typert.remote-client.js'), artifact.remote.js)
+      await writeFile(join(output, 'typert.remote-client.d.ts'), artifact.remote.dts)
+      await writeFile(join(output, 'typert.remote-client.d.ts.map'), artifact.remote.dtsMap)
+    }
+  }
 } finally { await rm(stage, { recursive: true, force: true }) }

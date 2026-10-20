@@ -43,7 +43,11 @@ export interface CliRunOptions {
 
 /** Managed access to the configured external md2wechat executable. */
 export interface CliGateway {
-  /** Resolve the configured absolute executable in the subprocess provider's execution world. */
+  /** Last successfully observed version, scoped to this gateway only. */
+  readonly version?: string | undefined
+  /** Re-probe version and required capabilities before version-bound operations. */
+  probeVersion?(signal?: AbortSignal): Promise<string>
+  /** Resolve the explicit executable or host PATH command in the subprocess provider's execution world. */
   resolve(signal?: AbortSignal): Promise<string>
   /** Run one argument vector and return its validated JSON envelope. */
   run(argv: readonly string[], options?: CliRunOptions): Promise<CliEnvelope>
@@ -62,31 +66,51 @@ interface AbortControl {
  * @returns managed CLI gateway.
  */
 export function createCliGateway(ctx: Context, config: ResolvedConfig): CliGateway {
+  let version: string | undefined
   const resolve = async (signal?: AbortSignal): Promise<string> => {
     try {
       return await ctx.subprocess.resolveExecutable(config.binaryPath, {}, signal)
     } catch {
       const message = signal?.aborted
         ? 'configured md2wechat executable resolution cancelled'
-        : 'configured md2wechat executable could not be resolved'
-      throw sanitizeError(new Error(message), [config.binaryPath, ...Object.values(config.credentialRefs)])
+        : 'configured md2wechat executable could not be resolved. Set MD2WECHAT_BINARY_PATH to the verified executable file (not its install directory), or make md2wechat available on the DSH host process PATH; then restart that host. An explicit path never falls back to a different CLI.'
+      throw sanitizeError(new Error(message), [...(config.binaryPath === 'md2wechat' ? [] : [config.binaryPath]), ...Object.values(config.credentialRefs)])
     }
   }
 
-  return {
+  const gateway: CliGateway = {
+    get version() { return version },
     resolve,
+    async probeVersion(signal) {
+      const response = await gateway.run(['version', '--json'], signal === undefined ? {} : { signal })
+      const capabilities = await gateway.run(['capabilities', '--json'], signal === undefined ? {} : { signal })
+      if ([response, capabilities].some(envelope => !envelope.success || envelope.status !== 'completed' || envelope.retryable
+        || envelope.error !== undefined || envelope.error_details !== undefined || (envelope.next_actions?.length ?? 0) > 0)) {
+        throw new Error('md2wechat compatibility probes did not report ready')
+      }
+      return response.data!.version as string
+    },
     async run(argv, options = {}) {
       const control = createAbortControl(options.signal, options.timeoutMs ?? config.foregroundTimeoutMs)
       const secrets = options.secrets ?? []
       try {
-        return await runWithRetries(ctx, config, resolve, argv, options, control.signal)
+        const response = await runWithRetries(ctx, config, resolve, argv, options, control.signal)
+        if (argv[0] === 'version' && response.success && response.status === 'completed') version = response.data!.version as string
+        return response
       } catch (error) {
+        if (argv[0] === 'version') version = undefined
         throw sanitizeError(control.classify(error), secrets)
       } finally {
         control.dispose()
       }
     },
   }
+  return gateway
+}
+
+/** Fresh version identity for signed previews; injected gateways may provide a known identity. */
+export async function probeCliVersion(gateway: CliGateway | undefined, signal?: AbortSignal): Promise<string> {
+  return gateway?.probeVersion === undefined ? gateway?.version ?? 'unknown' : gateway.probeVersion(signal)
 }
 
 async function runWithRetries(

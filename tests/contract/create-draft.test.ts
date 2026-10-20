@@ -35,6 +35,7 @@ function fileSystem(cwd: string) {
 }
 
 class Gateway implements CliGateway {
+  version = '3.3.0'
   calls: Array<{ argv: readonly string[]; options?: CliRunOptions; request: unknown }> = []
   response: CliEnvelope = { success: true, code: 'OK', message: 'Success', schema_version: 'v1', status: 'completed', retryable: false, data: { media_id: 'draft-safe', draft_url: 'https://mp.weixin.qq.com/draft/1' } }
   hold?: Promise<void>

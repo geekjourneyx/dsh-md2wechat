@@ -242,7 +242,7 @@ async function probeRealCli() {
     env: controlledEnvironment({ DSH_HOME: undefined, DSH_PERMISSION_MODE: undefined, MD2WECHAT_BINARY_PATH: undefined }),
   })
   const version = parseCompletedEnvelope(versionRun.stdout, 'version')
-  if (version.data?.version !== '3.3.0') throw new Error(`real CLI version is not 3.3.0: ${JSON.stringify(version.data)}`)
+  if (typeof version.data?.version !== 'string' || version.data.version.trim().length === 0) throw new Error('real CLI did not report a version identity')
 
   const capabilitiesRun = await runLogged('cli-capabilities', inputs.cliPath, ['capabilities', '--json'], {
     cwd: paths.home,
@@ -339,7 +339,7 @@ async function writeFakeExecutables() {
   await resetTaskDirectory(directory)
   const log = join(paths.logs, 'fake-cli-calls.jsonl')
   const executables = {}
-  for (const behavior of ['normal', 'malformed', 'wrong-version', 'missing-capability']) {
+  for (const behavior of ['normal', 'malformed', 'invalid-version', 'missing-capability']) {
     const path = join(directory, `md2wechat-${behavior}`)
     await writeFile(path, fakeCliSource(behavior, log), { mode: 0o700 })
     await chmod(path, 0o700)
@@ -356,7 +356,7 @@ appendFileSync(${JSON.stringify(callLog)}, JSON.stringify({ behavior: ${JSON.str
 const commands = ${JSON.stringify(REQUIRED_COMMANDS)}
 const completed = data => ({ success: true, code: 'OK', message: 'completed', schema_version: 'v1', status: 'completed', retryable: false, data })
 if (${JSON.stringify(behavior)} === 'malformed') process.stdout.write('{broken')
-else if (argv[0] === 'version') process.stdout.write(JSON.stringify(completed({ version: ${JSON.stringify(behavior)} === 'wrong-version' ? '3.2.9' : '3.3.0' })) + '\\n')
+else if (argv[0] === 'version') process.stdout.write(JSON.stringify(completed({ version: ${JSON.stringify(behavior)} === 'invalid-version' ? '' : '3.3.0' })) + '\\n')
 else if (argv[0] === 'capabilities') process.stdout.write(JSON.stringify(completed({ commands: ${JSON.stringify(behavior)} === 'missing-capability' ? commands.slice(0, -1) : commands })) + '\\n')
 else { process.stderr.write('forbidden fake CLI command\\n'); process.exitCode = 64 }
 `
@@ -493,7 +493,7 @@ async function run(ctx) {
 
   for (const [label, binaryPath] of [
     ['malformed', ${JSON.stringify(fake.malformed)}],
-    ['wrong-version', ${JSON.stringify(fake['wrong-version'])}],
+    ['invalid-version', ${JSON.stringify(fake['invalid-version'])}],
     ['missing-capability', ${JSON.stringify(fake['missing-capability'])}],
   ]) {
     await target.update({ disabled: true })
