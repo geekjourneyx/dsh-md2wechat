@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from '../version.ts'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { CliEnvelope } from '../cli/protocol.ts'
 import type { CliGateway } from '../cli/gateway.ts'
@@ -49,7 +50,7 @@ export function createDoctorTool({ gateway }: DoctorToolDependencies) {
         properties: {
           ready: { type: 'boolean', required: true },
           probes: { type: 'array', required: true, items: probeSchema },
-          pluginVersion: { type: 'string', const: '1.0.0', required: true },
+          pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true },
           cliVersion: { type: 'string', const: '3.3.0', required: true },
         },
       },

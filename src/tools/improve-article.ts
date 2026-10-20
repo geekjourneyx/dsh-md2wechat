@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from '../version.ts'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
@@ -124,7 +125,7 @@ export function createImproveArticleTool(dependencies: ImproveArticleToolDepende
           preparedRequest: { type: 'json', required: true },
           recordPath: { type: 'string', required: true },
           locations: { type: 'array', required: true, items: { type: 'string' } },
-          pluginVersion: { type: 'string', const: '1.0.0', required: true },
+          pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true },
           cliVersion: { type: 'string', const: '3.3.0', required: true },
         },
       },

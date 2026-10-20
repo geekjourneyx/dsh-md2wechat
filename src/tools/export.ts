@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from '../version.ts'
 import { createHash } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -79,7 +80,7 @@ export function createExportTool(dependencies: ExportToolDependencies) {
       destinationPath: { type: 'string', required: true },
     },
     output: { schema: { type: 'object', additionalProperties: false, properties: {
-      manifestPath: { type: 'string', required: true }, revisionId: { type: 'string', required: true }, previewReceiptId: { type: 'string', required: true }, sourcePath: { type: 'string', required: true }, destinationPath: { type: 'string', required: true }, sha256: { type: 'string', required: true }, pluginVersion: { type: 'string', const: '1.0.0', required: true }, cliVersion: { type: 'string', const: '3.3.0', required: true },
+      manifestPath: { type: 'string', required: true }, revisionId: { type: 'string', required: true }, previewReceiptId: { type: 'string', required: true }, sourcePath: { type: 'string', required: true }, destinationPath: { type: 'string', required: true }, sha256: { type: 'string', required: true }, pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true }, cliVersion: { type: 'string', const: '3.3.0', required: true },
     } }, render: (_args, value) => [{ type: 'text', text: `Signed preview exported to ${value.destinationPath}.` }] },
     execute: operation,
     presentCall: args => genericCall('Export signed md2wechat preview', 'edit', safeDestination(args.destinationPath), safeExportLocations(args.manifestPath, args.destinationPath)),

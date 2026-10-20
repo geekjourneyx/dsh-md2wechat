@@ -11,7 +11,7 @@ Turn a Markdown article into a reviewed WeChat layout inside [DeepSeek Harness](
 
 [Get started](#get-started) · [Choose images](#choose-images) · [Export or save a draft](#export-or-save-a-draft) · [Troubleshooting](#troubleshooting)
 
-> **Release status:** the creator workspace is on `main`, but is not yet in a published release. The [v1.0.0 archive](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v1.0.0) contains the earlier tool-based workflow. Build from source below to try the workspace. Real-browser and live-service acceptance remain release checks.
+> **Release status:** the creator workspace is on `main`; `2.0.0-rc.1` is the planned, **unreleased** prerelease. The [v1.0.0 archive](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v1.0.0) contains the earlier tool-based workflow and is not a creator-workspace package. Once published, use the prebuilt archive and checksum from [GitHub Releases](https://github.com/geekjourneyx/dsh-md2wechat/releases); until then, the source build below is a developer fallback. Real-browser and live-service acceptance remain separate checks.
 
 ## Start with an article, not a tool checklist
 
@@ -37,30 +37,52 @@ Your source stays unchanged. Theme selections and applying edits do not ask a mo
 
 ### 1. Check the requirements
 
-- **DSH host and web client:** `0.2.1-rc.2`, the pinned integration target. Other versions, including `0.1.0-rc.5`, are not claimed compatible.
-- **Runtime:** Node.js `^22.19.0` or `>=24.0.0`; `dsh` and pnpm `11.7.0` available.
+- **DSH host and web client:** exactly `0.2.1-rc.2`, the pinned integration target and strict host peer requirement. The move from the v1 host target, `0.1.0-rc.5`, is breaking; do not force installation into a mismatched host.
+- **Runtime:** Node.js `^22.19.0` or `>=24.0.0`, with `dsh` available. Node.js `22.19.0` is supported; Node 24 is not mandatory. An npm-launched DSH host also needs pnpm available; a bundled host may include it. Source builds use pnpm `11.7.0`.
 - **Renderer:** a separately installed `md2wechat` CLI at exactly version `3.3.0`.
 - **Workspace:** your Markdown and any local images inside the current session workspace.
 - **Credentials:** `MD2WECHAT_API_KEY` in DSH's credential service for preview/export. WeChat and image-provider credentials are only needed for their optional operations.
 
 The plugin and its GitHub Release do not contain or install md2wechat. Neither the host nor CLI is upgraded automatically. The plugin archive is platform-independent; check the external CLI distributor for platform support.
 
-### 2. Build and install the current workspace
+### 2. Install the creator workspace
 
-Clone this repository and run these commands from its root. No sibling DeepSeek Harness checkout is required.
+Point DSH at the separately installed CLI. Keep this environment variable available when starting the profile:
+
+```sh
+# Replace this with your installed CLI's absolute executable path.
+export MD2WECHAT_BINARY_PATH=/absolute/path/to/md2wechat
+```
+
+**Preferred customer path: a prebuilt GitHub Release, once published.** There is no published creator-workspace archive yet. When `v2.0.0-rc.1` is available on [GitHub Releases](https://github.com/geekjourneyx/dsh-md2wechat/releases), download its `geekjourneyx-dsh-md2wechat-2.0.0-rc.1.tgz` and `SHA256SUMS` assets into the same directory. These commands are for those published assets, not the old v1 archive:
+
+```sh
+sha256sum --check SHA256SUMS
+# On macOS, use: shasum -a 256 --check SHA256SUMS
+# Continue only if checksum verification succeeds.
+dsh plugin --profile web add ./geekjourneyx-dsh-md2wechat-2.0.0-rc.1.tgz
+```
+
+A prebuilt archive does not require cloning or building this repository. It still requires the compatible DSH host, its package manager and the external CLI. Releases are GitHub assets, not npm publications.
+
+<details>
+<summary>Developer fallback: build the unreleased workspace from source</summary>
+
+Clone this repository and run these commands from its root with pnpm `11.7.0`. No sibling DeepSeek Harness checkout is required.
 
 ```sh
 git clone https://github.com/geekjourneyx/dsh-md2wechat.git
 cd dsh-md2wechat
 pnpm install --frozen-lockfile
 pnpm pack --pack-destination ./dist
-
-# Replace this with your installed CLI's absolute executable path.
-export MD2WECHAT_BINARY_PATH=/absolute/path/to/md2wechat
-dsh plugin --profile web add ./dist/geekjourneyx-dsh-md2wechat-1.0.0.tgz
+dsh plugin --profile web add ./dist/geekjourneyx-dsh-md2wechat-2.0.0-rc.1.tgz
 ```
 
-Keep `MD2WECHAT_BINARY_PATH` available when starting the profile. The locally built archive still uses the package version `1.0.0`; it is **not** the old published archive, even though the filename matches.
+This builds the current checkout, not a published release. The upcoming package version is `2.0.0-rc.1`, so it no longer reuses the old v1 archive's filename.
+
+</details>
+
+### 3. Verify and activate
 
 Verify the installation and composed configuration, then restart the profile so host and client load the same package:
 
@@ -158,7 +180,10 @@ Save the row in the profile's `cordis.patch.yml`. Setting `enableWechatWriteTool
 <details>
 <summary>Common problems, recovery and advanced tools</summary>
 
-- **Nothing loads:** check the pinned host/client versions, the absolute CLI path, `md2wechat version --json` and `md2wechat capabilities --json`. After installing this refactor, restart the profile and open a new workspace card. Old generic tool cards do not turn into creator workspaces.
+- **Profile-lock `EPERM`:** the host cannot access its profile lock, before plugin dependency installation. Check the selected profile directory and the current user or sandbox access through the host's supported controls. This is not a plugin, Node-version or CLI compatibility failure. Do not use `sudo` or bypass permission boundaries.
+- **Host peer-version mismatch:** the creator package requires DSH `0.2.1-rc.2`; `0.1.0-rc.5` and other host versions do not satisfy that requirement. Resolve the host/plugin version choice explicitly, rather than forcing peer dependency installation. The plugin never upgrades the host.
+- **CLI activation failure:** check the absolute CLI path, `md2wechat version --json` and `md2wechat capabilities --json`. Exactly `3.3.0` and the required commands are checked before any plugin tools register. The plugin never installs or upgrades the CLI.
+- **Installed but no creator card:** after verifying host/client and CLI compatibility, restart the profile and open a new workspace card. Old generic tool cards do not turn into creator workspaces.
 - **Read-only or outside-workspace error:** creator actions respect the session's current sandbox policy and canonical workspace boundary. Use a permitted location or change policy through the host; the plugin does not grant itself access. Export can replace an existing destination only after the host approval.
 - **Restarted or reopened session:** active creator choices, pending suggestions and review authority are in memory. Reopen the article and review again; persisted revision files are not a promise of automatic UI-session recovery.
 - **Missing credentials:** add the named reference in DSH. Do not paste secrets into the conversation.
@@ -185,6 +210,8 @@ pnpm run pack:check
 The [installed acceptance harness](./scripts/creator-host-acceptance/README.md) exercises real packed-package loading and the official DSH host. The [browser workflow](./.github/workflows/creator-acceptance.yml) is designed to capture the actual installed card, including narrow layouts.
 
 Controlled fixtures and simulated writes do not verify paid image providers, a live WeChat account or completed real-browser acceptance. No passing CI or screenshot claim is implied by this README.
+
+Release delivery is tag-triggered: a `v*` tag must match the package version and point to a commit on `main`. The release workflow runs validation, builds and packs the plugin, then publishes the `.tgz` and `SHA256SUMS` as GitHub Release assets. A prerelease version such as `2.0.0-rc.1` is marked as a prerelease. It does not publish to npm, and merging a PR alone does not create a release.
 
 ## License
 

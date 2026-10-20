@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from '../../src/version.ts'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, realpath, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -103,7 +104,7 @@ function baseInput(overrides: Partial<PreviewSnapshotInput> = {}): PreviewSnapsh
     },
     credentialReference: 'MD2WECHAT_API_KEY',
     credentialValue: 'secret-one',
-    pluginVersion: '1.0.0',
+    pluginVersion: PLUGIN_VERSION,
     cliVersion: '3.3.0',
     ...overrides,
   }

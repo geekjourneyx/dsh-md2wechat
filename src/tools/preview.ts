@@ -268,7 +268,7 @@ export function createPreviewTool(dependencies: PreviewToolDependencies) {
           revisionId: { type: 'string', required: true },
           previewReceiptId: { type: 'string', required: true },
           previewUrl: { type: 'string' },
-          pluginVersion: { type: 'string', const: '1.0.0', required: true },
+          pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true },
           cliVersion: { type: 'string', const: '3.3.0', required: true },
         },
       },

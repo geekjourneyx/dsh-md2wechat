@@ -1,2 +1,8 @@
 packages: []
 autoInstallPeers: true
+# Native support used by the pinned official host subprocess acceptance fixture.
+# Keep this explicit: pnpm 11 fails clean installs on undeclared build scripts.
+allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  koffi: true
+  node-pty: true

@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from '../../src/version.ts'
 import { createHash } from 'node:crypto'
 import { link, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -343,7 +344,7 @@ describe('article preparation tools', () => {
 
     const ready = await execute(ctx, 'md2wechat_doctor', {})
     expect(ready.isError).toBe(false)
-    expect(ready.value).toMatchObject({ ready: true, pluginVersion: '1.0.0', cliVersion: '3.3.0' })
+    expect(ready.value).toMatchObject({ ready: true, pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0' })
     expect(JSON.stringify(ready)).not.toContain(secret)
     expect(JSON.stringify(ready)).not.toContain(reference)
     expect(ready.content[0]).toMatchObject({ type: 'text' })
@@ -365,7 +366,7 @@ describe('article preparation tools', () => {
     second.tools.register(createDoctorTool({ gateway: notReadyGateway }))
     const notReady = await execute(second, 'md2wechat_doctor', {})
     expect(notReady.isError).toBe(false)
-    expect(notReady.value).toMatchObject({ ready: false, pluginVersion: '1.0.0', cliVersion: '3.3.0' })
+    expect(notReady.value).toMatchObject({ ready: false, pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0' })
     expect(notReady.value).toMatchObject({ probes: expect.arrayContaining([{ name: 'config', ready: false, code: 'CONFIG_NOT_READY', status: 'failed' }]) })
     expect(JSON.stringify(notReady)).not.toContain(secret)
     expect(JSON.stringify(notReady)).not.toContain(reference)
@@ -398,7 +399,7 @@ describe('article preparation tools', () => {
     const result = await execute(ctx, 'md2wechat_start_article', { sourcePath: 'article.md', title: 'Source' })
     expect(result.isError).toBe(false)
     expect(result.value).toMatchObject({
-      title: 'Source', pluginVersion: '1.0.0', cliVersion: '3.3.0', articleSha256: sourceHash,
+      title: 'Source', pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0', articleSha256: sourceHash,
     })
     const value = result.value as { revisionId: string; articlePath: string; manifestPath: string; locations: string[] }
     expect(value.revisionId).toMatch(/^[a-f0-9]{64}$/u)
@@ -447,7 +448,7 @@ describe('article preparation tools', () => {
       const result = await execute(ctx, 'md2wechat_improve_article', { manifestPath, operation })
       expect(result.isError).toBe(false)
       expect(result.value).toMatchObject({
-        manifestPath, operation, pluginVersion: '1.0.0', cliVersion: '3.3.0',
+        manifestPath, operation, pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0',
       })
       expect((result.content[0] as { text: string }).text).toContain('Prepared')
     }

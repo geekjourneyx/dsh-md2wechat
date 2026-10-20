@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from '../version.ts'
 import { dirname, join } from 'node:path'
 import { discoverMarkdownImageDestinations, resolveLocalImagePath } from './preview.ts'
 import { createHash } from 'node:crypto'
@@ -102,7 +103,7 @@ export function createStartArticleTool(dependencies: StartArticleToolDependencie
           articleSha256: { type: 'string', required: true },
           title: { type: 'string' },
           locations: { type: 'array', required: true, items: { type: 'string' } },
-          pluginVersion: { type: 'string', const: '1.0.0', required: true },
+          pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true },
           cliVersion: { type: 'string', const: '3.3.0', required: true },
         },
       },

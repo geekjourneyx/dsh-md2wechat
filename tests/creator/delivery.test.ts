@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from '../../src/version.ts'
 import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -60,7 +61,7 @@ async function fixture(localOnly = false, bodyBytes = png, onlineSource?: string
   await store.writeAtomic(`revisions/${revision.id}/images/unselected.png`, Buffer.from([...png.slice(0, 8), 3]))
   const cover: ImageCandidate = { id: 'selected-cover', revisionId: revision.id, kind: 'cover', path: coverPath, sha256: hash(coverPng), contentType: 'image/png', byteSize: coverPng.length, alt: 'Cover' }
   const html = Buffer.from('\uFEFF<article>Exact\r\n<img class="hero" src="images/body.png" alt="x">  End</article>\r\n' + (onlineSource ? `<img src="${onlineSource.replaceAll('&', '&amp;')}">\r\n` : ''))
-  const snapshot = createPreviewSnapshot({ revisionId: revision.id, articlePath, articleBytes, localImages: [{ path: bodyPath, bytes: bodyBytes }], layoutBaseUrl: 'https://www.md2wechat.cn', previewSettings: { mode: 'api', theme: 'default', fontSize: 'medium', backgroundType: 'none', output: 'standalone-html' }, credentialReference: 'MD2WECHAT_API_KEY', credentialValue: 'preview-key', pluginVersion: '1.0.0', cliVersion: '3.3.0' })
+  const snapshot = createPreviewSnapshot({ revisionId: revision.id, articlePath, articleBytes, localImages: [{ path: bodyPath, bytes: bodyBytes }], layoutBaseUrl: 'https://www.md2wechat.cn', previewSettings: { mode: 'api', theme: 'default', fontSize: 'medium', backgroundType: 'none', output: 'standalone-html' }, credentialReference: 'MD2WECHAT_API_KEY', credentialValue: 'preview-key', pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0' })
   const htmlPath = `revisions/${revision.id}/previews/html/${snapshot.id}.html`
   const receipt = createPreviewReceipt({ snapshot, previewHtmlPath: htmlPath, previewHtmlBytes: html, credentialValue: 'preview-key', issuedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 600_000).toISOString(), metadata: { title: 'Article', author: 'Author', digest: 'Summary' }, assets: [{ index: 0, kind: 'local', source: 'images/body.png', path: bodyPath, sha256: hash(bodyBytes) }, ...(onlineSource ? [{ index: 1, kind: 'online' as const, source: onlineSource }] : [])] })
   await store.writeAtomic(htmlPath, html)

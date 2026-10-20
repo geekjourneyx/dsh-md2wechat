@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from '../../src/version.ts'
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -39,7 +40,7 @@ describe('article revisions', () => {
     expect(first).toMatchObject({
       articlePath: 'revisions/article.md',
       manifestPath: 'revisions/manifest.json',
-      pluginVersion: '1.0.0',
+      pluginVersion: PLUGIN_VERSION,
       cliVersion: '3.3.0',
       createdAt: '2026-08-25T00:00:00.000Z',
     })
@@ -170,7 +171,7 @@ describe('operation records', () => {
 describe('shared tool results', () => {
   it('adds plugin and CLI versions independently without mutating fields', () => {
     const fields = { ok: true } as const
-    expect(domainResult(fields)).toEqual({ ok: true, pluginVersion: '1.0.0', cliVersion: '3.3.0' })
+    expect(domainResult(fields)).toEqual({ ok: true, pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0' })
     expect(fields).toEqual({ ok: true })
   })
 
