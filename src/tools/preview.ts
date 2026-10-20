@@ -5,11 +5,12 @@ import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import type { CredentialEnvironmentName } from '../config.ts'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { probeCliVersion } from '../cli/gateway.ts'
 import type { CliGateway } from '../cli/gateway.ts'
 import type { CliEnvelope } from '../cli/protocol.ts'
 import { resolveOperationEnv } from '../security/credentials.ts'
 import type { OperationCredentialServices } from '../security/credentials.ts'
-import { PLUGIN_VERSION, SUPPORTED_CLI_VERSION } from '../version.ts'
+import { PLUGIN_VERSION, UNKNOWN_CLI_VERSION } from '../version.ts'
 import type { ArtifactReadAuthorization, ArtifactStore } from '../workspace/artifact-store.ts'
 import { appendOperation } from '../workspace/revision.ts'
 import {
@@ -133,6 +134,7 @@ export function createPreviewOperation({
           if (prepared.contentId !== preparedBeforeApproval.contentId) {
             throw new SafePreviewError('preview inputs changed after approval')
           }
+          const cliVersion = await probeCliVersion(gateway, exec.signal)
           const snapshotInput = previewSnapshotInputFor(
             prepared,
             layoutBaseUrl,
@@ -141,6 +143,7 @@ export function createPreviewOperation({
             previewTheme,
             previewFontSize,
             previewBackgroundType,
+            cliVersion,
           )
           const snapshot = createPreviewSnapshot(snapshotInput)
           let transaction: PreviewTransaction = { state: 'prepared', snapshot }
@@ -173,6 +176,7 @@ export function createPreviewOperation({
                   previewTheme,
                   previewFontSize,
                   previewBackgroundType,
+                  await probeCliVersion(gateway, spawnSignal),
                 ))
                 if (currentSnapshot.id !== snapshot.id) throw new SafePreviewError('preview inputs changed before spawn')
               },
@@ -226,7 +230,7 @@ export function createPreviewOperation({
               previewHtmlPath,
               revisionId: prepared.current.revision.id,
               previewReceiptId: receipt.id,
-            })
+            }, cliVersion)
           } catch (error) {
             let failure: unknown = error
             try {
@@ -269,7 +273,7 @@ export function createPreviewTool(dependencies: PreviewToolDependencies) {
           previewReceiptId: { type: 'string', required: true },
           previewUrl: { type: 'string' },
           pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true },
-          cliVersion: { type: 'string', const: '3.3.0', required: true },
+          cliVersion: { type: 'string', required: true },
         },
       },
       render: (_args, value) => [{
@@ -292,6 +296,7 @@ export function createPreviewTool(dependencies: PreviewToolDependencies) {
  * @param previewTheme - Exact preview theme.
  * @param previewFontSize - Exact preview font size.
  * @param previewBackgroundType - Exact preview background.
+ * @param cliVersion - Freshly observed CLI identity bound into the signed preview.
  * @returns Complete snapshot input without persisting credential material.
  */
 export function previewSnapshotInputFor(
@@ -302,6 +307,7 @@ export function previewSnapshotInputFor(
   previewTheme: string,
   previewFontSize: PreviewFontSize,
   previewBackgroundType: PreviewBackgroundType,
+  cliVersion: string = UNKNOWN_CLI_VERSION,
 ): PreviewSnapshotInput {
   return {
     revisionId: prepared.current.revision.id,
@@ -319,7 +325,7 @@ export function previewSnapshotInputFor(
     credentialReference,
     credentialValue,
     pluginVersion: PLUGIN_VERSION,
-    cliVersion: SUPPORTED_CLI_VERSION,
+    cliVersion,
   }
 }
 
@@ -664,7 +670,7 @@ function validateDiagnostic(value: unknown, field: string, blocker: boolean): Va
   if (diagnostic.field !== undefined && typeof diagnostic.field !== 'string') throw new TypeError(`${field} field must be a string`)
   if (typeof diagnostic.suggested_fix !== 'string' || diagnostic.suggested_fix.length === 0) throw new TypeError(`${field} suggested fix must be a non-empty string`)
   const spec = diagnosticSpecs[code]
-  if (level !== spec.level || diagnostic.field !== spec.field) throw new TypeError(`${field} does not match md2wechat 3.3.0`)
+  if (level !== spec.level || diagnostic.field !== spec.field) throw new TypeError(`${field} does not match the validated CLI contract`)
   if (blocker) {
     const blocks = requiredArray(diagnostic.blocks, `${field} blocks`)
     if (blocks.length === 0) throw new TypeError(`${field} blocks must not be empty`)

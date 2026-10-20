@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { PLUGIN_VERSION, SUPPORTED_CLI_VERSION } from '../version.ts'
+import { PLUGIN_VERSION, UNKNOWN_CLI_VERSION } from '../version.ts'
 import { redactValue } from '../security/redaction.ts'
 import { validateArtifactId, validateArtifactRelativePath } from './artifact-store.ts'
 import type { ArtifactStore } from './artifact-store.ts'
@@ -34,7 +34,7 @@ export interface ArticleRevision {
   articleSha256: string
   manifestPath: string
   pluginVersion: typeof PLUGIN_VERSION
-  cliVersion: typeof SUPPORTED_CLI_VERSION
+  cliVersion: typeof UNKNOWN_CLI_VERSION
   createdAt: string
 }
 
@@ -101,7 +101,7 @@ export function computeArticleRevision(articleBytes: Uint8Array, manifestValue: 
   const normalized = canonicalJson({
     ...manifest,
     pluginVersion: PLUGIN_VERSION,
-    cliVersion: SUPPORTED_CLI_VERSION,
+    cliVersion: UNKNOWN_CLI_VERSION,
   })
   const id = createHash('sha256').update(article).update('\0').update(normalized, 'utf8').digest('hex')
   return {
@@ -110,7 +110,7 @@ export function computeArticleRevision(articleBytes: Uint8Array, manifestValue: 
     articleSha256,
     manifestPath: manifest.manifestPath,
     pluginVersion: PLUGIN_VERSION,
-    cliVersion: SUPPORTED_CLI_VERSION,
+    cliVersion: UNKNOWN_CLI_VERSION,
     createdAt: manifest.createdAt,
   }
 }

@@ -51,7 +51,7 @@ export function createDoctorTool({ gateway }: DoctorToolDependencies) {
           ready: { type: 'boolean', required: true },
           probes: { type: 'array', required: true, items: probeSchema },
           pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true },
-          cliVersion: { type: 'string', const: '3.3.0', required: true },
+          cliVersion: { type: 'string', required: true },
         },
       },
       render: (_args, value) => [{
@@ -64,15 +64,18 @@ export function createDoctorTool({ gateway }: DoctorToolDependencies) {
     async execute(args, exec) {
       if (Object.keys(args).length > 0) throw new Error('md2wechat_doctor does not accept arguments')
       const probes: ProbeResult[] = []
+      let cliVersion: string | undefined
       for (const [name, argv] of [
         ['version', ['version', '--json']],
         ['capabilities', ['capabilities', '--json']],
         ['config', ['config', 'validate', '--json']],
         ['providers', ['providers', 'list', '--json']],
       ] as const) {
-        probes.push(await safeProbe(gateway, name, argv, exec.signal))
+        const result = await safeProbe(gateway, name, argv, exec.signal)
+        probes.push(result.probe)
+        if (name === 'version') cliVersion = result.cliVersion
       }
-      return domainResult({ ready: probes.every(probe => probe.ready), probes })
+      return domainResult({ ready: probes.every(probe => probe.ready), probes }, cliVersion)
     },
     presentCall: () => genericCall('Check md2wechat readiness', 'read'),
     presentResult: () => genericResult('md2wechat diagnosis complete'),
@@ -84,12 +87,13 @@ async function safeProbe(
   name: keyof typeof expectedProbeCodes,
   argv: readonly string[],
   signal: AbortSignal,
-): Promise<ProbeResult> {
+): Promise<{ probe: ProbeResult; cliVersion?: string }> {
   try {
-    return publicProbe(name, await gateway.run(argv, { signal }))
+    const response = await gateway.run(argv, { signal })
+    return { probe: publicProbe(name, response), ...(name === 'version' && typeof response.data?.version === 'string' ? { cliVersion: response.data.version } : {}) }
   } catch {
     if (signal.aborted) signal.throwIfAborted()
-    return { name, ready: false, code: `${name.toUpperCase()}_PROBE_FAILED`, status: 'failed' }
+    return { probe: { name, ready: false, code: `${name.toUpperCase()}_PROBE_FAILED`, status: 'failed' } }
   }
 }
 

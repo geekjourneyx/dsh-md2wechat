@@ -31,28 +31,30 @@ The agent opens one native workspace card. You stay in DSH, not a separate websi
 
 Your source stays unchanged. Theme selections and applying edits do not ask a model to reinterpret your click. The plugin never publishes or mass-sends.
 
-**Tested path:** packed-plugin installation and the creator flow have been exercised against the pinned official host with a loopback renderer and simulated WeChat writes. See the [acceptance harness](./scripts/creator-host-acceptance/README.md) for scope and limits.
+**Tested path:** packed-plugin installation and the creator flow have been exercised against both supported official hosts and both CLI regression versions, with a loopback renderer and simulated WeChat writes. See the [acceptance harness](./scripts/creator-host-acceptance/README.md) for scope and limits.
 
 ## Get started
 
 ### 1. Check the requirements
 
-- **DSH host and web client:** exactly `0.2.1-rc.2`, the pinned integration target and strict host peer requirement. The move from the v1 host target, `0.1.0-rc.5`, is breaking; do not force installation into a mismatched host.
+- **DSH host and web client:** matching `0.2.0-rc.2` or `0.2.1-rc.2`. Both exact versions are covered by installed HTTP/Remote acceptance with CLI `3.3.0` and `3.8.0`; other host versions are not claimed compatible. The move from the v1 target, `0.1.0-rc.5`, remains breaking.
 - **Runtime:** Node.js `^22.19.0` or `>=24.0.0`, with `dsh` available. Node.js `22.19.0` is supported; Node 24 is not mandatory. An npm-launched DSH host also needs pnpm available; a bundled host may include it. Source builds use pnpm `11.7.0`.
-- **Renderer:** a separately installed `md2wechat` CLI at exactly version `3.3.0`.
+- **Renderer:** a separately installed `md2wechat` CLI with the supported `v1` JSON protocol and required command capabilities. Versions `3.3.0` and `3.8.0` are regression targets, not an exact-version allowlist.
 - **Workspace:** your Markdown and any local images inside the current session workspace.
 - **Credentials:** `MD2WECHAT_API_KEY` in DSH's credential service for preview/export. WeChat and image-provider credentials are only needed for their optional operations.
 
-The plugin and its GitHub Release do not contain or install md2wechat. Neither the host nor CLI is upgraded automatically. The plugin archive is platform-independent; check the external CLI distributor for platform support.
+The plugin and its GitHub Release do not contain or install md2wechat. Neither the host nor CLI is upgraded automatically. The plugin archive is platform-independent; check the external CLI distributor for platform support. CLI compatibility is checked by protocol and capabilities, not assumed from a version number; operation outputs remain validated. The version matrix does not certify live paid services or every future CLI release.
 
 ### 2. Install the creator workspace
 
-Point DSH at the separately installed CLI. Keep this environment variable available when starting the profile:
+By default, the plugin resolves `md2wechat` from the **DSH host process PATH**, not from an unrelated terminal or the article directory. For a side-by-side installation, point DSH at the exact executable that passed your `version --json` and `capabilities --json` checks:
 
 ```sh
 # Replace this with your installed CLI's absolute executable path.
 export MD2WECHAT_BINARY_PATH=/absolute/path/to/md2wechat
 ```
+
+Use the executable file inside the installation, not a directory such as `.tools/md2wechat-330`. Start or restart DSH from that same environment; exporting a variable in a second terminal does not change an already running host. Alternatively, set `binaryPath` to that absolute executable path in the profile configuration, preserving the other fields below. An explicit invalid path fails with setup guidance; the plugin never silently substitutes a different CLI from PATH.
 
 **Preferred customer path: a prebuilt GitHub Release, once published.** There is no published creator-workspace archive yet. When `v2.0.0-rc.1` is available on [GitHub Releases](https://github.com/geekjourneyx/dsh-md2wechat/releases), download its `geekjourneyx-dsh-md2wechat-2.0.0-rc.1.tgz` and `SHA256SUMS` assets into the same directory. These commands are for those published assets, not the old v1 archive:
 
@@ -91,7 +93,7 @@ dsh plugin --profile web why @geekjourneyx/dsh-md2wechat
 dsh --profile web --dump-config
 ```
 
-Activation stops before tool registration if the configured CLI is missing, has the wrong version or lacks a required command. Add the preview credential in DSH, open an article using the example above, then approve its first preview.
+Activation stops before tool registration if the configured CLI is missing, does not satisfy the JSON protocol or lacks a required command. Add the preview credential in DSH, open an article using the example above, then approve its first preview.
 
 <details>
 <summary>Looking for the earlier tool-based v1.0.0 release?</summary>
@@ -148,7 +150,7 @@ Preview, upload/generation, file export and draft creation have separate approva
 
 ## Configuration
 
-The bundled patch reads `MD2WECHAT_BINARY_PATH` and resolves these credential references through DSH:
+The bundled patch reads optional `MD2WECHAT_BINARY_PATH` (otherwise the host PATH command `md2wechat`) and resolves these credential references through DSH:
 
 | Reference | Purpose |
 |---|---|
@@ -181,10 +183,12 @@ Save the row in the profile's `cordis.patch.yml`. Setting `enableWechatWriteTool
 <summary>Common problems, recovery and advanced tools</summary>
 
 - **Profile-lock `EPERM`:** the host cannot access its profile lock, before plugin dependency installation. Check the selected profile directory and the current user or sandbox access through the host's supported controls. This is not a plugin, Node-version or CLI compatibility failure. Do not use `sudo` or bypass permission boundaries.
-- **Host peer-version mismatch:** the creator package requires DSH `0.2.1-rc.2`; `0.1.0-rc.5` and other host versions do not satisfy that requirement. Resolve the host/plugin version choice explicitly, rather than forcing peer dependency installation. The plugin never upgrades the host.
-- **CLI activation failure:** check the absolute CLI path, `md2wechat version --json` and `md2wechat capabilities --json`. Exactly `3.3.0` and the required commands are checked before any plugin tools register. The plugin never installs or upgrades the CLI.
+- **Host peer-version mismatch:** the creator package accepts DSH `0.2.0-rc.2` or `0.2.1-rc.2`; `0.1.0-rc.5` and other host versions do not satisfy that requirement. Resolve the host/plugin version choice explicitly, rather than forcing peer dependency installation. The plugin never upgrades the host.
+- **CLI activation failure:** check the configured executable file, the actual host PATH, `md2wechat version --json` and `md2wechat capabilities --json`. The JSON envelope and required commands are checked before plugin tools register; a different version number alone is not a rejection. The detected version is recorded in operation results and preview authority, so changing the CLI requires a new preview and review. The plugin never installs or upgrades the CLI.
+- **Earlier build fails on `protocol/remote-info`:** install the corrected plugin package on a supported host. The generated contracts now use the official shared baseline, without that newer-only import. Do not patch host exports or force an incompatible peer range.
 - **Installed but no creator card:** after verifying host/client and CLI compatibility, restart the profile and open a new workspace card. Old generic tool cards do not turn into creator workspaces.
 - **Read-only or outside-workspace error:** creator actions respect the session's current sandbox policy and canonical workspace boundary. Use a permitted location or change policy through the host; the plugin does not grant itself access. Export can replace an existing destination only after the host approval.
+- **Upgrading an earlier source build:** reopen the original Markdown article and create/review a new preview. Source-only revisions no longer claim an unobserved CLI version; their IDs can change once. Existing artifacts are retained, but old manifest links are not migrated or trusted automatically.
 - **Restarted or reopened session:** active creator choices, pending suggestions and review authority are in memory. Reopen the article and review again; persisted revision files are not a promise of automatic UI-session recovery.
 - **Missing credentials:** add the named reference in DSH. Do not paste secrets into the conversation.
 - **State directory rejected:** revision artifacts default to `.dsh/md2wechat` inside the workspace. Private image-plan and operation authority defaults to `$DSH_HOME/plugins/dsh-md2wechat` (or `~/.dsh/plugins/dsh-md2wechat`). Set an absolute `stateDir` outside workspaces, artifacts and temporary directories if those overlap.

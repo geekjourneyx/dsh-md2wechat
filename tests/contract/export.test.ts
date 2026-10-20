@@ -24,8 +24,16 @@ describe('md2wechat_export', () => {
     html = encoder.encode('<article>exact\nbytes</article>'); sourcePath = `revisions/${revision.id}/previews/html/${snapshot.id}.html`; const receipt = createPreviewReceipt({ snapshot, previewHtmlPath: sourcePath, previewHtmlBytes: html, credentialValue: key, issuedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 600_000).toISOString(), metadata: { title: 'Fixture', author: '', digest: '' }, assets: [] }); await store.writeAtomic(sourcePath, html); await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt, ownership: createPreviewPublicationOwnership() }); receiptId = receipt.id; approvals = []; resolvedRefs = []; approvalOutcome = 'allowed-once'; approvalHook = undefined
   })
   afterEach(async () => { await import('node:fs/promises').then(fs => fs.rm(temporary, { recursive: true, force: true })) })
-  function deps(selectedStore = store) { return { store: selectedStore, layoutBaseUrl: 'https://www.md2wechat.cn', credentialRefs: { MD2WECHAT_API_KEY: 'MD2WECHAT_API_KEY' }, credentials: { resolve(ref: string) { resolvedRefs.push(ref); return Promise.resolve({ value: key, source: 'test' }) } }, approval: { async request(request: Record<string, unknown>) { approvals.push(request); await approvalHook?.(); return approvalOutcome } }, previewTheme: 'default', previewFontSize: 'medium' as const, previewBackgroundType: 'none' as const, now: () => new Date(now.getTime() + 60_000) } }
+  function deps(selectedStore = store) { return { gateway: { version: '3.3.0', async resolve() { return '/fixture/md2wechat' }, async run() { throw new Error('no rendering during export') } }, store: selectedStore, layoutBaseUrl: 'https://www.md2wechat.cn', credentialRefs: { MD2WECHAT_API_KEY: 'MD2WECHAT_API_KEY' }, credentials: { resolve(ref: string) { resolvedRefs.push(ref); return Promise.resolve({ value: key, source: 'test' }) } }, approval: { async request(request: Record<string, unknown>) { approvals.push(request); await approvalHook?.(); return approvalOutcome } }, previewTheme: 'default', previewFontSize: 'medium' as const, previewBackgroundType: 'none' as const, now: () => new Date(now.getTime() + 60_000) } }
   function exec(signal = new AbortController().signal) { return { signal, callId: 'export-call' as never, name: 'md2wechat_export', arguments: {}, rootCallId: 'export-call' as never, token: Symbol('export') as never, agent, deferContext() {}, concludeTurn() {} } }
+
+  it('rejects a receipt when a fresh CLI probe observes an upgraded executable', async () => {
+    const dependencies = deps()
+    const gateway = { ...dependencies.gateway, async probeVersion() { return '3.8.0' } }
+    const destinationPath = join(temporary, 'upgraded.html')
+    await expect(createExportTool({ ...dependencies, gateway }).execute({ manifestPath, previewReceiptId: receiptId, destinationPath }, exec())).rejects.toThrow('preview export failed')
+    await expect(readFile(destinationPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
 
   it('asks once, resolves only preview proof, and atomically copies exact signed bytes without a CLI', async () => {
     const destinationPath = join(temporary, 'out', 'article.html'); const result = await createExportTool(deps()).execute({ manifestPath, previewReceiptId: receiptId, destinationPath }, exec())

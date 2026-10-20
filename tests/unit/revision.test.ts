@@ -41,7 +41,7 @@ describe('article revisions', () => {
       articlePath: 'revisions/article.md',
       manifestPath: 'revisions/manifest.json',
       pluginVersion: PLUGIN_VERSION,
-      cliVersion: '3.3.0',
+      cliVersion: 'unknown',
       createdAt: '2026-08-25T00:00:00.000Z',
     })
     expect(first.id).toMatch(/^[a-f0-9]{64}$/u)
@@ -171,7 +171,8 @@ describe('operation records', () => {
 describe('shared tool results', () => {
   it('adds plugin and CLI versions independently without mutating fields', () => {
     const fields = { ok: true } as const
-    expect(domainResult(fields)).toEqual({ ok: true, pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0' })
+    expect(domainResult(fields, '3.8.0')).toEqual({ ok: true, pluginVersion: PLUGIN_VERSION, cliVersion: '3.8.0' })
+    expect(domainResult(fields).cliVersion).toBe('unknown')
     expect(fields).toEqual({ ok: true })
   })
 

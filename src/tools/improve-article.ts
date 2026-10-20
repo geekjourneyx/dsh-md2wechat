@@ -2,6 +2,7 @@ import { PLUGIN_VERSION } from '../version.ts'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
+import { probeCliVersion } from '../cli/gateway.ts'
 import type { CliGateway } from '../cli/gateway.ts'
 import type { CliEnvelope } from '../cli/protocol.ts'
 import { domainResult, genericCall, genericResult } from './shared.ts'
@@ -70,6 +71,7 @@ export function createImproveArticleOperation({
 }: ImproveArticleToolDependencies) {
   return async (args: { manifestPath: string; operation: 'advise' | 'title' | 'humanize' | 'writer_style' }, exec: Pick<ToolRunContext, 'signal'>) => {
       assertKnownArguments(args, ['manifestPath', 'operation'])
+      const cliVersion = await probeCliVersion(gateway, exec.signal)
       const current = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
       const argv = improvementArgv(args.operation, current.articleAuthorization.processPath)
       const response = await gateway.run(argv, {
@@ -96,7 +98,7 @@ export function createImproveArticleOperation({
         preparedRequest,
         recordPath,
         locations: [current.articlePath, current.manifestPath, recordPath],
-      })
+      }, cliVersion)
     }
 }
 
@@ -126,7 +128,7 @@ export function createImproveArticleTool(dependencies: ImproveArticleToolDepende
           recordPath: { type: 'string', required: true },
           locations: { type: 'array', required: true, items: { type: 'string' } },
           pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true },
-          cliVersion: { type: 'string', const: '3.3.0', required: true },
+          cliVersion: { type: 'string', required: true },
         },
       },
       render: (_args, value) => [{

@@ -1,3 +1,4 @@
+import type { CliGateway } from '../cli/gateway.ts'
 import { PLUGIN_VERSION } from '../version.ts'
 import { dirname, join } from 'node:path'
 import { discoverMarkdownImageDestinations, resolveLocalImagePath } from './preview.ts'
@@ -13,6 +14,7 @@ import type { ArtifactStore } from '../workspace/artifact-store.ts'
 const MAX_SOURCE_BYTES = 8 * 1024 * 1024
 
 export interface StartArticleToolDependencies {
+  gateway?: CliGateway
   fs: Context['fs']
   workspace: string
   store: ArtifactStore
@@ -27,6 +29,7 @@ export interface StartArticleToolDependencies {
  */
 export function createStartArticleOperation({
   fs,
+  gateway,
   workspace,
   store,
   now = () => new Date(),
@@ -79,7 +82,7 @@ export function createStartArticleOperation({
         articleSha256: revision.articleSha256,
         ...(manifest.title === undefined ? {} : { title: manifest.title }),
         locations,
-      })
+      }, gateway?.version)
   }
 }
 
@@ -104,7 +107,7 @@ export function createStartArticleTool(dependencies: StartArticleToolDependencie
           title: { type: 'string' },
           locations: { type: 'array', required: true, items: { type: 'string' } },
           pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true },
-          cliVersion: { type: 'string', const: '3.3.0', required: true },
+          cliVersion: { type: 'string', required: true },
         },
       },
       render: (_args, value) => [{

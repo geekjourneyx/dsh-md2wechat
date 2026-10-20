@@ -161,9 +161,18 @@ describe('DSH plugin entry and activation', () => {
     expect(fixture.subprocess.calls).toEqual([['version', '--json'], ['capabilities', '--json']])
   })
 
+  it.each(['3.3.0', '3.8.0', '99.0.0-compatible'])('activates compatible CLI %s without a release pin', async (version) => {
+    const fixture = await harness({ version })
+    const fiber = await fixture.ctx.plugin(plugin, config({ enableWechatWriteTools: false, enableFallbackImageTool: false }))
+    mounted.push(() => fiber.dispose())
+    expect(visibleTools(fixture.ctx)).toEqual([...BASE_TOOLS, ...CREATOR_TOOLS])
+    const result = await fixture.ctx.tools.execute({ signal: new AbortController().signal, callId: 'version-diagnostic' as never, name: 'md2wechat_doctor', arguments: {} })
+    expect(result.value).toMatchObject({ cliVersion: version })
+  })
+
   it.each([
     ['missing executable', { resolveFailure: true }],
-    ['wrong version', { version: '3.2.9' }],
+    ['malformed version identity', { version: '' }],
     ['missing capability', { missingCapability: true }],
     ['malformed probe', { malformed: true }],
     ['valid failed probe', { probeFailure: true }],

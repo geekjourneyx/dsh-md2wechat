@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
+import { probeCliVersion } from '../cli/gateway.ts'
 import type { CliGateway } from '../cli/gateway.ts'
 import { validateArtifactId, validateArtifactRelativePath } from '../workspace/artifact-store.ts'
 import type { ArtifactStore } from '../workspace/artifact-store.ts'
@@ -42,6 +43,7 @@ export function createPlanImagesOperation(dependencies: PlanImagesToolDependenci
   ) => {
   assertKnownArguments(args, ['manifestPath', 'images'])
   await state.initialize(store, true, exec.signal)
+  const cliVersion = await probeCliVersion(gateway, exec.signal)
   const current = await loadCurrentArticleRevision(store, args.manifestPath, exec.signal)
   const normalized = normalizeImages(args.images, current.revision.id)
   const items: JsonValue[] = []
@@ -83,7 +85,7 @@ export function createPlanImagesOperation(dependencies: PlanImagesToolDependenci
     planPath,
     items,
     locations: [current.articlePath, current.manifestPath, planPath, ...normalized.map(item => item.targetArtifactPath)],
-  })
+  }, cliVersion)
   }
 }
 
@@ -113,7 +115,7 @@ export function createPlanImagesTool(dependencies: PlanImagesToolDependencies) {
           items: { type: 'array', required: true, items: { type: 'json' } },
           locations: { type: 'array', required: true, items: { type: 'string' } },
           pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true },
-          cliVersion: { type: 'string', const: '3.3.0', required: true },
+          cliVersion: { type: 'string', required: true },
         },
       },
       render: (_args, value) => [{
@@ -192,7 +194,7 @@ function normalizeTargetPath(input: string): string {
  * Derive side-effect-free md2wechat planning arguments from approved fields.
  * @param original - Approved image request before CLI defaults or prompt rendering.
  * @param article - Authorized process path for the immutable article revision.
- * @returns Exact md2wechat 3.3.0 planning arguments.
+ * @returns Exact arguments for the validated CLI planning contract.
  */
 export function imagePlanningArgv(original: ImagePlanSource, article: string): readonly string[] {
   if (original.kind === 'image' && original.preset === undefined) {
@@ -216,7 +218,7 @@ export function imagePlanningArgv(original: ImagePlanSource, article: string): r
 }
 
 /**
- * Validate and persist-normalize one md2wechat 3.3.0 planning response.
+ * Validate and persist-normalize one supported CLI planning response.
  * @param response - Response returned by the configured CLI gateway.
  * @param image - Approved source fields used for the planning invocation.
  * @param current - Current immutable article revision and authorized process path.

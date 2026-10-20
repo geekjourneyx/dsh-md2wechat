@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { CliEnvelope } from '../cli/protocol.ts'
+import { probeCliVersion } from '../cli/gateway.ts'
 import type { CliGateway } from '../cli/gateway.ts'
 import { resolveOperationEnv } from '../security/credentials.ts'
 import type { OperationCredentialServices, ResolvedOperationEnv } from '../security/credentials.ts'
@@ -149,7 +150,7 @@ export function createCreatorDelivery(deps: CreatorDeliveryDependencies) {
 
   async function verifyPreview(current: Awaited<ReturnType<typeof inputs>>, theme: string, resolved: ResolvedOperationEnv, signal: AbortSignal): Promise<void> {
     const verified = await validateCurrentPreview(deps.store, {
-      snapshotInput: previewSnapshotInputFor(current.prepared, deps.layoutBaseUrl, deps.credentialRefs.MD2WECHAT_API_KEY!, resolved.env.MD2WECHAT_API_KEY!, theme, deps.previewFontSize, deps.previewBackgroundType),
+      snapshotInput: previewSnapshotInputFor(current.prepared, deps.layoutBaseUrl, deps.credentialRefs.MD2WECHAT_API_KEY!, resolved.env.MD2WECHAT_API_KEY!, theme, deps.previewFontSize, deps.previewBackgroundType, await probeCliVersion(deps.gateway, signal)),
       credentialValue: resolved.env.MD2WECHAT_API_KEY!, now: clock(), signal,
     })
     if (verified.receipt.id !== current.receipt.id || sha256(verified.htmlBytes) !== sha256(current.html)) throw new Error('预览已经变化，请重新审阅。')

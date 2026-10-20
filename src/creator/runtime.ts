@@ -45,6 +45,8 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
     const assertWritable = async (signal: AbortSignal): Promise<void> => { signal.throwIfAborted(); await assertPathWritable(workspace) }
     const store = new ArtifactStore(ctx.fs, workspace, config.artifactsDir, {}, assertPathWritable)
     const scopedGateway: CliGateway = {
+      get version() { return gateway.version },
+      ...(gateway.probeVersion === undefined ? {} : { probeVersion: (signal?: AbortSignal) => gateway.probeVersion!(signal) }),
       resolve: signal => gateway.resolve(signal),
       run: (argv, options = {}) => gateway.run(argv, {
         ...options, cwd: options.cwd ?? workspace,
@@ -70,7 +72,7 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
         return selectableThemes(result.data)
       },
       async start(source, title, signal) {
-        const started = await createStartArticleOperation({ fs: ctx.fs, workspace, store, importImages: true })({ sourcePath: source, ...(title ? { title } : {}) }, execution(signal))
+        const started = await createStartArticleOperation({ fs: ctx.fs, workspace, store, gateway: scopedGateway, importImages: true })({ sourcePath: source, ...(title ? { title } : {}) }, execution(signal))
         const markdown = new TextDecoder('utf-8', { fatal: true }).decode(await store.read(started.articlePath, signal))
         return { id: started.revisionId, manifestPath: started.manifestPath, markdown, title: title || /^#\s+(.+)$/mu.exec(markdown)?.[1] || basename(source, '.md') }
       },

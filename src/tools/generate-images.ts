@@ -6,6 +6,7 @@ import type { CredentialEnvironmentName } from '../config.ts'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { CliEnvelope } from '../cli/protocol.ts'
+import { probeCliVersion } from '../cli/gateway.ts'
 import type { CliGateway } from '../cli/gateway.ts'
 import { resolveOperationEnv } from '../security/credentials.ts'
 import type { OperationCredentialServices } from '../security/credentials.ts'
@@ -114,10 +115,11 @@ export function createGenerateImagesOperation({
     assertKnownArguments(args, ['manifestPath', 'planPaths'])
     exec.signal.throwIfAborted()
     const planPaths = validatePlanPaths(args.planPaths)
+    const cliVersion = await probeCliVersion(gateway, exec.signal)
     const prepared = await prepareBatch(gateway, store, state, args.manifestPath, planPaths, exec.signal)
     const planIds = prepared.plans.map(plan => plan.planId)
     if (prepared.remaining.length === 0) {
-      return domainResult({ kind: 'completed' as const, planIds, resultPaths: [...prepared.completedPaths] })
+      return domainResult({ kind: 'completed' as const, planIds, resultPaths: [...prepared.completedPaths] }, cliVersion)
     }
     if (exec.agent === undefined) throw new SafeGenerateImagesError('fallback image generation requires an active agent')
     assertConfiguredRefs(credentialRefs)
@@ -177,7 +179,7 @@ export function createGenerateImagesOperation({
       throw new SafeGenerateImagesError('fallback image background job could not be started')
     }
     setImmediate(() => registration.resolve(jobId))
-    return domainResult({ kind: 'background' as const, jobId, planIds })
+    return domainResult({ kind: 'background' as const, jobId, planIds }, cliVersion)
   } catch (error) {
     if (error instanceof SafeGenerateImagesError) throw error
     if (exec.signal.aborted) throw new SafeGenerateImagesError('fallback image generation was cancelled')
@@ -205,7 +207,7 @@ export function createGenerateImagesTool(dependencies: GenerateImagesToolDepende
           planIds: { type: 'array', required: true, items: { type: 'string' } },
           resultPaths: { type: 'array', items: { type: 'string' } },
           pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true },
-          cliVersion: { type: 'string', const: '3.3.0', required: true },
+          cliVersion: { type: 'string', required: true },
         },
       },
       render: (_args, value) => [{
@@ -290,6 +292,7 @@ async function processImageItem(input: RunBatchInput, plan: LoadedImagePlan, ite
     const current = await loadCurrentArticleRevision(input.store, input.prepared.current.manifestPath, signal)
     if (current.revision.id !== plan.revisionId) throw new Error('article revision changed before image execution')
     const argv = executionArgv(item, current.articleAuthorization.processPath)
+    const cliVersion = await probeCliVersion(input.gateway, signal)
     const response = await input.gateway.run(argv, {
       env: input.env, secrets: input.secrets, signal,
       beforeSpawn: async (spawnSignal) => {
@@ -307,6 +310,7 @@ async function processImageItem(input: RunBatchInput, plan: LoadedImagePlan, ite
       plan, item, bytes: acquired.bytes, mimeType: acquired.mimeType,
       remoteUrl: projected.originalUrl, mediaId: projected.mediaId, wechatUrl: projected.wechatUrl,
       createdAt: validNow(input.now),
+      cliVersion,
     })
     targetOwnership = await publishExclusiveOrIdentical(input.store, item.targetPath, acquired.bytes, signal, targetOwnership)
     const resultPath = imageResultPath(plan, item)
@@ -387,7 +391,7 @@ async function verifyPresetProjection(
   })
   const projected = projectImagePlanResponse(response, item.source, current)
   if (!Buffer.from(encodeCanonical(projected)).equals(Buffer.from(encodeCanonical(item.cliPlan)))) {
-    throw new Error('image CLI plan does not match the md2wechat 3.3.0 projection')
+    throw new Error('image CLI plan does not match the validated CLI projection')
   }
 }
 

@@ -48,7 +48,7 @@ function retryableFailure() {
 }
 
 function response() {
-  if (argv[0] === 'version') return completed({ version: '3.3.0' })
+  if (argv[0] === 'version') return completed({ version: process.env.FAKE_MD2WECHAT_VERSION ?? '3.3.0' })
   if (argv[0] === 'capabilities') return completed({ commands })
   return completed({ argv })
 }
@@ -90,8 +90,8 @@ switch (behavior) {
   case 'signal':
     process.kill(process.pid, 'SIGTERM')
     break
-  case 'version-mismatch':
-    process.stdout.write(`${JSON.stringify(completed({ version: '3.2.9' }))}\n`)
+  case 'invalid-version':
+    process.stdout.write(`${JSON.stringify(completed({ version: '' }))}\n`)
     break
   case 'missing-capability':
     process.stdout.write(`${JSON.stringify(completed({

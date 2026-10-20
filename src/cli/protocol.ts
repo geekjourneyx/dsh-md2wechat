@@ -1,5 +1,3 @@
-import { SUPPORTED_CLI_VERSION } from '../version.ts'
-
 /** Lifecycle states emitted by the external CLI. */
 export type CliStatus = 'completed' | 'action_required' | 'failed'
 
@@ -120,8 +118,9 @@ function validateCapabilities(data: Readonly<Record<string, unknown>> | undefine
 
 function validateVersion(data: Readonly<Record<string, unknown>> | undefined, argv: readonly string[]): void {
   if (argv[0] !== 'version') return
-  if (data?.version !== SUPPORTED_CLI_VERSION) {
-    throw new TypeError(`unsupported CLI version; expected ${SUPPORTED_CLI_VERSION}`)
+  const version = data?.version
+  if (typeof version !== 'string' || version.trim() !== version || version.length === 0 || version.length > 128 || [...version].some(character => character.codePointAt(0)! <= 0x1f || character.codePointAt(0) === 0x7f)) {
+    throw new TypeError('CLI response version must be a bounded non-empty safe string')
   }
 }
 

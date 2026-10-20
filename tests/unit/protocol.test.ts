@@ -82,11 +82,12 @@ describe('validateCliEnvelope', () => {
     }, { argv: ['capabilities', '--json'], requiredCommands: ['convert', 'publish'] })).toThrow('publish')
   })
 
-  it('rejects a CLI version outside the supported version', () => {
-    expect(() => validateCliEnvelope({
-      ...envelope,
-      data: { version: '3.2.9' },
-    }, request)).toThrow('3.3.0')
+  it.each(['3.3.0', '3.8.0', '99.0.0-compatible'])('accepts version %s without an exact release pin', (version) => {
+    expect(validateCliEnvelope({ ...envelope, data: { version } }, request).data?.version).toBe(version)
+  })
+
+  it.each([undefined, null, 38, '', ' ', '3.8.0\nforged', 'x'.repeat(129)])('rejects malformed version identity %j', (version) => {
+    expect(() => validateCliEnvelope({ ...envelope, data: version === undefined ? {} : { version } }, request)).toThrow('version')
   })
 
   it('accepts a supported completed version envelope', () => {

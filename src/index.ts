@@ -73,6 +73,7 @@ export async function apply(ctx: Context, input: PluginConfig): Promise<void> {
   activation.signal.throwIfAborted()
 
   const previewDependencies = {
+    gateway,
     store,
     layoutBaseUrl: config.layoutBaseUrl,
     credentialRefs: config.credentialRefs,
@@ -85,16 +86,15 @@ export async function apply(ctx: Context, input: PluginConfig): Promise<void> {
 
   const tools = [
     createDoctorTool({ gateway }),
-    createStartArticleTool({ fs: ctx.fs, workspace, store }),
+    createStartArticleTool({ fs: ctx.fs, workspace, store, gateway }),
     createImproveArticleTool({ gateway, store }),
     createPlanImagesTool({ gateway, store, state: imagePlanState }),
-    createPreviewTool({ gateway, ...previewDependencies, reportAuditFailure }),
+    createPreviewTool({ ...previewDependencies, reportAuditFailure }),
     createExportTool(previewDependencies),
   ]
 
   if (config.enableWechatWriteTools) {
     tools.push(createDraftTool({
-      gateway,
       ...previewDependencies,
       state: draftState,
       imagePlanState,

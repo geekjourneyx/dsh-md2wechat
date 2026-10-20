@@ -205,8 +205,8 @@ describe('signed preview state', () => {
     ] }))).toThrow('safe')
   })
 
-  it('validates a current signed receipt and rejects every changed or missing binding as stale', async () => {
-    const input = baseInput()
+  it.each(['3.3.0', '3.8.0', '99.0.0-compatible'])('validates signed receipts from compatible CLI %s and rejects changed bindings', async (cliVersion) => {
+    const input = baseInput({ cliVersion })
     const snapshot = createPreviewSnapshot(input)
     const html = encoder.encode('<article>ready</article>')
     const previewHtmlPath = `revisions/${snapshot.revisionId}/previews/html/${snapshot.id}.html`

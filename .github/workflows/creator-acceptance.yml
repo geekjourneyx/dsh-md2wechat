@@ -5,6 +5,11 @@ on:
   workflow_dispatch:
 jobs:
   installed-creator:
+    strategy:
+      fail-fast: false
+      matrix:
+        host: ['0.2.0-rc.2', '0.2.1-rc.2']
+        cli: ['3.3.0', '3.8.0']
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -17,8 +22,8 @@ jobs:
       - run: pnpm typecheck && pnpm lint && pnpm check:boundaries && pnpm test && pnpm build
       - name: Install official host, renderer and browser tooling
         run: |
-          npm install --prefix "$RUNNER_TEMP/creator-host" @deepseek-ai/dsh@0.2.1-rc.2
-          npm install --prefix "$RUNNER_TEMP/creator-cli" @geekjourneyx/md2wechat@3.3.0
+          npm install --prefix "$RUNNER_TEMP/creator-host" @deepseek-ai/dsh@${{ matrix.host }}
+          npm install --prefix "$RUNNER_TEMP/creator-cli" @geekjourneyx/md2wechat@${{ matrix.cli }}
           npm install --prefix "$RUNNER_TEMP/creator-browser" playwright@1.58.2
           "$RUNNER_TEMP/creator-browser/node_modules/.bin/playwright" install --with-deps chromium
           mkdir -p "$RUNNER_TEMP/creator-package"
@@ -37,6 +42,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: installed-creator-evidence
+          name: installed-creator-evidence-${{ matrix.host }}-${{ matrix.cli }}
           path: ${{ runner.temp }}/creator-e2e-results/**/logs/
           retention-days: 7

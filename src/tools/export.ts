@@ -1,3 +1,5 @@
+import { probeCliVersion } from '../cli/gateway.ts'
+import type { CliGateway } from '../cli/gateway.ts'
 import { PLUGIN_VERSION } from '../version.ts'
 import { createHash } from 'node:crypto'
 import { isAbsolute } from 'node:path'
@@ -16,6 +18,7 @@ const TOOL_NAME = 'md2wechat_export'
 
 /** Dependencies required to export exact signed preview bytes. */
 export interface ExportToolDependencies {
+  gateway?: CliGateway
   store: ArtifactStore
   layoutBaseUrl: string
   credentialRefs: OperationCredentialServices['credentialRefs']
@@ -50,12 +53,12 @@ export function createExportOperation(dependencies: ExportToolDependencies) {
         const current = await preparePreviewInputs(dependencies.store, args.manifestPath, exec.signal)
         if (current.contentId !== before.contentId) throw new SafeExportError('preview inputs changed after approval')
         const verified = await validateCurrentPreview(dependencies.store, {
-          snapshotInput: previewSnapshotInputFor(current, dependencies.layoutBaseUrl, reference, value, dependencies.previewTheme, dependencies.previewFontSize, dependencies.previewBackgroundType),
+          snapshotInput: previewSnapshotInputFor(current, dependencies.layoutBaseUrl, reference, value, dependencies.previewTheme, dependencies.previewFontSize, dependencies.previewBackgroundType, await probeCliVersion(dependencies.gateway, exec.signal)),
           credentialValue: value, now: (dependencies.now ?? (() => new Date()))(), signal: exec.signal,
         })
         if (verified.receipt.id !== args.previewReceiptId || verified.htmlPath !== exportAuthorization.sourceRelative || verified.receipt.previewHtmlSha256 !== exportAuthorization.expectedSha256) throw new SafeExportError('stale preview')
         await exportAuthorization.commitVerified(verified.htmlBytes, exec.signal)
-        return domainResult({ manifestPath: current.current.manifestPath, revisionId: current.current.revision.id, previewReceiptId: verified.receipt.id, sourcePath: verified.htmlPath, destinationPath: args.destinationPath, sha256: createHash('sha256').update(verified.htmlBytes).digest('hex') })
+        return domainResult({ manifestPath: current.current.manifestPath, revisionId: current.current.revision.id, previewReceiptId: verified.receipt.id, sourcePath: verified.htmlPath, destinationPath: args.destinationPath, sha256: createHash('sha256').update(verified.htmlBytes).digest('hex') }, verified.receipt.cliVersion)
       } catch (error) {
         if (exec.signal.aborted || error instanceof ExportCancelledError) throw new Error('preview export cancelled')
         if (error instanceof SafeExportError) throw new Error(error.message)
@@ -80,7 +83,7 @@ export function createExportTool(dependencies: ExportToolDependencies) {
       destinationPath: { type: 'string', required: true },
     },
     output: { schema: { type: 'object', additionalProperties: false, properties: {
-      manifestPath: { type: 'string', required: true }, revisionId: { type: 'string', required: true }, previewReceiptId: { type: 'string', required: true }, sourcePath: { type: 'string', required: true }, destinationPath: { type: 'string', required: true }, sha256: { type: 'string', required: true }, pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true }, cliVersion: { type: 'string', const: '3.3.0', required: true },
+      manifestPath: { type: 'string', required: true }, revisionId: { type: 'string', required: true }, previewReceiptId: { type: 'string', required: true }, sourcePath: { type: 'string', required: true }, destinationPath: { type: 'string', required: true }, sha256: { type: 'string', required: true }, pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true }, cliVersion: { type: 'string', required: true },
     } }, render: (_args, value) => [{ type: 'text', text: `Signed preview exported to ${value.destinationPath}.` }] },
     execute: operation,
     presentCall: args => genericCall('Export signed md2wechat preview', 'edit', safeDestination(args.destinationPath), safeExportLocations(args.manifestPath, args.destinationPath)),
