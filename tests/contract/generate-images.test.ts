@@ -1,11 +1,15 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
 import type { JobHooks, JobId, JobStart } from '@deepseek-ai/dsh-jobs'
+import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { CliEnvelope } from '../../src/cli/protocol.ts'
+import { createCliGateway, REQUIRED_CLI_COMMANDS } from '../../src/cli/gateway.ts'
 import type { CliGateway, CliRunOptions } from '../../src/cli/gateway.ts'
+import { resolveConfig } from '../../src/config.ts'
 import { createGenerateImagesTool } from '../../src/tools/generate-images.ts'
 import { createPlanImagesTool } from '../../src/tools/plan-images.ts'
 import { ArtifactStore } from '../../src/workspace/artifact-store.ts'
@@ -153,7 +157,7 @@ describe('md2wechat_generate_images', () => {
   }
   function exec(signal = new AbortController().signal) { return { signal, callId: 'image-call' as never, name: 'md2wechat_generate_images', arguments: {}, rootCallId: 'image-call' as never, token: Symbol('image') as never, agent, deferContext() {}, concludeTurn() {} } }
 
-  it('keeps per-image version provenance when another probe changes gateway identity during download', async () => {
+  it('does not present a cached gateway version as execution-bound image provenance', async () => {
     const gateway = new Gateway()
     gateway.version = '3.8.0'
     const deps = dependencies(gateway)
@@ -165,8 +169,52 @@ describe('md2wechat_generate_images', () => {
     expect(result.cliVersion).toBe('3.8.0')
     await expect(hooks!.done).resolves.toMatchObject({ status: 'completed' })
     const resultPath = `revisions/${revisionId}/image-results/${basename(planPath, '.json')}/hero.json`
-    expect(JSON.parse(decoder.decode(await store.read(resultPath))).cliVersion).toBe('3.8.0')
+    expect(JSON.parse(decoder.decode(await store.read(resultPath))).cliVersion).toBe('unknown')
     expect(gateway.version).toBe('3.9.0')
+  })
+
+  it('records unknown provenance when a replacement binary executes and restores the probed version', async () => {
+    const binaryPath = join(temporary, 'cli.mjs')
+    const attemptsPath = join(temporary, 'generation-attempts')
+    const completed = { success: true, code: 'OK', message: 'Success', schema_version: 'v1', status: 'completed', retryable: false }
+    const original = `#!/usr/bin/env node
+console.log(JSON.stringify({ ...${JSON.stringify(completed)}, data: process.argv[2] === 'version' ? { version: '3.8.0' } : { commands: ${JSON.stringify(REQUIRED_CLI_COMMANDS)} } }))
+`
+    const replacement = `#!/usr/bin/env node
+import { appendFile, writeFile } from 'node:fs/promises'
+await appendFile(${JSON.stringify(attemptsPath)}, '3.9.0\\n')
+await writeFile(${JSON.stringify(binaryPath)}, ${JSON.stringify(original)})
+console.log(${JSON.stringify(JSON.stringify({ ...completed, data: {
+      prompt: 'Hero raw', original_url: 'https://images.example/result.png', media_id: 'media-3.9.0',
+      wechat_url: 'https://mmbiz.qpic.cn/result.png', width: 0, height: 0,
+    } }))})
+`
+    await writeFile(binaryPath, original, { mode: 0o755 })
+    const context = new Context()
+    const subprocess = await context.plugin(LocalSubprocessRuntime)
+    try {
+      const gateway = createCliGateway(context, resolveConfig({ binaryPath }))
+      const run = gateway.run.bind(gateway)
+      gateway.run = (argv, options = {}) => run(argv, argv[0] !== 'generate_image' ? options : {
+        ...options,
+        beforeSpawn: async (signal) => {
+          await options.beforeSpawn?.(signal)
+          await writeFile(binaryPath, replacement)
+        },
+      })
+      const tool = createGenerateImagesTool(dependencies(gateway))
+      const submitted = await tool.execute({ manifestPath, planPaths: [planPath] }, exec())
+      expect(submitted.cliVersion).toBe('3.8.0')
+      await expect(hooks!.done).resolves.toMatchObject({ status: 'completed' })
+      expect(await gateway.probeVersion!()).toBe('3.8.0')
+      expect(await readFile(attemptsPath, 'utf8')).toBe('3.9.0\n')
+      const resultPath = `revisions/${revisionId}/image-results/${basename(planPath, '.json')}/hero.json`
+      expect(JSON.parse(decoder.decode(await store.read(resultPath)))).toMatchObject({
+        cliVersion: 'unknown', mediaId: 'media-3.9.0',
+      })
+    } finally {
+      await subprocess.dispose()
+    }
   })
 
   it('asks once, resolves exactly three credentials, returns an owner-scoped job and publishes a verified result', async () => {

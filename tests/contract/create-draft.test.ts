@@ -75,12 +75,40 @@ describe('md2wechat_create_draft', () => {
   function exec(signal = new AbortController().signal) { return { signal, callId: 'draft-call' as never, name: 'md2wechat_create_draft', arguments: {}, rootCallId: 'draft-call' as never, token: Symbol('draft') as never, agent, deferContext() {}, concludeTurn() {} } }
 
   it('uses exact finalized preview bytes, one approval, isolated account environment, and replays without side effects', async () => {
+    for (const path of planPaths) {
+      const plan = await loadImagePlan(store, path, revisionId, articlePath)
+      const result = JSON.parse(new TextDecoder().decode(await store.read(imageResultPath(plan, plan.items[0]!))))
+      expect(result.cliVersion).toBe('unknown')
+    }
     const tool = createDraftTool(deps()); const args = { manifestPath, previewReceiptId: receiptId, planPaths }; const result = await tool.execute(args, exec())
     expect(approvals).toHaveLength(1); expect(String(approvals[0]!.reason)).toContain('does not mass-send or publish'); expect(resolved).toEqual(['MD2WECHAT_API_KEY', 'WECHAT_APPID', 'WECHAT_SECRET']); expect(gateway.calls).toHaveLength(1)
     const call = gateway.calls[0]!; expect(call.argv).toEqual(['create_draft', expect.any(String), '--json']); expect(call.options?.cwd).toBe(call.options?.env?.HOME); expect(call.options?.env).toMatchObject({ WECHAT_ACCOUNT: '', WECHAT_PROXY_URL: '', XDG_CONFIG_HOME: call.options?.cwd, MD2WECHAT_API_KEY: previewKey, WECHAT_APPID: 'secret-WECHAT_APPID', WECHAT_SECRET: 'secret-WECHAT_SECRET' }); expect(call.options?.secrets).toEqual([previewKey, 'secret-WECHAT_APPID', 'secret-WECHAT_SECRET'])
     expect(call.request).toEqual({ articles: [{ author: 'Author', content: '<article>A<img class="hero" src="https://mmbiz.qpic.cn/body.png" alt="x">B</article>', digest: 'Digest', show_cover_pic: 1, thumb_media_id: 'cover-media', title: 'Fixture' }] })
     expect(result).toMatchObject({ manifestPath, revisionId, previewReceiptId: receiptId, draftId: 'draft-safe', draftUrl: 'https://mp.weixin.qq.com/draft/1', pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0' }); expect(JSON.stringify(result)).not.toContain('secret-')
     approvals.length = 0; resolved.length = 0; const replay = await tool.execute({ ...args, planPaths: [...planPaths].reverse() }, exec()); expect(replay).toEqual(result); expect(approvals).toHaveLength(0); expect(resolved).toHaveLength(0); expect(gateway.calls).toHaveLength(1)
+  })
+
+  it.each([
+    ['planId', 'a'.repeat(64)],
+    ['itemId', 'different-item'],
+    ['revisionId', 'a'.repeat(64)],
+    ['targetPath', 'images/different.png'],
+    ['pluginVersion', '0.0.0'],
+    ['sha256', 'a'.repeat(64)],
+  ])('does not waive image %s verification when CLI provenance is unknown', async (field, changed) => {
+    const plan = await loadImagePlan(store, planPaths[0]!, revisionId, articlePath)
+    const path = imageResultPath(plan, plan.items[0]!)
+    const result = JSON.parse(new TextDecoder().decode(await store.read(path)))
+    expect(result.cliVersion).toBe('unknown')
+    await store.writeAtomic(path, encodeCanonical({ ...result, [field]: changed }))
+    await expect(createDraftTool(deps()).execute({ manifestPath, previewReceiptId: receiptId, planPaths }, exec())).rejects.toThrow('failed')
+    expect(approvals).toHaveLength(0); expect(resolved).toHaveLength(0); expect(gateway.calls).toHaveLength(0)
+  })
+
+  it('still rejects a preview CLI version mismatch when image CLI provenance is unknown', async () => {
+    gateway.version = '3.8.0'
+    await expect(createDraftTool(deps()).execute({ manifestPath, previewReceiptId: receiptId, planPaths }, exec())).rejects.toThrow('failed')
+    expect(approvals).toHaveLength(1); expect(gateway.calls).toHaveLength(0)
   })
 
   it('permanently blocks automatic retry after an uncertain malformed response', async () => {
