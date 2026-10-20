@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from '../../src/version.ts'
 import { createHash } from 'node:crypto'
 import { link, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -19,7 +20,7 @@ describe('md2wechat_export', () => {
   beforeEach(async () => {
     temporary = await mkdtemp(join(tmpdir(), 'dsh-md2wechat-export-')); workspace = join(temporary, 'workspace'); await mkdir(workspace); store = new ArtifactStore(fileSystem(workspace) as never, workspace, '.dsh/md2wechat')
     const article = encoder.encode('# Fixture\n'); const manifest: ArticleManifest = { schemaVersion: 1, articlePath: 'article.md', manifestPath: 'manifest.json', createdAt: now.toISOString(), title: 'Fixture' }; const revision = computeArticleRevision(article, manifest); const articlePath = `revisions/${revision.id}/article.md`; manifestPath = `revisions/${revision.id}/manifest.json`; await store.writeAtomic(articlePath, article); await store.writeAtomic(manifestPath, encoder.encode(`${JSON.stringify(manifest)}\n`))
-    const snapshot = createPreviewSnapshot({ revisionId: revision.id, articlePath, articleBytes: article, localImages: [], layoutBaseUrl: 'https://www.md2wechat.cn', previewSettings: { mode: 'api', theme: 'default', fontSize: 'medium', backgroundType: 'none', output: 'standalone-html' }, credentialReference: 'MD2WECHAT_API_KEY', credentialValue: key, pluginVersion: '1.0.0', cliVersion: '3.3.0' })
+    const snapshot = createPreviewSnapshot({ revisionId: revision.id, articlePath, articleBytes: article, localImages: [], layoutBaseUrl: 'https://www.md2wechat.cn', previewSettings: { mode: 'api', theme: 'default', fontSize: 'medium', backgroundType: 'none', output: 'standalone-html' }, credentialReference: 'MD2WECHAT_API_KEY', credentialValue: key, pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0' })
     html = encoder.encode('<article>exact\nbytes</article>'); sourcePath = `revisions/${revision.id}/previews/html/${snapshot.id}.html`; const receipt = createPreviewReceipt({ snapshot, previewHtmlPath: sourcePath, previewHtmlBytes: html, credentialValue: key, issuedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 600_000).toISOString(), metadata: { title: 'Fixture', author: '', digest: '' }, assets: [] }); await store.writeAtomic(sourcePath, html); await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt, ownership: createPreviewPublicationOwnership() }); receiptId = receipt.id; approvals = []; resolvedRefs = []; approvalOutcome = 'allowed-once'; approvalHook = undefined
   })
   afterEach(async () => { await import('node:fs/promises').then(fs => fs.rm(temporary, { recursive: true, force: true })) })
@@ -28,7 +29,7 @@ describe('md2wechat_export', () => {
 
   it('asks once, resolves only preview proof, and atomically copies exact signed bytes without a CLI', async () => {
     const destinationPath = join(temporary, 'out', 'article.html'); const result = await createExportTool(deps()).execute({ manifestPath, previewReceiptId: receiptId, destinationPath }, exec())
-    expect(approvals).toHaveLength(1); expect(String(approvals[0]!.reason)).toContain(destinationPath); expect(resolvedRefs).toEqual(['MD2WECHAT_API_KEY']); expect(Array.from(await readFile(destinationPath))).toEqual(Array.from(html)); expect(result).toMatchObject({ manifestPath, previewReceiptId: receiptId, sourcePath, destinationPath, pluginVersion: '1.0.0', cliVersion: '3.3.0' })
+    expect(approvals).toHaveLength(1); expect(String(approvals[0]!.reason)).toContain(destinationPath); expect(resolvedRefs).toEqual(['MD2WECHAT_API_KEY']); expect(Array.from(await readFile(destinationPath))).toEqual(Array.from(html)); expect(result).toMatchObject({ manifestPath, previewReceiptId: receiptId, sourcePath, destinationPath, pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0' })
   })
 
   it('rejects relative, same-source, stale, unknown, and pre-cancelled requests without partial output', async () => {

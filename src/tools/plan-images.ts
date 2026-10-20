@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from '../version.ts'
 import { createHash } from 'node:crypto'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -111,7 +112,7 @@ export function createPlanImagesTool(dependencies: PlanImagesToolDependencies) {
           planPath: { type: 'string', required: true },
           items: { type: 'array', required: true, items: { type: 'json' } },
           locations: { type: 'array', required: true, items: { type: 'string' } },
-          pluginVersion: { type: 'string', const: '1.0.0', required: true },
+          pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true },
           cliVersion: { type: 'string', const: '3.3.0', required: true },
         },
       },

@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from '../../src/version.ts'
 import { mkdir, mkdtemp, readFile, readdir, realpath, stat, symlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -248,7 +249,7 @@ describe('md2wechat_preview', () => {
       previewSettings: { mode: 'api' as const, theme: 'default', fontSize: 'medium' as const, backgroundType: 'none' as const, output: 'standalone-html' },
       credentialReference,
       credentialValue,
-      pluginVersion: '1.0.0',
+      pluginVersion: PLUGIN_VERSION,
       cliVersion: '3.3.0',
     }
   }
@@ -280,7 +281,7 @@ describe('md2wechat_preview', () => {
     expect(call.options?.secrets).toEqual([credentialValue])
     expect(call.options?.beforeSpawn).toBeTypeOf('function')
 
-    expect(result).toMatchObject({ revisionId, manifestPath, pluginVersion: '1.0.0', cliVersion: '3.3.0' })
+    expect(result).toMatchObject({ revisionId, manifestPath, pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0' })
     expect(result).not.toHaveProperty('previewUrl')
     expect(result.previewHtmlPath).toMatch(new RegExp(`^revisions/${revisionId}/previews/html/[a-f0-9]{64}\\.html$`, 'u'))
     expect(result.previewReceiptId).toMatch(/^[a-f0-9]{64}$/u)
@@ -298,7 +299,7 @@ describe('md2wechat_preview', () => {
         localImages: [{ path: imagePath, bytes: await store.read(imagePath) }],
         layoutBaseUrl: 'https://www.md2wechat.cn',
         previewSettings: { mode: 'api', theme: 'default', fontSize: 'medium', backgroundType: 'none', output: 'standalone-html' },
-        credentialReference, credentialValue, pluginVersion: '1.0.0', cliVersion: '3.3.0',
+        credentialReference, credentialValue, pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0',
       },
       credentialValue,
       now: new Date('2026-08-25T00:05:00.000Z'),
@@ -632,7 +633,7 @@ describe('md2wechat_preview', () => {
         revisionId, articlePath, articleBytes: await store.read(articlePath),
         localImages: [{ path: imagePath, bytes: await store.read(imagePath) }],
         layoutBaseUrl: 'https://www.md2wechat.cn', previewSettings: { mode: 'api', theme: 'default', fontSize: 'medium', backgroundType: 'none', output: 'standalone-html' },
-        credentialReference, credentialValue, pluginVersion: '1.0.0', cliVersion: '3.3.0',
+        credentialReference, credentialValue, pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0',
       },
       credentialValue,
       now: new Date('2026-08-25T00:05:00.000Z'),
@@ -797,7 +798,7 @@ describe('md2wechat_preview', () => {
         revisionId, articlePath, articleBytes: await store.read(articlePath),
         localImages: [{ path: imagePath, bytes: await store.read(imagePath) }],
         layoutBaseUrl: winnerLayout, previewSettings: { mode: 'api', theme: 'default', fontSize: 'medium', backgroundType: 'none', output: 'standalone-html' },
-        credentialReference, credentialValue, pluginVersion: '1.0.0', cliVersion: '3.3.0',
+        credentialReference, credentialValue, pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0',
       },
       credentialValue,
       now: new Date('2026-08-25T00:05:00.000Z'),

@@ -9,7 +9,7 @@ standalone mock UI substitutes for the installed extension.
 
 ```sh
 pnpm exec node scripts/creator-host-acceptance/run.mjs \
-  --package /absolute/path/to/geekjourneyx-dsh-md2wechat-1.0.0.tgz \
+  --package /absolute/path/to/geekjourneyx-dsh-md2wechat-2.0.0-rc.1.tgz \
   --host /absolute/path/to/installed-dsh-prefix \
   --cli /absolute/path/to/official-md2wechat-3.3.0 \
   --root /absolute/path/to/acceptance-results \

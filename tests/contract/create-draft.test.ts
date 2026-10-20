@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from '../../src/version.ts'
 import { createHash } from 'node:crypto'
 import { cp, mkdir, mkdtemp, readFile, realpath, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -59,7 +60,7 @@ describe('md2wechat_create_draft', () => {
   afterEach(async () => { await import('node:fs/promises').then(fs => fs.rm(temporary, { recursive: true, force: true })); await import('node:fs/promises').then(fs => fs.rm(stateDir, { recursive: true, force: true })) })
 
   async function publishCurrentPreview(html: Uint8Array, assets: Parameters<typeof createPreviewReceipt>[0]['assets'], metadata = { title: 'Fixture', author: 'Author', digest: 'Digest' }) {
-    const snapshot = createPreviewSnapshot({ revisionId, articlePath, articleBytes, localImages: [{ path: heroPath, bytes: png }], layoutBaseUrl: 'https://www.md2wechat.cn', previewSettings: { mode: 'api', theme: 'default', fontSize: 'medium', backgroundType: 'none', output: 'standalone-html' }, credentialReference: 'MD2WECHAT_API_KEY', credentialValue: previewKey, pluginVersion: '1.0.0', cliVersion: '3.3.0' })
+    const snapshot = createPreviewSnapshot({ revisionId, articlePath, articleBytes, localImages: [{ path: heroPath, bytes: png }], layoutBaseUrl: 'https://www.md2wechat.cn', previewSettings: { mode: 'api', theme: 'default', fontSize: 'medium', backgroundType: 'none', output: 'standalone-html' }, credentialReference: 'MD2WECHAT_API_KEY', credentialValue: previewKey, pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0' })
     const htmlPath = `revisions/${revisionId}/previews/html/${snapshot.id}.html`; const receipt = createPreviewReceipt({ snapshot, previewHtmlPath: htmlPath, previewHtmlBytes: html, credentialValue: previewKey, issuedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 600_000).toISOString(), metadata, assets }); await store.writeAtomic(htmlPath, html); await publishPreviewSnapshot(store, { state: 'published', snapshot, receipt, ownership: createPreviewPublicationOwnership() }); receiptId = receipt.id
   }
 
@@ -77,7 +78,7 @@ describe('md2wechat_create_draft', () => {
     expect(approvals).toHaveLength(1); expect(String(approvals[0]!.reason)).toContain('does not mass-send or publish'); expect(resolved).toEqual(['MD2WECHAT_API_KEY', 'WECHAT_APPID', 'WECHAT_SECRET']); expect(gateway.calls).toHaveLength(1)
     const call = gateway.calls[0]!; expect(call.argv).toEqual(['create_draft', expect.any(String), '--json']); expect(call.options?.cwd).toBe(call.options?.env?.HOME); expect(call.options?.env).toMatchObject({ WECHAT_ACCOUNT: '', WECHAT_PROXY_URL: '', XDG_CONFIG_HOME: call.options?.cwd, MD2WECHAT_API_KEY: previewKey, WECHAT_APPID: 'secret-WECHAT_APPID', WECHAT_SECRET: 'secret-WECHAT_SECRET' }); expect(call.options?.secrets).toEqual([previewKey, 'secret-WECHAT_APPID', 'secret-WECHAT_SECRET'])
     expect(call.request).toEqual({ articles: [{ author: 'Author', content: '<article>A<img class="hero" src="https://mmbiz.qpic.cn/body.png" alt="x">B</article>', digest: 'Digest', show_cover_pic: 1, thumb_media_id: 'cover-media', title: 'Fixture' }] })
-    expect(result).toMatchObject({ manifestPath, revisionId, previewReceiptId: receiptId, draftId: 'draft-safe', draftUrl: 'https://mp.weixin.qq.com/draft/1', pluginVersion: '1.0.0', cliVersion: '3.3.0' }); expect(JSON.stringify(result)).not.toContain('secret-')
+    expect(result).toMatchObject({ manifestPath, revisionId, previewReceiptId: receiptId, draftId: 'draft-safe', draftUrl: 'https://mp.weixin.qq.com/draft/1', pluginVersion: PLUGIN_VERSION, cliVersion: '3.3.0' }); expect(JSON.stringify(result)).not.toContain('secret-')
     approvals.length = 0; resolved.length = 0; const replay = await tool.execute({ ...args, planPaths: [...planPaths].reverse() }, exec()); expect(replay).toEqual(result); expect(approvals).toHaveLength(0); expect(resolved).toHaveLength(0); expect(gateway.calls).toHaveLength(1)
   })
 

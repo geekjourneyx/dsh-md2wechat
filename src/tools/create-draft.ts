@@ -127,7 +127,7 @@ export function createDraftTool(dependencies: DraftToolDependencies) {
       planPaths: { type: 'array', required: true, items: { type: 'string' } },
     },
     output: { schema: { type: 'object', additionalProperties: false, properties: {
-      manifestPath: { type: 'string', required: true }, revisionId: { type: 'string', required: true }, previewReceiptId: { type: 'string', required: true }, draftId: { type: 'string', required: true }, draftUrl: { type: 'string' }, draftResultPath: { type: 'string', required: true }, pluginVersion: { type: 'string', const: '1.0.0', required: true }, cliVersion: { type: 'string', const: '3.3.0', required: true },
+      manifestPath: { type: 'string', required: true }, revisionId: { type: 'string', required: true }, previewReceiptId: { type: 'string', required: true }, draftId: { type: 'string', required: true }, draftUrl: { type: 'string' }, draftResultPath: { type: 'string', required: true }, pluginVersion: { type: 'string', const: PLUGIN_VERSION, required: true }, cliVersion: { type: 'string', const: '3.3.0', required: true },
     } }, render: (_args, value) => [{ type: 'text', text: `Unpublished WeChat draft ${value.draftId} is ready.` }] },
     execute: operation,
     presentCall: args => genericCall('Create unpublished WeChat draft', 'edit', undefined, safeLocations(args.manifestPath, args.planPaths)),
