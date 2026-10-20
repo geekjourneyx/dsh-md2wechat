@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CreatorAction, CreatorView, CreatorPreview, CreatorImageCandidate } from '@geekjourneyx/dsh-md2wechat/types'
 import { ArticlePreview } from './ArticlePreview.tsx'
+import { clientErrorInfo } from './creator-client.ts'
 
 export interface CreatorClient {
   get(signal: AbortSignal): Promise<CreatorView>
@@ -10,13 +11,16 @@ export interface CreatorClient {
 }
 
 /** Article-first native workspace. Operations are deterministic authenticated calls, not chat prompts. */
-export function CreatorWorkspace({ client }: { client: CreatorClient }) {
+export function CreatorWorkspace({ client, onRecover }: { client: CreatorClient; onRecover?: () => void }) {
   const [view, setView] = useState<CreatorView>()
   const [html, setHtml] = useState('')
   const [displayedKey, setDisplayedKey] = useState('')
+  const [previewReload, setPreviewReload] = useState(0)
   const [previous, setPrevious] = useState<{ html: string; theme: string }>()
   const [comparing, setComparing] = useState(false)
   const [error, setError] = useState('')
+  const [errorInfo, setErrorInfo] = useState<ReturnType<typeof clientErrorInfo>>()
+  const [confirmReconcile, setConfirmReconcile] = useState(false)
   const [panel, setPanel] = useState<'style' | 'suggestions' | 'images' | 'delivery'>('style')
   const [confirmDraft, setConfirmDraft] = useState(false)
   const [imageSource, setImageSource] = useState('')
@@ -32,10 +36,18 @@ export function CreatorWorkspace({ client }: { client: CreatorClient }) {
   const accept = (next: CreatorView) => {
     if (!latest.current || next.version >= latest.current.version) { latest.current = next; setView(next) }
   }
+  function fail(error: unknown) { const info = clientErrorInfo(error); setError(info.message); setErrorInfo(info) }
+  async function reloadArticle() {
+    const controller = lifetime.current; const sequence = ++actionSequence.current
+    setBusy(true); setError(''); setErrorInfo(undefined)
+    try { const next = await client.get(controller.signal); if (!controller.signal.aborted) { accept(next); setPreviewReload(value => value + 1) } }
+    catch (error) { if (!controller.signal.aborted) fail(error) }
+    finally { if (!controller.signal.aborted && sequence === actionSequence.current) setBusy(false) }
+  }
   useEffect(() => {
     const controller = new AbortController(); lifetime.current = controller
-    latest.current = undefined; queuedTheme.current = undefined; themeRunning.current = false; actionSequence.current++; setView(undefined); setHtml(''); setDisplayedKey(''); setPrevious(undefined); setComparing(false); setError(''); setBusy(false); setPlacement(''); setConfirmDraft(false)
-    void client.get(controller.signal).then(next => { if (!controller.signal.aborted) accept(next) }).catch(() => { if (!controller.signal.aborted) setError('无法打开文章工作区，请重新打开原文。') })
+    latest.current = undefined; queuedTheme.current = undefined; themeRunning.current = false; actionSequence.current++; setView(undefined); setHtml(''); setDisplayedKey(''); setPrevious(undefined); setComparing(false); setError(''); setErrorInfo(undefined); setConfirmReconcile(false); setBusy(false); setPlacement(''); setConfirmDraft(false)
+    void client.get(controller.signal).then(next => { if (!controller.signal.aborted) accept(next) }).catch(error => { if (!controller.signal.aborted) fail(error) })
     return () => controller.abort()
   }, [client])
   useEffect(() => {
@@ -46,7 +58,7 @@ export function CreatorWorkspace({ client }: { client: CreatorClient }) {
     void client.readPreview(view.preview, controller.signal).then(value => { if (!controller.signal.aborted) { setHtml(value); setDisplayedKey(key) } })
       .catch(() => { if (!controller.signal.aborted) setError('预览读取失败，请重新生成预览。') })
     return () => controller.abort()
-  }, [client, view?.articleId, view?.version, view?.preview.path, view?.preview.sha256])
+  }, [client, view?.articleId, view?.version, view?.preview.path, view?.preview.sha256, previewReload])
   useEffect(() => {
     if (view?.suggestionRequest?.status !== 'pending' && view?.imageRequest?.status !== 'pending' && view?.imageRequest?.status !== 'ready') return
     const controller = new AbortController()
@@ -60,7 +72,7 @@ export function CreatorWorkspace({ client }: { client: CreatorClient }) {
     if (!current) return
     const controller = lifetime.current
     const sequence = ++actionSequence.current
-    setBusy(true); setError(''); if (action.type !== 'create-draft') setConfirmDraft(false)
+    setBusy(true); setError(''); setErrorInfo(undefined); setConfirmReconcile(false); if (action.type !== 'create-draft') setConfirmDraft(false)
     try {
       let next = await client.dispatch(current.version, action, controller.signal)
       if (controller.signal.aborted) return
@@ -71,7 +83,7 @@ export function CreatorWorkspace({ client }: { client: CreatorClient }) {
         next = await client.dispatch(next.version, { type: 'refresh-preview' }, controller.signal)
         if (!controller.signal.aborted) accept(next)
       }
-    } catch { if (!controller.signal.aborted) setError('操作未完成。请刷新工作区后重试，原文未更改。') }
+    } catch (error) { if (!controller.signal.aborted) fail(error) }
     finally { if (sequence === actionSequence.current) setBusy(false) }
   }
   async function chooseTheme(theme: string) {
@@ -86,13 +98,15 @@ export function CreatorWorkspace({ client }: { client: CreatorClient }) {
       }
     } finally { if (lifetime.current === controller) themeRunning.current = false }
   }
-  if (!view) return <section className="md2-workspace" aria-label="文章工作区"><p role="status">{error || '正在打开文章…'}</p></section>
+  const recoveryActions = <div className="md2-request-actions"><button type="button" disabled={busy} onClick={() => void reloadArticle()}>重新加载文章</button>{onRecover && errorInfo?.actions.some(action => action === 'open-source' || action === 'recover-revision') && <button type="button" onClick={onRecover}>选择原文恢复</button>}</div>
+  if (!view) return <section className="md2-workspace" aria-label="文章工作区">{error ? <div className="md2-notice" role="alert"><p>{error}</p>{recoveryActions}</div> : <p role="status">正在打开文章…</p>}</section>
   return <section className="md2-workspace" aria-label="文章工作区">
     <header className="md2-header"><div><span className="md2-eyebrow">微信公众号 · 创作工作区</span><h2>{view.title}</h2>{view.preview.status === 'ready' && <p className="md2-publication-title">微信标题：<strong>{view.publicationTitle}</strong>{view.publicationTitle !== view.title && <span>。与工作区名称不同；审阅表示确认使用这个微信标题。</span>}</p>}<p>原文保持不变。先看效果，再决定如何调整。</p></div>
       <div className="md2-header-actions"><button type="button" disabled={busy} onClick={() => void act({ type: 'refresh-preview' })}>更新预览</button><button className="md2-primary" type="button" disabled={busy || comparing || view.preview.status !== 'ready' || displayedKey !== previewKey(view)} onClick={() => void act({ type: 'review-current', previewPath: view.preview.path, previewSha256: view.preview.sha256, publicationTitle: view.publicationTitle })}>{view.reviewed ? '已审阅当前版本' : '审阅当前版本'}</button></div>
     </header>
-    {view.delivery?.status === 'unknown' && <div className="md2-notice" role="alert">{view.delivery.message}</div>}
-    {(error || view.preview.message) && <div className="md2-notice" role="alert">{error || view.preview.message}</div>}
+    {view.recovery?.message && <div className="md2-notice" role="status">{view.recovery.message}</div>}
+    {view.delivery?.status === 'unknown' && <div className="md2-notice" role="alert"><p>{view.delivery.message}</p><p>先到公众号后台核对素材或草稿。解除保护后可重新操作，不会自动重试上传或创建草稿；仍可导出本地 HTML。</p><label><input type="checkbox" aria-label="已核对公众号后台交付结果" checked={confirmReconcile} onChange={event => setConfirmReconcile(event.target.checked)} />我已到公众号后台核对交付结果，确认现在解除防重复保护</label><div className="md2-request-actions"><button type="button" disabled={busy || !confirmReconcile} onClick={() => void act({ type: 'reconcile-delivery', confirmed: confirmReconcile })}>确认已核对，解除保护</button></div></div>}
+    {(error || view.preview.message) && <div className="md2-notice" role="alert">{error || view.preview.message}{error && recoveryActions}</div>}
     {(busy || view.preview.status === 'loading') && <p className="md2-status" role="status">正在更新… 如需授权，请在宿主中确认。</p>}
     {view.preview.status === 'stale' && <p className="md2-status" role="status">显示上一次预览，新的选择尚未完成排版。</p>}
     <div className="md2-body">
@@ -125,7 +139,7 @@ export function CreatorWorkspace({ client }: { client: CreatorClient }) {
           <details><summary>使用已有本地图片</summary><label className="md2-label">用途<select value={imageKind} onChange={event => setImageKind(event.target.value as 'cover' | 'body')}><option value="cover">封面候选</option><option value="body">正文候选</option></select></label><label className="md2-label">会话工作区内的图片路径<input value={imageSource} onChange={event => setImageSource(event.target.value)} placeholder="images/cover.png" /></label><button disabled={busy || !imageSource.trim() || (imageKind === 'body' && !placement)} onClick={() => void act({ type: 'import-local-image', kind: imageKind, anchorId: placement, sourcePath: imageSource, alt: imageKind === 'cover' ? '文章封面' : '正文配图' })}>添加候选，不上传</button></details>
           <p className="md2-help">优先使用宿主图片能力。备用生图会同时上传全部候选到微信素材库，可能产生费用，需要另外确认。</p>
         </section>
-        <section hidden={panel !== 'delivery'} className="md2-delivery" aria-label="交付文章"><h3>带走审阅后的文章</h3>{view.draftEnabled && <div className="md2-draft-prepare"><h4>准备微信草稿</h4><p>先选封面。准备素材会把所选封面和正文图片上传到微信，再展示最终文章供审阅。不会上传未选用的候选。</p><button disabled={busy || !view.coverId || view.preview.status !== 'ready' || (view.delivery?.kind === 'materials' && view.delivery.status === 'unknown')} onClick={() => void act({ type: 'prepare-delivery' })}>{view.preparedForDraft ? '重新准备微信素材' : '准备微信素材与最终预览'}</button>{view.preparedForDraft && <p role="status">最终预览已准备好，请重新审阅当前版本。</p>}</div>}<p>只有当前预览审阅后才能导出。导出内容与真实预览一致，不会发布文章。</p><label className="md2-label">HTML 保存位置<input value={destination} onChange={event => setDestination(event.target.value)} placeholder="exports/article.html" /></label><button className="md2-primary" disabled={busy || !view.reviewed || view.preview.status !== 'ready' || !destination.trim()} onClick={() => void act({ type: 'export-html', destination })}>导出已审阅 HTML</button>{view.draftEnabled && view.preparedForDraft && <div className="md2-draft-confirm"><label><input type="checkbox" checked={confirmDraft} onChange={event => setConfirmDraft(event.target.checked)} />我确认将当前审阅版本保存为未发布的微信草稿，不群发、不发布</label><button className="md2-primary" disabled={busy || !view.reviewed || !confirmDraft || view.delivery?.status === 'unknown'} onClick={() => void act({ type: 'create-draft', confirmed: confirmDraft })}>确认保存微信草稿</button></div>}{view.delivery && <p role="status">{view.delivery.message}<br /><span>{view.delivery.path}</span></p>}</section>
+        <section hidden={panel !== 'delivery'} className="md2-delivery" aria-label="交付文章"><h3>带走审阅后的文章</h3>{view.draftEnabled && <div className="md2-draft-prepare"><h4>准备微信草稿</h4><p>先选封面。准备素材会把所选封面和正文图片上传到微信，再展示最终文章供审阅。不会上传未选用的候选。</p><button disabled={busy || !view.coverId || view.preview.status !== 'ready' || view.delivery?.status === 'unknown'} onClick={() => void act({ type: 'prepare-delivery' })}>{view.preparedForDraft ? '重新准备微信素材' : '准备微信素材与最终预览'}</button>{view.preparedForDraft && <p role="status">最终预览已准备好，请重新审阅当前版本。</p>}</div>}<p>只有当前预览审阅后才能导出。导出内容与真实预览一致，不会发布文章。</p><label className="md2-label">HTML 保存位置<input value={destination} onChange={event => setDestination(event.target.value)} placeholder="exports/article.html" /></label><button className="md2-primary" disabled={busy || !view.reviewed || view.preview.status !== 'ready' || !destination.trim()} onClick={() => void act({ type: 'export-html', destination })}>导出已审阅 HTML</button>{view.draftEnabled && view.preparedForDraft && <div className="md2-draft-confirm"><label><input type="checkbox" checked={confirmDraft} onChange={event => setConfirmDraft(event.target.checked)} />我确认将当前审阅版本保存为未发布的微信草稿，不群发、不发布</label><button className="md2-primary" disabled={busy || !view.reviewed || !confirmDraft || view.delivery?.status === 'unknown'} onClick={() => void act({ type: 'create-draft', confirmed: confirmDraft })}>确认保存微信草稿</button></div>}{view.delivery && <p role="status">{view.delivery.message}<br /><span>{view.delivery.path}</span></p>}</section>
       </aside>
     </div>
   </section>

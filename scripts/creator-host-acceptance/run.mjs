@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import {spawn} from 'node:child_process';
 import {createServer} from 'node:http';
-import {mkdir,readFile,writeFile,copyFile,chmod} from 'node:fs/promises';
+import {mkdir,readFile,writeFile,copyFile,chmod,rename} from 'node:fs/promises';
 import {join,dirname,isAbsolute} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
+import {assertNoAutomaticEffects,assertPendingSuggestion,assertReadOnlyAccess,assertRestoredArticle} from './support.mjs';
+import {exerciseArticlePanel,restoreArticlePanel} from './browser.mjs';
 import assert from 'node:assert/strict';
 const options={};for(let i=2;i<process.argv.length;i++){const key=process.argv[i].replace(/^--/,'');options[key]=['browser','online','fixture-only','simulate-writes'].includes(key)?true:process.argv[++i];}
 for(const k of ['package','host','cli','root'])assert.ok(typeof options[k]==='string'&&isAbsolute(options[k]),'--'+k+' absolute path required');
@@ -22,11 +24,12 @@ const bridgeLog=join(logs,'simulated-writes.jsonl'),bridgeControl=join(runRoot,'
 await writeFile(bridgeLog,'');await writeFile(bridgeControl,JSON.stringify({failDraft:false}));
 let binary=options.cli;
 if(options['simulate-writes']){binary=join(runRoot,'write-bridge.mjs');const template=await readFile(join(dirname(fileURLToPath(import.meta.url)),'write-bridge.mjs'),'utf8');await writeFile(binary,template.replace('/* FIXTURE_CONFIG */ null',JSON.stringify({cli:options.cli,log:bridgeLog,control:bridgeControl})));await chmod(binary,0o700);}
-const fixture=join(runRoot,'fixture-plugin.mjs');await copyFile(join(dirname(fileURLToPath(import.meta.url)),'fixture-plugin.mjs'),fixture);
+const fixture=join(runRoot,'fixture-plugin.mjs');for(const file of ['fixture-plugin.mjs','support.mjs'])await copyFile(join(dirname(fileURLToPath(import.meta.url)),file),join(runRoot,file));
+const fixtureControl=join(runRoot,'fixture-control.json');await writeFile(fixtureControl,JSON.stringify({sequence:0,mode:'workspace-write'}));
 const fixtureResult=join(logs,'trajectory.json');const patch=join(runRoot,'fixture.patch.yml');await writeFile(patch,`- id: dsh-md2wechat
   config: ${JSON.stringify({binaryPath:binary,layoutBaseUrl:api,stateDir:join(runRoot,'private'),enableWechatWriteTools:!!options['simulate-writes'],enableFallbackImageTool:false,credentialRefs:{MD2WECHAT_API_KEY:'MD2WECHAT_API_KEY',WECHAT_APPID:'WECHAT_APPID',WECHAT_SECRET:'WECHAT_SECRET'}})}
 - insert:\n    - id: md2wechat-e2e-fixture\n      name: ${JSON.stringify(pathToFileURL(fixture).href)}\n`);
-const baseEnv={PATH:process.env.PATH,HOME:home,DSH_HOME:join(runRoot,'dsh-home'),TMPDIR:join(runRoot,'tmp'),DSH_TELEMETRY_DISABLED:'1',DSH_PERMISSION_MODE:'workspace-write',MD2WECHAT_BINARY_PATH:binary,WECHAT_APPID:'fixture-appid',WECHAT_SECRET:'fixture-secret',MD2WECHAT_API_KEY:'fixture-local-key',MD2WECHAT_BASE_URL:'http://127.0.0.1:1',E2E_HOST_ROOT:options.host,E2E_WORKSPACE:workspace,E2E_SOURCE:source,E2E_OUTSIDE_SOURCE:outside,E2E_FIXTURE_RESULT:fixtureResult,E2E_STATE_DIR:join(runRoot,'private'),NO_PROXY:'127.0.0.1,localhost'};
+const baseEnv={PATH:process.env.PATH,HOME:home,DSH_HOME:join(runRoot,'dsh-home'),TMPDIR:join(runRoot,'tmp'),DSH_TELEMETRY_DISABLED:'1',DSH_PERMISSION_MODE:'workspace-write',MD2WECHAT_BINARY_PATH:binary,WECHAT_APPID:'fixture-appid',WECHAT_SECRET:'fixture-secret',MD2WECHAT_API_KEY:'fixture-local-key',MD2WECHAT_BASE_URL:'http://127.0.0.1:1',E2E_HOST_ROOT:options.host,E2E_WORKSPACE:workspace,E2E_SOURCE:source,E2E_OUTSIDE_SOURCE:outside,E2E_FIXTURE_RESULT:fixtureResult,E2E_STATE_DIR:join(runRoot,'private'),E2E_FIXTURE_STATE:join(runRoot,'fixture-state.json'),E2E_FIXTURE_CONTROL:fixtureControl,NO_PROXY:'127.0.0.1,localhost'};
 if(options['fixture-only'])baseEnv.E2E_TOOL='md2wechat_start_article';
 // Deliberately wrong loopback config must lose to the signed plugin endpoint.
 // No real account keys or external endpoints exist in this profile.
@@ -35,22 +38,24 @@ await mkdir(join(workspace,'.md2wechat'),{recursive:true});await writeFile(join(
 const cli=join(options.host,'node_modules/@deepseek-ai/dsh/lib/bin.js');
 const installEnv={...baseEnv};for(const key of ['HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy','NODE_USE_ENV_PROXY','XDG_DATA_HOME','XDG_CACHE_HOME','XDG_STATE_HOME'])if(process.env[key])installEnv[key]=process.env[key];
 const report={runRoot,externalWrites:options['simulate-writes']?'simulated-no-WeChat-network':'disabled',packageSha256:createHash('sha256').update(await readFile(options.package)).digest('hex'),hostVersion:JSON.parse(await readFile(join(options.host,'node_modules/@deepseek-ai/dsh/package.json'))).version,checks:{},browser:options.browser?'pending':'not-requested'};
-let host,browser,page;let stdout='',stderr='';let hostExit;
+let host,browser,page;let stdout='',stderr='';let hostExit;let launch,origin,cookie,bootId;let serial=0;
+const redact=text=>text.replace(/token=[^\s&]+/g,'token=[REDACTED]');
 function command(args,env,timeout=120000){return new Promise((ok,no)=>{const p=spawn(process.execPath,[cli,...args],{cwd:workspace,env,stdio:['ignore','pipe','pipe']});let out='',err='';p.stdout.on('data',b=>out+=b);p.stderr.on('data',b=>err+=b);const timer=setTimeout(()=>{p.kill('SIGTERM');no(new Error('command timed out'));},timeout);p.on('error',no);p.on('exit',code=>{clearTimeout(timer);if(code===0)ok({out,err});else no(new Error(`command exit ${code}: ${out}\n${err}`));});});}
 async function waitFor(fn,ms=45000){const until=Date.now()+ms;while(Date.now()<until){const value=await fn();if(value)return value;if(hostExit)throw new Error('host exited: '+JSON.stringify(hostExit)+' '+stderr);await new Promise(r=>setTimeout(r,100));}throw new Error('readiness timeout: '+stderr);}
 try{
  const args=['plugin','--profile','web','add',options.package,...(options.online?[]:['--offline']),...(options.store?['--store-dir',options.store]:[])];const installation=await command(args,installEnv);await writeFile(join(logs,'install.log'),installation.out+installation.err);report.checks.install=true;
- host=spawn(process.execPath,[cli,'--profile','web','--patch',patch,'--host','127.0.0.1','--port','0','--no-open'],{cwd:workspace,env:baseEnv,stdio:['ignore','pipe','pipe']});host.stdout.on('data',b=>stdout+=b);host.stderr.on('data',b=>stderr+=b);host.on('exit',(code,signal)=>hostExit={code,signal});
- const launch=await waitFor(()=>stdout.match(/http:\/\/127\.0\.0\.1:\d+\/\?token=\S+/)?.[0]);const origin=new URL(launch).origin;
- const exchange=await fetch(launch,{redirect:'manual'});assert.equal(exchange.status,303);const cookie=exchange.headers.get('set-cookie').split(';')[0];
+ await startHost();
  const index=await fetch(origin,{headers:{cookie}});const html=await index.text();assert.equal(index.status,200);assert.ok(html.includes('__DSH_BOOT__'));assert.ok(html.includes('@geekjourneyx/dsh-md2wechat'));report.checks.authenticatedHost=true;
- const trajectory=await waitFor(async()=>{try{return JSON.parse(await readFile(fixtureResult,'utf8'));}catch{return null;}});assert.ok(!trajectory.error,trajectory.error);assert.ok(trajectory.calls.length>=1,'real loop did not record tool/call');assert.ok(trajectory.results.length>=1,'real loop did not record tool/result');report.checks.realAgentLoop=true;
+ const trajectory=await waitFor(async()=>{try{const audit=JSON.parse(await readFile(fixtureResult,'utf8'));return audit.bootId===bootId?audit:null;}catch{return null;}});assert.ok(!trajectory.error,trajectory.error);assert.ok(trajectory.calls.length>=1,'real loop did not record tool/call');assert.ok(trajectory.results.length>=1,'real loop did not record tool/result');report.checks.realAgentLoop=true;
  if(options['fixture-only']){report.fixtureOnly=true;report.fixtureCallCount=trajectory.calls.length;report.fixtureResultCount=trajectory.results.length;}
  else {
  assert.ok(trajectory.articleId,'tool/result lacks md2wechat-creator presentation metadata');assert.equal(trajectory.denied.isError,true,'read-only workspace unexpectedly writable');assert.equal(trajectory.outside.isError,true,'outside source unexpectedly readable');report.checks.sandboxReadOnly=true;report.checks.sandboxOutsideSource=true;
- let serial=0;async function rpc(method,args){const response=await fetch(origin+'/api/'+method,{method:'POST',headers:{cookie,'content-type':'application/json',origin},body:JSON.stringify({type:'client-request',rpcId:String(++serial),method,payload:{args}})});assert.equal(response.status,200);return (await response.json()).result;}
  const identity={agentId:trajectory.sessionId,articleId:trajectory.articleId};const read=await rpc('md2wechat/get',identity);assert.equal(read.ok,true,JSON.stringify(read));let view=read.value;
- const other=await rpc('session/create',{request:{cwd:workspace}});assert.equal(other.ok,true);const denied=await rpc('md2wechat/get',{...identity,agentId:other.value.sessionId});assert.equal(denied.ok,false,'cross-session article leaked');report.checks.crossSessionDenied=true;
+ const blankIdentity={agentId:trajectory.panelSessionId};
+ const blank=await rpc('md2wechat/list',blankIdentity);assert.equal(blank.ok,true,JSON.stringify(blank));assert.deepEqual(blank.value,[],'blank session inherited another session articles');assert.equal(trajectory.panelEvents.length,0,'blank fixture already has a tool call');report.checks.blankRetainedSession=true;
+ for(const method of ['get','resume']){const denied=await rpc('md2wechat/'+method,{...identity,...blankIdentity});assert.equal(denied.ok,false,'cross-session article leaked through '+method);}report.checks.crossSessionDenied=true;
+ const articles=await rpc('md2wechat/list',{agentId:identity.agentId});assert.equal(articles.ok,true,JSON.stringify(articles));assert.equal(articles.value.length,1);assert.equal(articles.value[0].articleId,identity.articleId);
+ const reopened=await rpc('md2wechat/open',{agentId:identity.agentId,source,title:'离线验收文章',options:{}});assert.equal(reopened.ok,true,JSON.stringify(reopened));assert.equal(reopened.value.articleId,identity.articleId,'same source created a replacement article');report.checks.stableArticleIdentity=true;
  const missing=await rpc('md2wechat/get',{articleId:trajectory.articleId});assert.equal(missing.ok,false);report.checks.missingSessionDenied=true;
  const theme=view.themes.find(t=>t.name!==view.theme)?.name;assert.ok(theme);let result=await rpc('md2wechat/dispatch',{...identity,version:view.version,action:{type:'select-theme',theme}});assert.equal(result.ok,true,JSON.stringify(result));const oldVersion=view.version;view=result.value;assert.equal(view.theme,theme);report.checks.themeSelection=true;
  result=await rpc('md2wechat/dispatch',{...identity,version:oldVersion,action:{type:'review-current',publicationTitle:view.publicationTitle,previewPath:view.preview.path,previewSha256:view.preview.sha256}});assert.equal(result.ok,false,'stale version accepted');report.checks.staleVersionDenied=true;
@@ -97,14 +102,70 @@ try{
   await rpc('md2wechat/dispatch',{...identity,version:view.version,action:{type:'create-draft',confirmed:true}});assert.equal((await readWrites()).filter(w=>w.command==='create_draft').length,beforeDuplicate,'unknown outcome retried external write');
   report.checks.unknownDraftDuplicateBlocked=true;const deliveryAudit=JSON.parse(await readFile(fixtureResult,'utf8'));assert.equal(deliveryAudit.modelRequests,trajectory.modelRequests,'deterministic delivery requested model');report.checks.deliveryNoModelRequest=true;report.deliveryApprovalTools=deliveryAudit.events.filter(e=>e.type==='approval/asked').map(e=>e.data.toolName);await writeFile(bridgeControl,JSON.stringify({failDraft:false}));assert.deepEqual(await readFile(source),original);
  }
+ let panelState;
  if(options.browser){
-  assert.ok(options.playwright,'--playwright /absolute/playwright-core/index.mjs required');const {chromium}=await import(pathToFileURL(options.playwright).href);browser=await chromium.launch({...(options.chromium?{executablePath:options.chromium}:{}),headless:true,args:['--no-sandbox']});page=await browser.newPage({viewport:{width:1600,height:1100},deviceScaleFactor:1});await page.route('**/*',route=>{const u=new URL(route.request().url());return ['data:','blob:'].includes(u.protocol)||u.origin===origin?route.continue():route.abort();});const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(launch);await page.getByText('离线验收会话',{exact:true}).first().click();const card=page.getByRole('region',{name:'文章工作区'});await card.waitFor({timeout:30000});await page.screenshot({path:join(logs,'01-desktop-renderer-error.png'),fullPage:true});await card.getByRole('button',{name:'更新预览',exact:true}).click();await waitFor(async()=>await card.getByRole('button',{name:'审阅当前版本',exact:true}).isEnabled(),30000);await card.getByRole('button',{name:'审阅当前版本',exact:true}).click();await card.getByRole('button',{name:'已审阅当前版本',exact:true}).waitFor();await card.frameLocator('iframe').getByText('真实 CLI 接收的本地排版响应。',{exact:true}).waitFor();await page.screenshot({path:join(logs,'02-desktop-reviewed-preview.png'),fullPage:true});const themeSelect=card.getByLabel('全部主题');const currentTheme=await themeSelect.inputValue();const alternateTheme=await themeSelect.locator('option').evaluateAll((opts,current)=>opts.find(o=>o.value!==current)?.value,currentTheme);assert.ok(alternateTheme);await themeSelect.selectOption(alternateTheme);await waitFor(async()=>await card.getByRole('button',{name:'审阅当前版本',exact:true}).isEnabled(),30000);await card.frameLocator('iframe').locator('section[data-fixture-theme="'+alternateTheme+'"]').waitFor();await page.screenshot({path:join(logs,'03-desktop-theme-selected.png'),fullPage:true});
-  await card.getByRole('button',{name:'改进',exact:true}).click();await card.getByRole('button',{name:'检查阅读体验',exact:true}).click();await card.getByText('让结尾更清晰',{exact:true}).waitFor({timeout:30000});await page.screenshot({path:join(logs,'04-desktop-suggestion-review.png'),fullPage:true});
-  await page.setViewportSize({width:430,height:932});await page.screenshot({path:join(logs,'05-narrow-suggestion-review.png'),fullPage:true});await card.screenshot({path:join(logs,'06-narrow-workspace.png')});
-  assert.equal(errors.length,0,JSON.stringify(errors));report.browser='passed';report.checks.nativeToolCard=true;await browser.close();browser=undefined;
+  assert.ok(options.playwright,'--playwright /absolute/playwright-core/index.mjs required');
+  const {chromium}=await import(pathToFileURL(options.playwright).href);
+  browser=await chromium.launch({...(options.chromium?{executablePath:options.chromium}:{}),headless:true,args:['--no-sandbox']});
+  page=await browser.newPage({viewport:{width:1440,height:1100},deviceScaleFactor:1});
+  await page.route('**/*',route=>{const u=new URL(route.request().url());return ['data:','blob:'].includes(u.protocol)||u.origin===origin?route.continue():route.abort();});
+  panelState=await exerciseArticlePanel({page,launch,logs,source,trajectory,rpc,waitFor,readAudit,effects,report});
  }
+ // Restart the actual installed host, not just the page or a component.
+ const beforePending=await readAudit();
+ await setFixtureControl({holdSuggestions:true});
+ const current=(await rpc('md2wechat/get',identity)).value;assert.ok(current);
+ const requested=await rpc('md2wechat/dispatch',{...identity,version:current.version,action:{type:'request-suggestions',kind:'layout'}});assert.equal(requested.ok,true,JSON.stringify(requested));assertPendingSuggestion(requested.value);
+ // Wait for the one authorized fixture request to enter its cancellable hold before
+ // taking the baseline. It cannot produce a proposal or a second model request.
+ await waitFor(async()=>{const audit=await readAudit();return audit.heldSuggestionRequests===beforePending.heldSuggestionRequests+1&&audit.modelRequests===beforePending.modelRequests+1;});
+ const saved=(await rpc('md2wechat/get',identity)).value;assert.ok(saved);assertPendingSuggestion(saved);
+ const beforeRestart=await effects();await writeFile(join(logs,'before-restart-audit.json'),JSON.stringify(await readAudit(),null,2));
+ await stopHost();await startHost();
+ const restarted=await readAudit();assert.equal(restarted.resumed,true);assert.equal(restarted.sessionId,identity.agentId);assert.equal(restarted.panelSessionId,trajectory.panelSessionId);assert.equal(restarted.modelRequests,0,'restart requested a model');
+ const resumed=await rpc('md2wechat/resume',identity);assert.equal(resumed.ok,true,JSON.stringify(resumed));assertRestoredArticle(saved,resumed.value);report.checks.hostRestartRestoresArticle=true;report.checks.restartPendingSuggestionCleared=true;
+ const listed=await rpc('md2wechat/list',{agentId:identity.agentId});assert.equal(listed.ok,true);assert.equal(listed.value.find(item=>item.articleId===identity.articleId)?.theme,saved.theme);
+ assertNoAutomaticEffects({...beforeRestart,modelRequests:0},await effects());report.checks.restartNoAutomaticEffects=true;
+ if(options['simulate-writes']){
+  assert.equal(resumed.value.delivery?.status,'unknown','unknown delivery barrier was not restored');
+  const writesBefore=await readFile(bridgeLog,'utf8');
+  const refreshed=await rpc('md2wechat/dispatch',{...identity,version:resumed.value.version,action:{type:'refresh-preview'}});assert.equal(refreshed.ok,true,JSON.stringify(refreshed));assert.equal(refreshed.value.preview.status,'ready');
+  const reviewed=await rpc('md2wechat/dispatch',{...identity,version:refreshed.value.version,action:{type:'review-current',publicationTitle:refreshed.value.publicationTitle,previewPath:refreshed.value.preview.path,previewSha256:refreshed.value.preview.sha256}});assert.equal(reviewed.ok,true,JSON.stringify(reviewed));assert.equal(reviewed.value.reviewed,true);assert.equal(reviewed.value.delivery?.status,'unknown');
+  for(const action of [{type:'prepare-delivery'},{type:'create-draft',confirmed:true}]){const blocked=await rpc('md2wechat/dispatch',{...identity,version:reviewed.value.version,action});assert.equal(blocked.ok,false,'fresh review bypassed unknown delivery barrier');}
+  assert.equal(await readFile(bridgeLog,'utf8'),writesBefore,'restart retried unknown external write');report.checks.restartUnknownDraftBlocked=true;
  }
-}catch(e){report.error=(e.stack||String(e)).replace(/token=[^\s&]+/g,'token=[REDACTED]');if(page)await page.screenshot({path:join(logs,'00-browser-failure.png'),fullPage:true}).catch(()=>{});process.exitCode=1;}
+ // Official read-only mode revokes writes, not reads. Assert the actual policy
+ // transition without presenting it as filesystem-read revocation coverage.
+ await setFixtureControl({mode:'read-only'});
+ const beforeReadOnly=await effects();
+ const reads={list:await rpc('md2wechat/list',{agentId:identity.agentId}),get:await rpc('md2wechat/get',identity),resume:await rpc('md2wechat/resume',identity)};
+ const mutation=await rpc('md2wechat/dispatch',{...identity,version:reads.get.value?.version??resumed.value.version,action:{type:'refresh-preview'}});
+ assertReadOnlyAccess({...reads,mutation},identity.articleId);
+ assertNoAutomaticEffects(beforeReadOnly,await effects());
+ await setFixtureControl({mode:'workspace-write',holdSuggestions:false});report.checks.readOnlyReadsPreservedWritesDenied=true;
+ if(page){await restoreArticlePanel({page,launch,logs,panelState,rpc,waitFor,readAudit,effects,report,workspace});await browser.close();browser=undefined;report.browser='passed';}
+ assert.deepEqual(await readFile(source),original);report.checks.originalUnchanged=true;
+
+ }
+}catch(e){report.error=(e.stack||String(e)).replace(/token=[^\s&]+/g,'token=[REDACTED]');if(page){report.browser='failed';await page.screenshot({path:join(logs,'00-browser-failure.png'),fullPage:true}).catch(()=>{});}process.exitCode=1;}
 finally{
- if(browser)await browser.close();if(host){host.kill('SIGTERM');await waitFor(()=>hostExit,10000).catch(()=>host.kill('SIGKILL'));report.exit=hostExit;}mock.close();await writeFile(join(logs,'host.stdout.log'),stdout.replace(/token=\S+/g,'token=[REDACTED]'));await writeFile(join(logs,'host.stderr.log'),stderr);await writeFile(join(logs,'renderer-requests.json'),JSON.stringify(requestLog,null,2));await writeFile(join(logs,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
+ if(browser)await browser.close();if(host){await stopHost();report.exit=hostExit;}mock.close();await writeFile(join(logs,'host.stdout.log'),redact(stdout));await writeFile(join(logs,'host.stderr.log'),redact(stderr));await writeFile(join(logs,'renderer-requests.json'),JSON.stringify(requestLog,null,2));await writeFile(join(logs,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
 }
+
+async function startHost(){
+ hostExit=undefined;bootId=randomUUID();let launchOutput='';
+ const processHost=spawn(process.execPath,[cli,'--profile','web','--patch',patch,'--host','127.0.0.1','--port','0','--no-open'],{cwd:workspace,env:{...baseEnv,E2E_BOOT_ID:bootId},stdio:['ignore','pipe','pipe']});host=processHost;
+ processHost.stdout.on('data',bytes=>{stdout+=bytes;launchOutput+=bytes;});processHost.stderr.on('data',bytes=>stderr+=bytes);processHost.on('exit',(code,signal)=>{if(host===processHost)hostExit={code,signal};});
+ launch=await waitFor(()=>launchOutput.match(/http:\/\/127\.0\.0\.1:\d+\/\?token=\S+/)?.[0]);origin=new URL(launch).origin;
+ const exchange=await fetch(launch,{redirect:'manual'});assert.equal(exchange.status,303);cookie=exchange.headers.get('set-cookie').split(';')[0];
+ await readAudit();
+}
+async function stopHost(){
+ const processHost=host;if(!processHost)return;
+ if(!hostExit){processHost.kill('SIGTERM');await waitFor(()=>hostExit,10000).catch(async()=>{processHost.kill('SIGKILL');await waitFor(()=>hostExit,5000);});}
+ host=undefined;
+}
+async function rpc(method,args){const response=await fetch(origin+'/api/'+method,{method:'POST',headers:{cookie,'content-type':'application/json',origin},body:JSON.stringify({type:'client-request',rpcId:String(++serial),method,payload:{args}})});assert.equal(response.status,200);return (await response.json()).result;}
+async function readAudit(){const after=Date.now();return waitFor(async()=>{try{const audit=JSON.parse(await readFile(fixtureResult,'utf8'));assert.ok(!audit.error,audit.error);return audit.bootId===bootId&&audit.sampledAt>=after?audit:null;}catch(error){if(error.code==='ENOENT'||error instanceof SyntaxError)return null;throw error;}});}
+async function effects(){const audit=await readAudit();return {modelRequests:audit.modelRequests,rendererRequests:requestLog.length,simulatedWrites:(await readFile(bridgeLog,'utf8')).trim().split('\n').filter(Boolean).length};}
+async function setFixtureControl(update){const current=JSON.parse(await readFile(fixtureControl,'utf8'));await writeFile(fixtureControl+'.tmp',JSON.stringify({...current,...update,sequence:current.sequence+1}));await rename(fixtureControl+'.tmp',fixtureControl);await waitFor(async()=>{const audit=await readAudit();return audit.controlSequence===current.sequence+1;});}

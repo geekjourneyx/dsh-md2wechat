@@ -43,7 +43,7 @@ export function createProposeChangesTool(service: CreatorService) {
     async execute(args, exec) {
       if (!exec.agent) throw new Error('建议必须来自文章所属会话。')
       exec.signal.throwIfAborted()
-      service.propose(exec.agent, args.articleId, args.version, args.requestId, args.changes)
+      await service.propose(exec.agent, args.articleId, args.version, args.requestId, args.changes, exec.signal)
       return { accepted: true }
     },
   })

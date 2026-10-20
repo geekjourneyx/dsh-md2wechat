@@ -1,8 +1,8 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "rootDir": "src/client",
-    "outDir": "lib/types/client",
+    "rootDir": "src",
+    "outDir": "lib/types",
     "lib": [
       "es2024",
       "dom",
@@ -14,7 +14,9 @@
     "jsx": "react-jsx"
   },
   "include": [
-    "src/client"
+    "src/client",
+    "src/creator/errors.ts",
+    "src/creator/types.ts"
   ],
   "exclude": []
 }

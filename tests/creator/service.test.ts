@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest'
+import type { CreatorDocumentV1 } from '../../src/creator/types.ts'
 import { CreatorService } from '../../src/creator/service.ts'
 
 const agent = { id: 'owner-a' } as never
+const documents = new Map<string, CreatorDocumentV1>()
+const barriers = new Map<string, { kind: 'materials' | 'draft'; token: string }>()
 function operations() {
   return {
+    documents: { deliveryStatus: async (id: string) => barriers.get(id), beginDelivery: async (id: string, kind: 'materials' | 'draft') => { const token = 'attempt'; barriers.set(id, { kind, token }); return token }, completeDelivery: async (id: string) => { barriers.delete(id) }, reconcileDelivery: async (id: string) => { barriers.delete(id) }, list: async () => [], read: async (id: string) => documents.get(id), save: async (document: CreatorDocumentV1) => { documents.set(document.articleId, document) } },
+    assertReadable: async () => {},
+    sourceSnapshot: async () => ({ path: 'article.md', sha256: 'a'.repeat(64) }),
+    discoverRevisions: async () => [],
+    loadRevision: async (manifestPath: string) => ({ id: manifestPath.split('/')[1]!, manifestPath, markdown: '# 文章', title: '文章' }),
+    validateCandidates: async (_revision: unknown, candidates: any[]) => candidates,
     prepareDelivery: async () => { throw new Error('not prepared') },
     exportFinal: async () => ({ path: 'final.html' }),
     createDraft: async () => ({ draftId: 'draft' }),
@@ -26,7 +35,7 @@ describe('creator service boundary', () => {
   it('keeps another session from reading or changing an owned article', async () => {
     const service = new CreatorService(() => operations(), 'default')
     const view = await service.open(agent, 'article.md', '', new AbortController().signal)
-    expect(() => service.get({ id: 'other' } as never, view.articleId)).toThrow('文章')
+    await expect(service.get({ id: 'other' } as never, view.articleId)).rejects.toThrow('文章')
     await expect(service.dispatch({ id: 'other' } as never, view.articleId, 1, { type: 'select-theme', theme: 'simple' }, new AbortController().signal)).rejects.toThrow('文章')
   })
   it('selects only the owned runtime theme and renders that choice', async () => {
@@ -50,12 +59,12 @@ it('requires explicit application; stale proposals and concurrent writes cannot 
   const signal = new AbortController().signal
   const opened = await service.open(agent, 'article.md', '', signal)
   const requested = await service.dispatch(agent, opened.articleId, 1, { type: 'request-suggestions', kind: 'title' }, signal)
-  service.propose(agent, opened.articleId, 1, requested.suggestionRequest!.id, [{ title: '标题', reason: '具体', before: '# 文章', after: '# 新文章' }])
-  expect(service.get(agent, opened.articleId).markdown).toBe('# 文章')
-  const suggested = service.get(agent, opened.articleId)
+  await service.propose(agent, opened.articleId, 1, requested.suggestionRequest!.id, [{ title: '标题', reason: '具体', before: '# 文章', after: '# 新文章' }])
+  expect((await service.get(agent, opened.articleId)).markdown).toBe('# 文章')
+  const suggested = await service.get(agent, opened.articleId)
   const applied = await service.dispatch(agent, opened.articleId, 1, { type: 'apply-suggestion', suggestionId: suggested.suggestions[0]!.id }, signal)
   expect(applied).toMatchObject({ version: 2, markdown: '# 新文章', canUndo: true })
-  expect(() => service.propose(agent, opened.articleId, 1, requested.suggestionRequest!.id, [])).toThrow('更新')
+  await expect(service.propose(agent, opened.articleId, 1, requested.suggestionRequest!.id, [])).rejects.toThrow('更新')
   const undone = await service.dispatch(agent, opened.articleId, 2, { type: 'undo-edit' }, signal)
   expect(undone).toMatchObject({ version: 3, markdown: '# 文章', canUndo: false })
 })
@@ -85,7 +94,7 @@ it('rejects image candidates from another request and only selects a cover expli
   const requested = await service.dispatch(agent, view.articleId, 1, { type: 'request-images', kind: 'cover', anchorId: '' }, signal)
   await expect(service.importImage(agent, view.articleId, 1, 'wrong', 'cover.png', '封面', signal)).rejects.toThrow('请求')
   await service.importImage(agent, view.articleId, 1, requested.imageRequest!.id, 'cover.png', '封面', signal)
-  expect(service.get(agent, view.articleId).coverId).toBe('')
+  expect((await service.get(agent, view.articleId)).coverId).toBe('')
   const selected = await service.dispatch(agent, view.articleId, 1, { type: 'select-cover', candidateId: 'cover' }, signal)
   expect(selected).toMatchObject({ coverId: 'cover', version: 2, reviewed: false })
 })
@@ -137,7 +146,7 @@ it('does not let an action awaiting policy validation change a version during de
   await started
   releasePolicy()
   await expect(change).rejects.toThrow('稍候')
-  expect(service.get(agent, opened.articleId)).toMatchObject({ version: 1, theme: 'default' })
+  expect(await service.get(agent, opened.articleId)).toMatchObject({ version: 1, theme: 'default' })
   releaseExport()
   expect(await exported).toMatchObject({ version: 1, theme: 'default', delivery: { status: 'completed' } })
 })

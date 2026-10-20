@@ -5,7 +5,7 @@ import { discoverMarkdownImageDestinations, resolveLocalImagePath } from '../too
 import { randomUUID } from 'node:crypto'
 import { applyExactChange, validateSuggestions } from './edits.ts'
 import type { ProposedChange } from './edits.ts'
-import type { CreatorTheme, CreatorView, CreatorPreviewAsset, CreatorSuggestion, CreatorSuggestionRequest, CreatorDelivery, CreatorImageRequest } from './types.ts'
+import type { CreatorTheme, CreatorView, CreatorPreviewAsset, CreatorSuggestion, CreatorSuggestionRequest, CreatorDelivery, CreatorImageRequest, CreatorDocumentV1, CreatorRecovery } from './types.ts'
 
 export interface CreatorRevision { id: string; manifestPath: string; title: string; markdown: string }
 export interface PreviewAttempt { version: number; signal: AbortSignal; controller: AbortController }
@@ -19,6 +19,8 @@ function sameCandidateIdentity(left: ImageCandidate, right: ImageCandidate): boo
 /** Small article state owner: async render results never override a newer choice. */
 export class CreatorSession {
   version = 1
+  private deferCancellation = false
+  private recovery: CreatorRecovery | null = null
   private imageCandidates: ImageCandidate[] = []
   private imageRequest: CreatorImageRequest | null = null
   private imageBatch: { version: number; revisionId: string; candidateIds: Set<string> } | undefined
@@ -42,7 +44,41 @@ export class CreatorSession {
     public theme: string,
     private readonly artifactRoot = '.md2wechat',
     private readonly draftEnabled = false,
+    private readonly source = { path: '', sha256: '' },
   ) { if (!themes.some(item => item.name === theme)) throw new Error('当前主题不可用，请重新选择。') }
+
+  /** Durable data projection deliberately omits every approval, proof and pending job. */
+  toDocument(): CreatorDocumentV1 {
+    return {
+      schemaVersion: 1, articleId: this.id, ownerSessionId: this.owner,
+      sourcePath: this.source.path, sourceSha256: this.source.sha256, title: this.revision.title,
+      revision: { id: this.revision.id, manifestPath: this.revision.manifestPath }, theme: this.theme,
+      imageCandidates: this.candidates(), coverId: this.coverId,
+      undo: this.undo.map(({ id, manifestPath }) => ({ id, manifestPath })),
+      version: this.version, updatedAt: new Date().toISOString(),
+    }
+  }
+  static fromDocument(document: CreatorDocumentV1, revision: CreatorRevision, undo: CreatorRevision[], themes: CreatorTheme[], theme: string, artifactRoot: string, draftEnabled: boolean, recovery: CreatorRecovery): CreatorSession {
+    const state = new CreatorSession(document.articleId, document.ownerSessionId, revision, themes, theme, artifactRoot, draftEnabled, { path: document.sourcePath, sha256: document.sourceSha256 })
+    state.version = document.version; state.undo = undo; state.imageCandidates = document.imageCandidates.map(image => ({ ...image })); state.coverId = document.coverId
+    state.recovery = recovery
+    return state
+  }
+  /** A failed save discards only this candidate, never rolls back a concurrently committed state. */
+  fork(): CreatorSession {
+    const copy = Object.assign(Object.create(CreatorSession.prototype) as CreatorSession, this)
+    copy.imageCandidates = this.candidates(); copy.undo = [...this.undo]; copy.suggestions = this.suggestions.map(item => ({ ...item }))
+    copy.imageRequest = this.imageRequest ? { ...this.imageRequest } : null
+    copy.suggestionRequest = this.suggestionRequest ? { ...this.suggestionRequest } : null
+    copy.imageBatch = this.imageBatch ? { ...this.imageBatch, candidateIds: new Set(this.imageBatch.candidateIds) } : undefined
+    copy.deferCancellation = true
+    return copy
+  }
+  committed(previous: CreatorSession): void {
+    if (previous.attempt && previous.attempt !== this.attempt) previous.attempt.controller.abort()
+    this.deferCancellation = false
+  }
+  private cancelPreview(): void { if (!this.deferCancellation) this.attempt?.controller.abort(); this.attempt = undefined }
 
   assertOwner(owner: string): void { if (owner !== this.owner) throw new Error('这篇文章不属于当前会话，请重新打开。') }
   assertVersion(version: number): void { if (version !== this.version) throw new Error('文章已经更新，请查看最新预览后重试。') }
@@ -50,8 +86,7 @@ export class CreatorSession {
     this.assertVersion(version)
     if (!this.themes.some(item => item.name === theme)) throw new Error('该主题不可用，请选择列表中的主题。')
     if (this.theme === theme) return
-    this.attempt?.controller.abort()
-    this.attempt = undefined
+    this.cancelPreview()
     this.delivery = null; this.theme = theme; this.version++; this.error = ''; this.reviewedVersion = 0
     this.suggestions = []; this.suggestionRequest = null; this.imageRequest = null
   }
@@ -119,7 +154,7 @@ export class CreatorSession {
     this.assertVersion(version)
     if (this.coverId === id) return
     this.coverId = id; this.version++; this.reviewedVersion = 0; this.delivery = null
-    this.attempt?.controller.abort(); this.attempt = undefined; this.imageRequest = null; this.suggestions = []; this.suggestionRequest = null
+    this.cancelPreview(); this.imageRequest = null; this.suggestions = []; this.suggestionRequest = null
   }
   rebindCandidates(candidates: ImageCandidate[]): void {
     const retained = new Map<string, ImageCandidate>()
@@ -166,7 +201,7 @@ export class CreatorSession {
     this.assertVersion(version)
     if (remember) { this.undo.push(this.revision); if (this.undo.length > 20) this.undo.shift() }
     else this.undo.pop()
-    this.attempt?.controller.abort(); this.attempt = undefined
+    this.cancelPreview()
     this.revision = revision; this.version++; this.reviewedVersion = 0; this.delivery = null; this.error = ''
     this.suggestions = []; this.suggestionRequest = null; this.imageRequest = null
   }
@@ -184,9 +219,10 @@ export class CreatorSession {
     this.reviewedVersion = 0
     return true
   }
-  failPreview(attempt: PreviewAttempt, message: string): void {
-    if (this.attempt !== attempt) return
+  failPreview(attempt: PreviewAttempt, message: string): boolean {
+    if (this.attempt !== attempt) return false
     this.attempt = undefined; this.error = message; this.reviewedVersion = 0
+    return true
   }
   review(version: number): void {
     this.assertVersion(version)
@@ -201,13 +237,14 @@ export class CreatorSession {
     if (this.reviewedVersion !== version) throw new Error('请先审阅当前版本，再导出或保存草稿。')
     this.proof()
   }
-  delivered(result: CreatorDelivery): void { this.delivery = { ...result } }
+  delivered(result: CreatorDelivery | null): void { this.delivery = result ? { ...result } : null }
   proof(): CreatorPreviewProof {
     if (!this.preview || this.previewVersion !== this.version || this.view().preview.status !== 'ready') throw new Error('请先更新预览。')
     return this.preview
   }
   view(): CreatorView {
     return {
+      recovery: this.recovery ? { ...this.recovery } : null,
       preparedForDraft: !!this.final(), draftEnabled: this.draftEnabled,
       imageCandidates: this.candidates().map(image => ({ ...image, path: `${this.artifactRoot}/${image.path}` })), imagePlacements: /^[a-f0-9]{64}$/u.test(this.revision.id) ? paragraphImageAnchors(this.revision.id, this.revision.markdown).map(anchor => ({ id: anchor.id, context: anchor.context, hasImage: !!anchor.image })) : [],
       imageRequest: this.imageRequest ? { ...this.imageRequest } : null, coverId: this.coverId,
