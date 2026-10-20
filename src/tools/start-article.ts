@@ -29,7 +29,6 @@ export interface StartArticleToolDependencies {
  */
 export function createStartArticleOperation({
   fs,
-  gateway,
   workspace,
   store,
   now = () => new Date(),
@@ -82,7 +81,7 @@ export function createStartArticleOperation({
         articleSha256: revision.articleSha256,
         ...(manifest.title === undefined ? {} : { title: manifest.title }),
         locations,
-      }, gateway?.version)
+      })
   }
 }
 

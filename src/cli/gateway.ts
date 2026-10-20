@@ -45,7 +45,7 @@ export interface CliRunOptions {
 export interface CliGateway {
   /** Last successfully observed version, scoped to this gateway only. */
   readonly version?: string | undefined
-  /** Re-probe version and required capabilities before version-bound operations. */
+  /** Observe current version and capabilities; this does not bind another run's executable identity. */
   probeVersion?(signal?: AbortSignal): Promise<string>
   /** Resolve the explicit executable or host PATH command in the subprocess provider's execution world. */
   resolve(signal?: AbortSignal): Promise<string>
@@ -108,7 +108,7 @@ export function createCliGateway(ctx: Context, config: ResolvedConfig): CliGatew
   return gateway
 }
 
-/** Fresh version identity for signed previews; injected gateways may provide a known identity. */
+/** Fresh compatibility observation, not execution provenance for a separate command. */
 export async function probeCliVersion(gateway: CliGateway | undefined, signal?: AbortSignal): Promise<string> {
   return gateway?.probeVersion === undefined ? gateway?.version ?? 'unknown' : gateway.probeVersion(signal)
 }

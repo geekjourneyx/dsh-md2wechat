@@ -1,4 +1,4 @@
-import { PLUGIN_VERSION } from '../version.ts'
+import { PLUGIN_VERSION, UNKNOWN_CLI_VERSION } from '../version.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { JobId, JobOutcome } from '@deepseek-ai/dsh-jobs'
@@ -292,7 +292,7 @@ async function processImageItem(input: RunBatchInput, plan: LoadedImagePlan, ite
     const current = await loadCurrentArticleRevision(input.store, input.prepared.current.manifestPath, signal)
     if (current.revision.id !== plan.revisionId) throw new Error('article revision changed before image execution')
     const argv = executionArgv(item, current.articleAuthorization.processPath)
-    const cliVersion = await probeCliVersion(input.gateway, signal)
+    await probeCliVersion(input.gateway, signal)
     const response = await input.gateway.run(argv, {
       env: input.env, secrets: input.secrets, signal,
       beforeSpawn: async (spawnSignal) => {
@@ -310,7 +310,10 @@ async function processImageItem(input: RunBatchInput, plan: LoadedImagePlan, ite
       plan, item, bytes: acquired.bytes, mimeType: acquired.mimeType,
       remoteUrl: projected.originalUrl, mediaId: projected.mediaId, wechatUrl: projected.wechatUrl,
       createdAt: validNow(input.now),
-      cliVersion,
+      // Compatibility probes are separate processes. The public subprocess API
+      // does not bind their executable identity to this generation command, so
+      // neither a cached version nor matching before/after probes prove it.
+      cliVersion: UNKNOWN_CLI_VERSION,
     })
     targetOwnership = await publishExclusiveOrIdentical(input.store, item.targetPath, acquired.bytes, signal, targetOwnership)
     const resultPath = imageResultPath(plan, item)

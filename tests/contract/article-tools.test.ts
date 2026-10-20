@@ -240,6 +240,23 @@ describe('article preparation tools', () => {
     await rm(stateDir, { recursive: true, force: true })
   })
 
+  it('reports unknown for source-only starts without observing or invoking the CLI', async () => {
+    await writeFile(join(workspace, 'article.md'), '# Source only\n')
+    let versionReads = 0
+    let cliCalls = 0
+    const gateway: CliGateway = {
+      get version() { versionReads += 1; return '3.8.0' },
+      async resolve() { cliCalls += 1; throw new Error('unexpected CLI resolution') },
+      async run() { cliCalls += 1; throw new Error('unexpected CLI execution') },
+      async probeVersion() { cliCalls += 1; return '3.9.0' },
+    }
+    const start = createStartArticleOperation({ fs: fs as never, workspace, store, gateway })
+    const result = await start({ sourcePath: 'article.md' }, { signal, callId: 'source-only' as never })
+    expect(result.cliVersion).toBe('unknown')
+    expect(versionReads).toBe(0)
+    expect(cliCalls).toBe(0)
+  })
+
   it('imports local images into the creator revision without changing the source', async () => {
     await mkdir(join(workspace, 'images'))
     const original = '# Article\n\n![photo](images/photo.png)\n'
