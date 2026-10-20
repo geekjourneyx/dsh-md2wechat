@@ -9,8 +9,9 @@ const ALLOWED_ROOTS = new Set([
   '.gitignore', 'CHANGELOG.md', 'LICENSE', 'README.md', 'cordis.patch.yml',
   'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'scripts', 'src',
   'tests', 'tsconfig.json', 'tsconfig.prepare.json', 'tsdown.config.ts',
-  'tsdown.prepare.config.ts', 'vitest.config.ts', 'tsconfig.client.json', '.github',
+  'tsdown.prepare.config.ts', 'vitest.config.ts', 'tsconfig.client.json', '.github', 'assets',
 ])
+const README_ASSETS = new Set(['assets', 'assets/readme', 'assets/readme/readme-hero.webp'])
 const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'lib', 'coverage'])
 
 /** Run Git and return whether it completed successfully. */
@@ -63,6 +64,9 @@ async function inspectRepository(root, violations) {
       if (reason !== undefined) record(violations, path, reason)
       if (directory === root && !ALLOWED_ROOTS.has(entry.name)) {
         record(violations, path, 'unexpected repository root entry')
+      }
+      if (rootEntry === 'assets' && (!README_ASSETS.has(path.split(sep).join('/')) || entry.isSymbolicLink())) {
+        record(violations, path, 'unexpected README asset')
       }
       if (entry.isDirectory()) await walk(absolute)
       if (entry.isSymbolicLink()) await lstat(absolute)

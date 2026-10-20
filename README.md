@@ -1,5 +1,7 @@
 # dsh-md2wechat
 
+<img src="./assets/readme/readme-hero.webp" alt="dsh-md2wechat — Your article first. Editorial illustration of a Markdown draft becoming a polished article, not a product screenshot." width="100%">
+
 **Your article first. Tools in the background.**
 
 Turn a Markdown article into a reviewed WeChat layout inside [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Compare themes, choose edits and images, then export the HTML you reviewed or save an unpublished draft.

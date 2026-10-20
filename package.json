@@ -47,6 +47,7 @@
     "lib/types/**/*.d.ts",
     "cordis.patch.yml",
     "README.md",
+    "assets/readme/readme-hero.webp",
     "CHANGELOG.md",
     "LICENSE",
     "lib/typert.host.js",
