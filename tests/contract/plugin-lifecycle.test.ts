@@ -16,8 +16,8 @@ const BASE_TOOLS = [
   'md2wechat_export',
 ] as const
 
-const CREATOR_TOOLS = ['md2wechat_open_workspace', 'md2wechat_propose_changes'] as const
-const ALL_TOOLS = [...BASE_TOOLS, 'md2wechat_create_draft', 'md2wechat_generate_images', ...CREATOR_TOOLS] as const
+const CREATOR_TOOLS = ['md2wechat_open_workspace', 'md2wechat_propose_changes', 'md2wechat_import_creator_image'] as const
+const ALL_TOOLS = [...BASE_TOOLS, 'md2wechat_create_draft', 'md2wechat_generate_images', ...CREATOR_TOOLS, 'md2wechat_generate_creator_images'] as const
 
 interface FakeSubprocessOptions {
   malformed?: boolean
@@ -223,16 +223,12 @@ describe('feature gates and lifecycle ownership', () => {
     expect(visibleTools(fixture.ctx)).toEqual(expected)
     expect(new Set(fixture.registrations).size).toBe(fixture.registrations.length)
     const text = await promptText(fixture.ctx)
-    expect(text).toContain('md2wechat_start_article')
-    expect(text).toContain('md2wechat_improve_article')
-    expect(text).toContain('md2wechat_plan_images')
-    expect(text).toContain('md2wechat_preview')
-    expect(text).toContain('md2wechat_export')
+    expect(text).toContain('md2wechat_open_workspace first')
+    expect(text).toContain('not the default creator experience')
     expect(text).toContain('signed preview')
-    expect(text.includes('md2wechat_create_draft')).toBe(write)
-    expect(text.includes('unpublished WeChat draft')).toBe(write)
-    expect(text.includes('md2wechat_generate_images')).toBe(write && fallback)
-    expect(text.includes('no other image-generation capability')).toBe(write && fallback)
+    expect(text.includes('unpublished draft')).toBe(write)
+    expect(text.includes('md2wechat_generate_creator_images')).toBe(write && fallback)
+    expect(text.includes('uploads every generated candidate')).toBe(write && fallback)
     if (write) {
       expect(text).toContain('never publishes or mass-sends')
     }

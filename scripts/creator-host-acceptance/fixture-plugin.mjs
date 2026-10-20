@@ -47,7 +47,7 @@ class FixtureAdapter extends LlmAdapter {
 export function apply(ctx){
  ctx.llm.registerAdapter(['creator-fixture'],new FixtureAdapter());
  // Approval remains real and audited; only this explicit isolated fixture answers.
- ctx.on('approval/request',async(req,next)=>req.toolName==='md2wechat_preview'?'allowed-once':next());
+ ctx.on('approval/request',async(req,next)=>['md2wechat_preview','md2wechat_prepare_delivery','md2wechat_export','md2wechat_create_draft'].includes(req.toolName)?'allowed-once':next());
  void ctx.loader.await().then(async()=>{
   const target=[...ctx.loader.entries()].find(e=>e.options.id==='dsh-md2wechat');
   if(!target)throw new Error('Installed plugin row missing');
@@ -69,7 +69,7 @@ export function apply(ctx){
   await deniedHandle.dispose();
   const outside=await ctx.tools.execute({callId:'e2e-outside',name:process.env.E2E_TOOL||'md2wechat_open_workspace',arguments:{sourcePath:process.env.E2E_OUTSIDE_SOURCE},agent,signal:new AbortController().signal});
   const audit={events:events.filter(e=>['turn/start','turn/end','tool/call','tool/result','approval/asked','approval/decided'].includes(e.type)),denied,outside,sessionId:agent.id,calls,results,articleId:result?.data.meta?.articleId,toolCount:ctx.tools.schemas().length};
-  const persist=async()=>{audit.events=agent.session.snapshotEvents().filter(e=>['turn/start','turn/end','tool/call','tool/result','approval/asked','approval/decided'].includes(e.type));audit.modelRequests=modelRequests;await writeFile(process.env.E2E_FIXTURE_RESULT+'.tmp',JSON.stringify(audit,null,2));await rename(process.env.E2E_FIXTURE_RESULT+'.tmp',process.env.E2E_FIXTURE_RESULT);};
+  const persist=async()=>{audit.events=agent.session.snapshotEvents().filter(e=>['turn/start','turn/end','tool/call','tool/result','approval/asked','approval/decided'].includes(e.type));audit.modelRequests=modelRequests;audit.agentStatus=agent.status;audit.sampledAt=Date.now();await writeFile(process.env.E2E_FIXTURE_RESULT+'.tmp',JSON.stringify(audit,null,2));await rename(process.env.E2E_FIXTURE_RESULT+'.tmp',process.env.E2E_FIXTURE_RESULT);};
   await persist();
   let pending=false;const timer=setInterval(()=>{if(!pending){pending=true;persist().finally(()=>pending=false);}},100);
   ctx.effect(()=>()=>clearInterval(timer));

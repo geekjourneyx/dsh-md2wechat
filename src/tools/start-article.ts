@@ -63,8 +63,10 @@ export function createStartArticleOperation({
       await assertSourceUnchanged(fs, workspace, args.sourcePath, source, bytes, exec.signal)
       for (const image of images) {
         const current = await fs.resolve(image.source, { signal: exec.signal })
+        if (current.targetKey !== image.targetKey) throw new Error('正文图片位置已经变化，请重新打开文章。')
         const currentBytes = await fs.readBytes(current, exec.signal, MAX_SOURCE_BYTES)
-        if (current.targetKey !== image.targetKey || sha256(currentBytes) !== sha256(image.bytes)) throw new Error('正文图片已经变化，请重新打开文章。')
+        const after = await fs.resolve(image.source, { signal: exec.signal })
+        if (after.targetKey !== image.targetKey || sha256(currentBytes) !== sha256(image.bytes)) throw new Error('正文图片已经变化，请重新打开文章。')
         await writeIdenticalOrNew(store, `revisions/${revision.id}/${image.path}`, image.bytes, exec.signal)
       }
       await writeIdenticalOrNew(store, manifestPath, encodeJson(manifest), exec.signal)

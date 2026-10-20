@@ -7,17 +7,20 @@ export interface CreatorSuggestionRequest { id: string; kind: 'layout' | 'title'
 export interface CreatorImageCandidate { id: string; revisionId: string; kind: 'cover' | 'body'; path: string; sha256: string; contentType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'; byteSize: number; alt: string }
 export interface CreatorImagePlacement { id: string; context: string; hasImage: boolean }
 export interface CreatorImageRequest { id: string; kind: 'cover' | 'body'; anchorId: string; status: 'pending' | 'ready' | 'error' }
-export interface CreatorDelivery { kind: 'export' | 'draft'; status: 'completed' | 'unknown'; path: string; message: string }
+export interface CreatorDelivery { kind: 'export' | 'draft' | 'materials'; status: 'completed' | 'unknown'; path: string; message: string }
 export interface CreatorView {
   schemaVersion: 1
   articleId: string
   version: number
   title: string
+  publicationTitle: string
   markdown: string
   theme: string
   themes: CreatorTheme[]
   preview: CreatorPreview
   reviewed: boolean
+  preparedForDraft: boolean
+  draftEnabled: boolean
   imageCandidates: CreatorImageCandidate[]
   imagePlacements: CreatorImagePlacement[]
   imageRequest: CreatorImageRequest | null
@@ -30,7 +33,7 @@ export interface CreatorView {
 export type CreatorAction =
   | { type: 'select-theme'; theme: string }
   | { type: 'refresh-preview' }
-  | { type: 'review-current' }
+  | { type: 'review-current'; previewPath: string; previewSha256: string; publicationTitle: string }
 
   | { type: 'request-suggestions'; kind: 'layout' | 'title' | 'polish' }
   | { type: 'apply-suggestion'; suggestionId: string }
@@ -41,3 +44,6 @@ export type CreatorAction =
   | { type: 'select-cover'; candidateId: string }
   | { type: 'place-image'; candidateId: string; anchorId: string }
   | { type: 'remove-image'; anchorId: string }
+  | { type: 'import-local-image'; kind: 'cover' | 'body'; anchorId: string; sourcePath: string; alt: string }
+  | { type: 'prepare-delivery' }
+  | { type: 'create-draft'; confirmed: boolean }

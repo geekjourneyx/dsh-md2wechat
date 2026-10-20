@@ -8,15 +8,18 @@ import { createStartArticleOperation } from '../../src/tools/start-article.ts'
 import { loadCurrentArticleRevision } from '../../src/tools/improve-article.ts'
 import { preparePreviewInputs } from '../../src/tools/preview.ts'
 import { ArtifactStore } from '../../src/workspace/artifact-store.ts'
+import type { ImageCandidate } from '../../src/creator/image-choices.ts'
 
 interface Target { targetKey: string; displayPath: string }
 const roots: string[] = []
 const encoder = new TextEncoder()
 const signal = new AbortController().signal
 const original = '# Original\r\n\r\nKeep these exact spaces.  \r\n'
+const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0])
+const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
-async function fixture(markdown = original, title = 'Original') {
+async function fixture(markdown = original, title = 'Original', keepImage: string | Uint8Array = 'verified local image') {
   const root = await mkdtemp(join(tmpdir(), 'creator-revise-')); roots.push(root)
   const hooks: { beforeWrite?: (path: string) => Promise<void> } = {}
   const fs = {
@@ -62,7 +65,7 @@ async function fixture(markdown = original, title = 'Original') {
   const store = new ArtifactStore(fs as never, root, '.articles', { beforeNativeStage: beforeWrite, afterExclusiveStage: beforeWrite })
   await mkdir(join(root, 'images'))
   await writeFile(join(root, 'source.md'), markdown)
-  await writeFile(join(root, 'images', 'keep.png'), 'verified local image')
+  await writeFile(join(root, 'images', 'keep.png'), keepImage)
   await writeFile(join(root, 'images', 'remove.png'), 'removed image')
   const started = await createStartArticleOperation({ fs: fs as never, workspace: root, store, importImages: true })(
     { sourcePath: 'source.md', title }, { signal, agent: {} as never, callId: 'start' as never },
@@ -74,6 +77,12 @@ async function fixture(markdown = original, title = 'Original') {
 async function manifests(store: ArtifactStore): Promise<string[]> {
   const entries = await readdir(store.resolve('revisions'), { recursive: true })
   return entries.filter(path => path.endsWith('manifest.json'))
+}
+
+async function addedImage(store: ArtifactStore, previous: CreatorRevision, id: string, kind: ImageCandidate['kind'] = 'body'): Promise<ImageCandidate> {
+  const path = `revisions/${previous.id}/images/${id}.png`
+  await store.createExclusive(path, png, signal)
+  return { id, revisionId: previous.id, kind, path, sha256: digest(png), byteSize: png.byteLength, contentType: 'image/png', alt: id }
 }
 
 describe('immutable creator revisions', () => {
@@ -179,4 +188,72 @@ describe('immutable creator revisions', () => {
     await expect(reviseCreatorArticle(store, previous, '# Edited', controller.signal)).rejects.toThrow('cancelled during')
     expect(await manifests(store)).toEqual([join(previous.id, 'manifest.json')])
   })
+
+  it('copies verified new body and all optional cover candidates without inheriting old authority', async () => {
+    const { store, previous } = await fixture()
+    const body = await addedImage(store, previous, 'body')
+    const covers = await Promise.all(['one', 'two', 'three'].map(id => addedImage(store, previous, id, 'cover')))
+    await store.createExclusive(`revisions/${previous.id}/plans/old.json`, encoder.encode('old plan'), signal)
+    await store.createExclusive(`revisions/${previous.id}/image-results/old.json`, encoder.encode('old upload'), signal)
+    const markdown = `${original}\n![new](images/body.png)`
+    const next = await reviseCreatorArticle(store, previous, markdown, signal, [body, ...covers])
+    const prepared = await preparePreviewInputs(store, next.manifestPath, signal)
+    expect(prepared.localImages.map(image => image.source)).toEqual(['images/body.png'])
+    for (const image of [body, ...covers]) {
+      expect(await store.read(image.path.replace(previous.id, next.id))).toEqual(Buffer.from(png))
+    }
+    const files = await readdir(store.resolve(`revisions/${next.id}`), { recursive: true })
+    expect(files.some(path => /plans|results|previews/u.test(path))).toBe(false)
+    expect(await store.read(`revisions/${previous.id}/article.md`)).toEqual(Buffer.from(original))
+  })
+
+  it('deduplicates an approved existing image and retains it once', async () => {
+    const { store, previous } = await fixture('# Original\n![keep](images/keep.png)\n', 'Original', png)
+    const image: ImageCandidate = { id: 'keep', revisionId: previous.id, kind: 'body', path: `revisions/${previous.id}/images/keep.png`, sha256: digest(png), byteSize: png.byteLength, contentType: 'image/png', alt: 'Keep' }
+    const next = await reviseCreatorArticle(store, previous, '# Edited\n![keep](images/keep.png)\n', signal, [image, image])
+    expect((await preparePreviewInputs(store, next.manifestPath, signal)).localImages).toHaveLength(1)
+    expect(await readdir(store.resolve(`revisions/${next.id}/images`))).toEqual(['keep.png'])
+  })
+
+  it('does not let an approved candidate authorize a different destination or remote image', async () => {
+    const { store, previous } = await fixture()
+    const image = await addedImage(store, previous, 'body')
+    for (const target of ['images/not-approved.png', 'https://example.test/new.png', '../body.png']) {
+      await expect(reviseCreatorArticle(store, previous, `${original}\n![new](${target})`, signal, [image])).rejects.toThrow('图片')
+    }
+    expect(await manifests(store)).toEqual([join(previous.id, 'manifest.json')])
+  })
+
+  it.each(['stale', 'digest', 'bytes'] as const)('rejects %s candidate metadata before publishing a new revision', async failure => {
+    const { store, previous } = await fixture()
+    const image = await addedImage(store, previous, 'body')
+    if (failure === 'stale') image.revisionId = 'a'.repeat(64)
+    if (failure === 'digest') image.sha256 = 'a'.repeat(64)
+    if (failure === 'bytes') await writeFile(store.resolve(image.path), Uint8Array.from([1, ...png.slice(1)]))
+    await expect(reviseCreatorArticle(store, previous, original, signal, [image])).rejects.toThrow(failure === 'stale' ? '版本' : '变化')
+    expect(await manifests(store)).toEqual([join(previous.id, 'manifest.json')])
+  })
+
+  it('rejects duplicate new local image references before creating a child', async () => {
+    const { store, previous } = await fixture()
+    const image = await addedImage(store, previous, 'body')
+    await expect(reviseCreatorArticle(store, previous, `${original}\n![a](images/body.png)\n![b](images/body.png)`, signal, [image])).rejects.toThrow('duplicate')
+    expect(await manifests(store)).toEqual([join(previous.id, 'manifest.json')])
+  })
+
+  it('rechecks candidate identities and copied bytes before publishing the child manifest', async () => {
+    const { store, previous, hooks } = await fixture()
+    const image = await addedImage(store, previous, 'body')
+    let changed = false
+    hooks.beforeWrite = async destination => {
+      if (changed || destination.includes(previous.id)) return
+      changed = true
+      const path = store.resolve(image.path)
+      await writeFile(`${path}.replacement`, png); await rename(`${path}.replacement`, path)
+    }
+    await expect(reviseCreatorArticle(store, previous, `${original}\n![new](images/body.png)`, signal, [image])).rejects.toThrow(/changed|变化/u)
+    expect(changed).toBe(true)
+    expect(await manifests(store)).toEqual([join(previous.id, 'manifest.json')])
+  })
 })
+import { createHash } from 'node:crypto'

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { JobId, JobOutcome } from '@deepseek-ai/dsh-jobs'
 import type { CredentialEnvironmentName } from '../config.ts'
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { CliEnvelope } from '../cli/protocol.ts'
 import type { CliGateway } from '../cli/gateway.ts'
@@ -74,8 +75,8 @@ export interface GenerateImagesToolDependencies {
   reportAuditFailure: (message: string) => void
 }
 
-/** Create the one-approval background fallback image tool. */
-export function createGenerateImagesTool({
+/** Run approved fallback generation with caller-supplied stores and host services. */
+export function createGenerateImagesOperation({
   gateway,
   store,
   state,
@@ -104,6 +105,89 @@ export function createGenerateImagesTool({
   if (typeof credentials.resolve !== 'function') throw new TypeError('credential resolver is required')
   if (typeof approval.request !== 'function') throw new TypeError('approval service is required')
   if (typeof reportAuditFailure !== 'function') throw new TypeError('image audit failure reporter is required')
+  return async (
+    args: { manifestPath: string; planPaths: readonly string[] },
+    exec: Pick<ToolRunContext, 'agent' | 'callId' | 'signal'>,
+  ) => {
+  try {
+    assertKnownArguments(args, ['manifestPath', 'planPaths'])
+    exec.signal.throwIfAborted()
+    const planPaths = validatePlanPaths(args.planPaths)
+    const prepared = await prepareBatch(gateway, store, state, args.manifestPath, planPaths, exec.signal)
+    const planIds = prepared.plans.map(plan => plan.planId)
+    if (prepared.remaining.length === 0) {
+      return domainResult({ kind: 'completed' as const, planIds, resultPaths: [...prepared.completedPaths] })
+    }
+    if (exec.agent === undefined) throw new SafeGenerateImagesError('fallback image generation requires an active agent')
+    assertConfiguredRefs(credentialRefs)
+    const outcome = await approval.request({
+      agent: exec.agent,
+      toolName: TOOL_NAME,
+      callId: exec.callId,
+      signal: exec.signal,
+      reason: 'The configured md2wechat image provider will generate the remaining images and upload each generated image to WeChat material storage.',
+    })
+    if (outcome !== 'allowed-once') throw new SafeGenerateImagesError(outcome === 'cancelled' ? 'fallback image generation was cancelled' : 'fallback image generation was not approved')
+    exec.signal.throwIfAborted()
+    let resolved: Awaited<ReturnType<typeof resolveOperationEnv>>
+    try { resolved = await resolveOperationEnv(REQUIRED_CREDENTIALS, { credentialRefs, credentials }) }
+    catch { throw new SafeGenerateImagesError('fallback image credentials could not be resolved') }
+    for (const name of REQUIRED_CREDENTIALS) if (resolved.env[name] === undefined) throw new SafeGenerateImagesError('fallback image credentials are incomplete')
+    exec.signal.throwIfAborted()
+
+    const owner = exec.agent.id
+    const registration = deferred<JobId | undefined>()
+    const controller = new AbortController()
+    let cancelRequested = false
+    const worker = async (): Promise<JobOutcome> => {
+      try {
+        const jobId = await registration.promise
+        if (jobId === undefined) return { status: 'failed', detail: 'registration failed', result: safeJobOutput('failed', prepared.remaining.length, 0, []) }
+        return await runBatch({
+          jobId, ownerSession: String(owner), prepared, gateway, store, env: resolved.env, secrets: resolved.secrets,
+          signal: controller.signal, imageJobTimeoutMs, imageMaxBytes, imageMaxRedirects,
+          imageAcquisitionTimeoutMs, acquire, now,
+          ...(claimNonce === undefined ? {} : { claimNonce }),
+          claimOwnerIsLive: claimOwnerIsLive ?? (claim => defaultClaimOwnerIsLive(jobs, claim, owner, imageJobTimeoutMs)),
+          reportAuditFailure,
+        })
+      } catch {
+        return controller.signal.aborted
+          ? { status: 'killed', detail: 'cancelled', result: safeJobOutput('killed', prepared.remaining.length, 0, []) }
+          : { status: 'failed', detail: 'image processing failed', result: safeJobOutput('failed', prepared.remaining.length, 0, []) }
+      }
+    }
+    const done = Promise.resolve().then(worker).catch((): JobOutcome => ({ status: 'failed', detail: 'image processing failed' }))
+    let jobId: JobId
+    try {
+      jobId = jobs.start({
+        kind: JOB_KIND,
+        label: `Generate ${prepared.remaining.length} approved WeChat image${prepared.remaining.length === 1 ? '' : 's'}`,
+        outputLimitBytes: JOB_OUTPUT_LIMIT_BYTES,
+        owner,
+        run: () => ({
+          cancel: () => { if (!cancelRequested) { cancelRequested = true; controller.abort(new Error('job cancelled')) } },
+          done,
+        }),
+      })
+    } catch {
+      controller.abort(new Error('job registration failed'))
+      registration.resolve(undefined)
+      throw new SafeGenerateImagesError('fallback image background job could not be started')
+    }
+    setImmediate(() => registration.resolve(jobId))
+    return domainResult({ kind: 'background' as const, jobId, planIds })
+  } catch (error) {
+    if (error instanceof SafeGenerateImagesError) throw error
+    if (exec.signal.aborted) throw new SafeGenerateImagesError('fallback image generation was cancelled')
+    throw new SafeGenerateImagesError('fallback image generation could not be prepared')
+  }
+  }
+}
+
+/** Create the one-approval background fallback image tool. */
+export function createGenerateImagesTool(dependencies: GenerateImagesToolDependencies) {
+  const operation = createGenerateImagesOperation(dependencies)
   return defineTool({
     name: TOOL_NAME,
     description: 'Use the configured md2wechat image provider only when the DSH Agent has no image-generation capability; generation and WeChat material upload require one-time approval.',
@@ -130,81 +214,7 @@ export function createGenerateImagesTool({
           : `All ${value.resultPaths?.length ?? 0} planned images are already complete.`,
       }],
     },
-    async execute(args, exec) {
-      try {
-        assertKnownArguments(args, ['manifestPath', 'planPaths'])
-        exec.signal.throwIfAborted()
-        const planPaths = validatePlanPaths(args.planPaths)
-        const prepared = await prepareBatch(gateway, store, state, args.manifestPath, planPaths, exec.signal)
-        const planIds = prepared.plans.map(plan => plan.planId)
-        if (prepared.remaining.length === 0) {
-          return domainResult({ kind: 'completed' as const, planIds, resultPaths: [...prepared.completedPaths] })
-        }
-        if (exec.agent === undefined) throw new SafeGenerateImagesError('fallback image generation requires an active agent')
-        assertConfiguredRefs(credentialRefs)
-        const outcome = await approval.request({
-          agent: exec.agent,
-          toolName: TOOL_NAME,
-          callId: exec.callId,
-          signal: exec.signal,
-          reason: 'The configured md2wechat image provider will generate the remaining images and upload each generated image to WeChat material storage.',
-        })
-        if (outcome !== 'allowed-once') throw new SafeGenerateImagesError(outcome === 'cancelled' ? 'fallback image generation was cancelled' : 'fallback image generation was not approved')
-        exec.signal.throwIfAborted()
-        let resolved: Awaited<ReturnType<typeof resolveOperationEnv>>
-        try { resolved = await resolveOperationEnv(REQUIRED_CREDENTIALS, { credentialRefs, credentials }) }
-        catch { throw new SafeGenerateImagesError('fallback image credentials could not be resolved') }
-        for (const name of REQUIRED_CREDENTIALS) if (resolved.env[name] === undefined) throw new SafeGenerateImagesError('fallback image credentials are incomplete')
-        exec.signal.throwIfAborted()
-
-        const owner = exec.agent.id
-        const registration = deferred<JobId | undefined>()
-        const controller = new AbortController()
-        let cancelRequested = false
-        const worker = async (): Promise<JobOutcome> => {
-          try {
-            const jobId = await registration.promise
-            if (jobId === undefined) return { status: 'failed', detail: 'registration failed', result: safeJobOutput('failed', prepared.remaining.length, 0, []) }
-            return await runBatch({
-              jobId, ownerSession: String(owner), prepared, gateway, store, env: resolved.env, secrets: resolved.secrets,
-              signal: controller.signal, imageJobTimeoutMs, imageMaxBytes, imageMaxRedirects,
-              imageAcquisitionTimeoutMs, acquire, now,
-              ...(claimNonce === undefined ? {} : { claimNonce }),
-              claimOwnerIsLive: claimOwnerIsLive ?? (claim => defaultClaimOwnerIsLive(jobs, claim, owner, imageJobTimeoutMs)),
-              reportAuditFailure,
-            })
-          } catch {
-            return controller.signal.aborted
-              ? { status: 'killed', detail: 'cancelled', result: safeJobOutput('killed', prepared.remaining.length, 0, []) }
-              : { status: 'failed', detail: 'image processing failed', result: safeJobOutput('failed', prepared.remaining.length, 0, []) }
-          }
-        }
-        const done = Promise.resolve().then(worker).catch((): JobOutcome => ({ status: 'failed', detail: 'image processing failed' }))
-        let jobId: JobId
-        try {
-          jobId = jobs.start({
-            kind: JOB_KIND,
-            label: `Generate ${prepared.remaining.length} approved WeChat image${prepared.remaining.length === 1 ? '' : 's'}`,
-            outputLimitBytes: JOB_OUTPUT_LIMIT_BYTES,
-            owner,
-            run: () => ({
-              cancel: () => { if (!cancelRequested) { cancelRequested = true; controller.abort(new Error('job cancelled')) } },
-              done,
-            }),
-          })
-        } catch {
-          controller.abort(new Error('job registration failed'))
-          registration.resolve(undefined)
-          throw new SafeGenerateImagesError('fallback image background job could not be started')
-        }
-        setImmediate(() => registration.resolve(jobId))
-        return domainResult({ kind: 'background' as const, jobId, planIds })
-      } catch (error) {
-        if (error instanceof SafeGenerateImagesError) throw error
-        if (exec.signal.aborted) throw new SafeGenerateImagesError('fallback image generation was cancelled')
-        throw new SafeGenerateImagesError('fallback image generation could not be prepared')
-      }
-    },
+    execute: operation,
     presentCall: args => genericCall('Generate approved fallback images', 'edit', undefined, safePlanLocations(args.manifestPath, args.planPaths)),
     presentResult: () => genericResult('Fallback image generation submitted'),
   })

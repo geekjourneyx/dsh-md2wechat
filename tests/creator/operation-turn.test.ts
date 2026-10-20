@@ -11,7 +11,8 @@ function harness() {
   const agent = { id: 'a', status: 'idle', inbox: { nextTurn: queued, nextStep: [], remove(id: string) { const i = queued.findIndex(m => m.id === id); if(i < 0) return false; queued.splice(i, 1); return true }, prepend(_target: string, message: UserMessage) { queued.unshift(message) } }, followup(message: UserMessage) { queued.push(message); this.status = 'running' } } as unknown as Agent
   const runner = createOperationTurnRunner(ctx)
   async function step(next?: () => Promise<PreStepDecision>) { const messages = queued.splice(0); return listeners.get('agent/pre-step')!({ agent, messages, turn: 1, step: 1, signal: new AbortController().signal }, next ?? (async () => ({kind:'enter',messages}))) }
-  return { runner, agent, queued, listeners, step }
+  function idle() { agent.status = 'idle'; listeners.get('agent/status')?.({ agent, status: 'idle' }) }
+  return { runner, agent, queued, listeners, step, idle }
 }
 
 describe('creator deterministic operation turn', () => {
@@ -29,7 +30,33 @@ describe('creator deterministic operation turn', () => {
     const h = harness(); const operation = vi.fn(async () => 42)
     const result = h.runner.run(h.agent,new AbortController().signal,operation)
     expect(await h.step()).toEqual({kind:'enter',messages:[]})
-    await expect(result).resolves.toBe(42); expect(operation).toHaveBeenCalledTimes(1)
+    h.idle(); await expect(result).resolves.toBe(42); expect(operation).toHaveBeenCalledTimes(1)
+  })
+  it('publishes success only after driver idle, allowing an immediate next action', async () => {
+    const h = harness(); const resolved = vi.fn()
+    const result = h.runner.run(h.agent, new AbortController().signal, async () => 42)
+    void result.then(resolved)
+    await h.step()
+    await Promise.resolve()
+    expect(resolved).not.toHaveBeenCalled()
+    h.idle()
+    await expect(result).resolves.toBe(42)
+    const second = h.runner.run(h.agent, new AbortController().signal, async () => 43)
+    await h.step(); h.idle()
+    await expect(second).resolves.toBe(43)
+  })
+  it('cancels a staged result before idle rather than publishing success', async () => {
+    const h = harness(); const abort = new AbortController()
+    const result = h.runner.run(h.agent, abort.signal, async () => 42)
+    const rejected = expect(result).rejects.toThrow('cancelled')
+    await h.step(); abort.abort(); h.idle(); await rejected
+  })
+  it('disposes a staged result and releases listeners when the driver becomes idle', async () => {
+    const h = harness()
+    const result = h.runner.run(h.agent, new AbortController().signal, async () => 42)
+    const rejected = expect(result).rejects.toThrow('disposed')
+    await h.step(); h.runner.dispose(); h.idle(); await rejected
+    expect(h.listeners.size).toBe(0)
   })
   it('refuses busy agents and agents with pending input', async () => {
     const h = harness(); h.agent.status = 'running'
@@ -71,7 +98,7 @@ describe('creator deterministic operation turn', () => {
   it('preserves concurrent user input when completing a reserved operation',async()=>{
     const h=harness();const result=h.runner.run(h.agent,new AbortController().signal,async()=>1)
     const other={id:'other',role:'user',content:[],source:{kind:'user'}} as UserMessage;h.queued.push(other)
-    expect(await h.step()).toEqual({kind:'enter',messages:[]});await expect(result).resolves.toBe(1);expect(h.queued).toEqual([other])
+    expect(await h.step()).toEqual({kind:'enter',messages:[]});h.idle();await expect(result).resolves.toBe(1);expect(h.queued).toEqual([other])
   })
   it('drains disposal while admission is pending without running the operation',async()=>{
     const h=harness();const operation=vi.fn(async()=>1);const result=h.runner.run(h.agent,new AbortController().signal,operation)
@@ -82,7 +109,7 @@ describe('creator deterministic operation turn', () => {
   it('reports operation failure and releases the reservation',async()=>{
     const h=harness();const result=h.runner.run(h.agent,new AbortController().signal,async()=>{throw new Error('domain failed')})
     const rejected=expect(result).rejects.toThrow('domain failed');expect(await h.step()).toEqual({kind:'enter',messages:[]});await rejected
-    h.agent.status='idle';const second=h.runner.run(h.agent,new AbortController().signal,async()=>2);await h.step();await expect(second).resolves.toBe(2)
+    h.agent.status='idle';const second=h.runner.run(h.agent,new AbortController().signal,async()=>2);await h.step();h.idle();await expect(second).resolves.toBe(2)
   })
 
   it('does not start a model for gate-generated context after reservation removal',async()=>{

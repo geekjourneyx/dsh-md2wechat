@@ -107,7 +107,7 @@ export function createPreviewOperation({
           agent: exec.agent,
           toolName: TOOL_NAME,
           callId: exec.callId,
-          reason: 'Generate an article preview using the configured md2wechat provider.',
+          reason: `Send this article to ${layoutBaseUrl} to generate its preview using the configured md2wechat credential.`,
           signal: exec.signal,
         })
         assertApproved(outcome)
@@ -157,7 +157,7 @@ export function createPreviewOperation({
               '--json',
             ] as const
             const response = await gateway.run(argv, {
-              env: { MD2WECHAT_API_KEY: credentialValue },
+              env: { MD2WECHAT_API_KEY: credentialValue, MD2WECHAT_BASE_URL: layoutBaseUrl },
               secrets: resolved.secrets,
               signal: exec.signal,
               beforeSpawn: async (spawnSignal) => {

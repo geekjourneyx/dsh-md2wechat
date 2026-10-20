@@ -2,11 +2,6 @@ import { spawn } from 'node:child_process'
 import { lstat, realpath, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep, win32 } from 'node:path'
 
-const WORKFLOW_BASE = 'Use this order: md2wechat_start_article or md2wechat_improve_article -> md2wechat_plan_images -> md2wechat_preview -> md2wechat_export.'
-const WORKFLOW_WRITE = 'Use this order: md2wechat_start_article or md2wechat_improve_article -> md2wechat_plan_images -> md2wechat_preview -> md2wechat_export or md2wechat_create_draft.'
-const SIGNED_PREVIEW = 'Treat the signed preview as the source of truth for review and approval.'
-const DRAFT_SAFETY = 'md2wechat_create_draft creates an unpublished WeChat draft and never publishes or mass-sends.'
-const IMAGE_FALLBACK = 'Use md2wechat_generate_images only when image work is required and the current DSH agent has no other image-generation capability.'
 
 export function createChildEnvironment({ ambient, taskRoot, dshHome, cliPath, extra = {} }) {
   const environment = {
@@ -43,10 +38,14 @@ export function createChildEnvironment({ ambient, taskRoot, dshHome, cliPath, ex
 }
 
 export function expectedWorkflowPrompt(writeEnabled, fallbackEnabled) {
-  const lines = [writeEnabled ? WORKFLOW_WRITE : WORKFLOW_BASE, SIGNED_PREVIEW]
+  const lines = [
+    'For an article, open md2wechat_open_workspace first. The native workspace owns theme selection, exact suggestions, image choices, final review and delivery; do not ask the author to orchestrate a tool chain.',
+    'Only propose changes for a pending workspace request. Never silently rewrite source files. Treat the displayed signed preview as the review boundary; after final material preparation, review that exact final HTML again.',
+    'Legacy low-level tools are retained for explicit compatibility or diagnostics, not the default creator experience.',
+  ]
   if (writeEnabled) {
-    lines.push(DRAFT_SAFETY)
-    if (fallbackEnabled) lines.push(IMAGE_FALLBACK)
+    lines.push('Saving a WeChat draft requires explicit native confirmation and approval. It creates an unpublished draft and never publishes or mass-sends.')
+    if (fallbackEnabled) lines.push('Prefer the current host image capability. md2wechat_generate_creator_images is fallback only and uploads every generated candidate to WeChat material storage; disclose this and obtain its one-time approval.')
   }
   return lines.join('\n')
 }

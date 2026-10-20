@@ -6,6 +6,7 @@ import type {} from '@deepseek-ai/dsh-api-workspace-files/remote'
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
 import { createElement, useMemo } from 'react'
 import contribution from '../../lib/typert.remote-client.js'
+import { hydratePreviewHtml } from './preview-html.ts'
 import { CreatorWorkspace } from './CreatorWorkspace.tsx'
 import type { CreatorClient } from './CreatorWorkspace.tsx'
 import styleText from './CreatorWorkspace.css'
@@ -20,11 +21,20 @@ export async function apply(ctx: Context): Promise<void> {
     const client = useMemo<CreatorClient>(() => ({
       async get(signal) { const result = await ctx.remote.md2wechat.get(props.sessionId, articleId, signal); if (!result.ok) throw result.error; return result.value },
       async dispatch(version, action, signal) { const result = await ctx.remote.md2wechat.dispatch(props.sessionId, articleId, version, action, signal); if (!result.ok) throw result.error; return result.value },
+      async readImage(image, signal) {
+        const result = await ctx.remote.workspaceFiles.readBytes(props.sessionId, image.path, {}, signal)
+        if (!result.ok) throw result.error
+        await verifyBytes(result.value.data, image.sha256)
+        let binary = ''
+        for (let offset = 0; offset < result.value.data.length; offset += 32768) binary += String.fromCharCode(...result.value.data.subarray(offset, offset + 32768))
+        return `data:${image.contentType};base64,${btoa(binary)}`
+      },
       async readPreview(preview, signal) {
         const result = await ctx.remote.workspaceFiles.readBytes(props.sessionId, preview.path, {}, signal)
         if (!result.ok) throw result.error
         await verifyBytes(result.value.data, preview.sha256)
-        let html = new TextDecoder('utf-8', { fatal: true }).decode(result.value.data)
+        const html = new TextDecoder('utf-8', { fatal: true }).decode(result.value.data)
+        const hydrated: Array<{ source: string; dataUrl: string }> = []
         for (const asset of preview.assets) {
           const image = await ctx.remote.workspaceFiles.readBytes(props.sessionId, asset.path, {}, signal)
           if (!image.ok) throw image.error
@@ -33,12 +43,12 @@ export async function apply(ctx: Context): Promise<void> {
           let binary = ''
           for (let offset = 0; offset < bytes.length; offset += 32768) binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768))
           const dataUrl = `data:${asset.contentType};base64,${btoa(binary)}`
-          html = html.replaceAll(`src="${asset.source}"`, `src="${dataUrl}"`).replaceAll(`src='${asset.source}'`, `src='${dataUrl}'`)
+          hydrated.push({ source: asset.source, dataUrl })
         }
-        return html
+        return hydratePreviewHtml(html, hydrated)
       },
     }), [props.sessionId, articleId])
-    return articleId ? createElement(CreatorWorkspace, { client }) : createElement('p', { role: 'status' }, '正在准备文章工作区…')
+    return articleId ? createElement(CreatorWorkspace, { key: `${props.sessionId}:${articleId}`, client }) : createElement('p', { role: 'status' }, '正在准备文章工作区…')
   }))
 }
 

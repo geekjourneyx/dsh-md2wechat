@@ -4,15 +4,21 @@ import { computeArticleRevision } from '../workspace/revision.ts'
 import type { ArticleManifest } from '../workspace/revision.ts'
 import { discoverMarkdownImageDestinations, preparePreviewInputs, resolveLocalImagePath } from '../tools/preview.ts'
 import type { CreatorRevision } from './session.ts'
+import { verifyImageCandidate } from './image-choices.ts'
+import type { ImageCandidate } from './image-choices.ts'
 
 const MAX_MARKDOWN_BYTES = 8 * 1024 * 1024
 
-/** Save an exact user-selected edit as a new revision; never rewrite the source or reuse preview authority. */
+/**
+ * Save an exact user-selected edit as a new revision, without reusing preview authority.
+ * approvedImages is the server-owned candidate collection, never unchecked Remote input.
+ */
 export async function reviseCreatorArticle(
   store: ArtifactStore,
   previous: CreatorRevision,
   markdown: string,
   signal: AbortSignal,
+  approvedImages: readonly ImageCandidate[] = [],
 ): Promise<CreatorRevision> {
   signal.throwIfAborted()
   if (typeof markdown !== 'string' || !markdown.isWellFormed()) throw new Error('文章必须是有效的 Unicode Markdown。')
@@ -30,13 +36,38 @@ export async function reviseCreatorArticle(
 
   const allowedDestinations = new Set(discoverMarkdownImageDestinations(current.articleBytes))
   const destinations = discoverMarkdownImageDestinations(bytes)
+  if (!Array.isArray(approvedImages) || approvedImages.length > 128) throw new Error('图片候选过多，请重新选择。')
+  const candidates: Array<{ source: string; bytes: Uint8Array; authorization: ArtifactReadAuthorization }> = []
+  for (const candidate of approvedImages) {
+    const image = await verifyImageCandidate(store, previous.id, candidate, signal)
+    const authorization = await store.authorizeRead(image.path, image.sha256, signal)
+    const imageBytes = await store.readBounded(image.path, image.byteSize, signal)
+    if (imageBytes.byteLength !== image.byteSize || sha256(imageBytes) !== image.sha256) throw new Error('图片候选已经变化，请重新导入。')
+    const source = image.path.slice(`revisions/${previous.id}/`.length)
+    allowedDestinations.add(source)
+    candidates.push({ source, bytes: imageBytes, authorization })
+  }
   if (destinations.some(destination => !allowedDestinations.has(destination))) throw new Error('新增图片尚未确认，请先使用原文中的图片。')
   // Raw HTML images bypass Markdown destination discovery, so do not introduce them through an edit.
   const previousHtmlImages = new Set(htmlImages(previous.markdown))
   if (htmlImages(markdown).some(tag => !previousHtmlImages.has(tag))) throw new Error('新增 HTML 图片尚未确认，请使用 Markdown 图片。')
   const retained = prepared.localImages.filter(image => destinations.includes(image.source))
-  if (retained.some(image => destinations.filter(destination => destination === image.source).length > 1)) {
-    throw new Error('preview local images contain duplicate aliases')
+  const localDestinations = new Set<string>()
+  for (const destination of destinations) {
+    if (/^https?:\/\//u.test(destination) || destination.startsWith('__generate:')) continue
+    const key = resolveLocalImagePath(`revisions/${previous.id}`, destination).normalize('NFC').toLowerCase()
+    if (localDestinations.has(key)) throw new Error('preview local images contain duplicate aliases')
+    localDestinations.add(key)
+  }
+  const copies = new Map<string, { source: string; bytes: Uint8Array; authorizations: ArtifactReadAuthorization[] }>()
+  for (const image of [...retained, ...candidates]) {
+    const source = resolveLocalImagePath('revision', image.source).slice('revision/'.length)
+    const key = source.normalize('NFC').toLowerCase()
+    const existing = copies.get(key)
+    if (existing) {
+      if (existing.source !== source || sha256(existing.bytes) !== sha256(image.bytes)) throw new Error('image candidate aliases contain different bytes or paths')
+      existing.authorizations.push(image.authorization)
+    } else copies.set(key, { source, bytes: image.bytes, authorizations: [image.authorization] })
   }
 
   const heading = firstHeading(markdown)
@@ -56,8 +87,8 @@ export async function reviseCreatorArticle(
   const outputs: ArtifactReadAuthorization[] = []
   await publishImmutable(store, articlePath, bytes, signal)
   outputs.push(await store.authorizeRead(articlePath, sha256(bytes), signal))
-  for (const image of retained) {
-    await image.authorization.beforeSpawn(signal)
+  for (const image of copies.values()) {
+    for (const authorization of image.authorizations) await authorization.beforeSpawn(signal)
     const path = resolveLocalImagePath(root, image.source)
     await publishImmutable(store, path, image.bytes, signal)
     outputs.push(await store.authorizeRead(path, sha256(image.bytes), signal))
@@ -66,7 +97,7 @@ export async function reviseCreatorArticle(
   // The manifest is the commit marker. Authenticate every input and copied output again before it exists.
   await manifestAuthorization.beforeSpawn(signal)
   await current.articleAuthorization.beforeSpawn(signal)
-  for (const image of retained) await image.authorization.beforeSpawn(signal)
+  for (const image of copies.values()) for (const authorization of image.authorizations) await authorization.beforeSpawn(signal)
   for (const output of outputs) await output.beforeSpawn(signal)
   signal.throwIfAborted()
   await publishImmutable(store, manifestPath, new TextEncoder().encode(`${JSON.stringify(manifest)}\n`), signal)

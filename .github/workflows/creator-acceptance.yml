@@ -14,7 +14,7 @@ jobs:
           node-version: '24'
       - run: npm install --global pnpm@11.7.0
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test && pnpm build
+      - run: pnpm typecheck && pnpm lint && pnpm check:boundaries && pnpm test && pnpm build
       - name: Install official host, renderer and browser tooling
         run: |
           npm install --prefix "$RUNNER_TEMP/creator-host" @deepseek-ai/dsh@0.2.1-rc.2
@@ -32,7 +32,7 @@ jobs:
             --package "$CREATOR_PACKAGE" \
             --host "$RUNNER_TEMP/creator-host" \
             --cli "$RUNNER_TEMP/creator-cli/node_modules/@geekjourneyx/md2wechat/bin/md2wechat" \
-            --root "$RUNNER_TEMP/creator-e2e-results" --online --browser \
+            --root "$RUNNER_TEMP/creator-e2e-results" --online --simulate-writes --browser \
             --playwright "$RUNNER_TEMP/creator-browser/node_modules/playwright-core/index.mjs"
       - uses: actions/upload-artifact@v4
         if: always()

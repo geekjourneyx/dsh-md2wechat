@@ -13,6 +13,7 @@ interface Pending {
   message: UserMessage
   controller: AbortController
   run(signal: AbortSignal): Promise<void>
+  complete?: () => void
   reject(error: unknown): void
   cleanup(): void
 }
@@ -68,14 +69,21 @@ export function createOperationTurnRunner(ctx: Context): OperationTurnRunner {
       restore(agent, messages, entry.message)
       return { kind: 'enter', messages: [] }
     } finally {
-      remove(entry)
+      // Success stays reserved until the driver closes this turn and becomes idle.
+      // Never await idle here: the driver is waiting for this hook to return.
+      if (entry.complete === undefined) remove(entry)
     }
   })
   const offStatus = ctx.on('agent/status', ({ agent, status }) => {
     const entry = pending.get(agent)
     if (status !== 'idle' || entry === undefined) return
-    stop(entry, new Error('creator operation turn ended before completion'))
-    remove(entry)
+    if (entry.complete !== undefined && !entry.controller.signal.aborted) {
+      remove(entry)
+      entry.complete()
+    } else {
+      stop(entry, new Error('creator operation turn ended before completion'))
+      remove(entry)
+    }
   })
   const offDisposed = ctx.on('agent/disposed', ({ agent }) => {
     const entry = pending.get(agent)
@@ -96,7 +104,11 @@ export function createOperationTurnRunner(ctx: Context): OperationTurnRunner {
         const abort = (): void => stop(entry, new Error('creator operation cancelled'))
         const entry: Pending = {
           agent, message, controller, reject,
-          async run(operationSignal) { const value = await operation(operationSignal); operationSignal.throwIfAborted(); resolve(value) },
+          async run(operationSignal) {
+            const value = await operation(operationSignal)
+            operationSignal.throwIfAborted()
+            entry.complete = () => resolve(value)
+          },
           cleanup() { signal.removeEventListener('abort', abort) },
         }
         pending.set(agent, entry)

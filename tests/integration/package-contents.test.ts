@@ -109,7 +109,7 @@ describe('packed plugin artifact', () => {
       ctx.provide('approval', { request: async () => 'rejected' })
       ctx.provide('credentials', { resolve: async () => undefined })
       ctx.provide('jobs', { start() { throw new Error('not used') }, get() { return undefined } })
-      const names = ['md2wechat_doctor','md2wechat_start_article','md2wechat_improve_article','md2wechat_plan_images','md2wechat_preview','md2wechat_export','md2wechat_create_draft','md2wechat_generate_images','md2wechat_open_workspace','md2wechat_propose_changes']
+      const names = ['md2wechat_doctor','md2wechat_start_article','md2wechat_improve_article','md2wechat_plan_images','md2wechat_preview','md2wechat_export','md2wechat_create_draft','md2wechat_generate_images','md2wechat_open_workspace','md2wechat_propose_changes','md2wechat_import_creator_image','md2wechat_generate_creator_images']
       const fiber = await ctx.plugin(plugin, { binaryPath: '/opt/md2wechat', stateDir: '/var/lib/dsh-md2wechat-packed-test', safeReadRetries: 0 })
       if (plugin.name !== 'dsh-md2wechat' || names.some(name => ctx.tools.get(name) === undefined)) throw new Error('packed plugin did not register expected tools')
       const sections = (await ctx.systemPrompt.assemble()).sections.filter(section => section.name === 'tool:md2wechat')
