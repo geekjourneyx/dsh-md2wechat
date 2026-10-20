@@ -1,0 +1,42 @@
+name: Installed creator end-to-end
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  installed-creator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm install --global pnpm@11.7.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test && pnpm build
+      - name: Install official host, renderer and browser tooling
+        run: |
+          npm install --prefix "$RUNNER_TEMP/creator-host" @deepseek-ai/dsh@0.2.1-rc.2
+          npm install --prefix "$RUNNER_TEMP/creator-cli" @geekjourneyx/md2wechat@3.3.0
+          npm install --prefix "$RUNNER_TEMP/creator-browser" playwright@1.58.2
+          "$RUNNER_TEMP/creator-browser/node_modules/.bin/playwright" install --with-deps chromium
+          mkdir -p "$RUNNER_TEMP/creator-package"
+          pnpm pack --pack-destination "$RUNNER_TEMP/creator-package"
+          package=$(find "$RUNNER_TEMP/creator-package" -maxdepth 1 -name '*.tgz' -print -quit)
+          test -n "$package"
+          echo "CREATOR_PACKAGE=$package" >> "$GITHUB_ENV"
+      - name: Exercise native tool card and authenticated Remote
+        run: |
+          node scripts/creator-host-acceptance/run.mjs \
+            --package "$CREATOR_PACKAGE" \
+            --host "$RUNNER_TEMP/creator-host" \
+            --cli "$RUNNER_TEMP/creator-cli/node_modules/@geekjourneyx/md2wechat/bin/md2wechat" \
+            --root "$RUNNER_TEMP/creator-e2e-results" --online --browser \
+            --playwright "$RUNNER_TEMP/creator-browser/node_modules/playwright-core/index.mjs"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installed-creator-evidence
+          path: ${{ runner.temp }}/creator-e2e-results/**/logs/
+          retention-days: 7

@@ -9,7 +9,7 @@ const ALLOWED_ROOTS = new Set([
   '.gitignore', 'CHANGELOG.md', 'LICENSE', 'README.md', 'cordis.patch.yml',
   'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'scripts', 'src',
   'tests', 'tsconfig.json', 'tsconfig.prepare.json', 'tsdown.config.ts',
-  'tsdown.prepare.config.ts', 'vitest.config.ts',
+  'tsdown.prepare.config.ts', 'vitest.config.ts', 'tsconfig.client.json', '.github',
 ])
 const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'lib', 'coverage'])
 

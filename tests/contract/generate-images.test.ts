@@ -157,7 +157,7 @@ describe('md2wechat_generate_images', () => {
     expect(result).toMatchObject({ kind: 'background', jobId: 'md2wechat-image-1', planIds: [basename(planPath, '.json')] })
     expect(gateway.calls).toHaveLength(0)
     expect(approvals).toHaveLength(1); expect(String(approvals[0]!.reason)).toContain('upload each generated image to WeChat material storage')
-    expect(resolved).toEqual(['IMAGE_API_KEY', 'WECHAT_APPID', 'WECHAT_SECRET']); expect(starts[0]).toMatchObject({ kind: 'md2wechat-image', owner: agent, outputLimitBytes: 16384 })
+    expect(resolved).toEqual(['IMAGE_API_KEY', 'WECHAT_APPID', 'WECHAT_SECRET']); expect(starts[0]).toMatchObject({ kind: 'md2wechat-image', owner: agent.id, outputLimitBytes: 16384 })
     const outcome = await hooks!.done; expect(outcome).toMatchObject({ status: 'completed', detail: 'all images complete' }); expect(JSON.stringify(outcome)).not.toContain('secret-'); expect(JSON.stringify(outcome)).not.toContain('images.example')
     expect(gateway.calls[0]!.argv).toEqual(['generate_image', 'Hero raw', '--json']); expect(gateway.calls[0]!.options).toMatchObject({ env: { IMAGE_API_KEY: 'secret-IMAGE_API_KEY', WECHAT_APPID: 'secret-WECHAT_APPID', WECHAT_SECRET: 'secret-WECHAT_SECRET' }, secrets: ['secret-IMAGE_API_KEY', 'secret-WECHAT_APPID', 'secret-WECHAT_SECRET'] })
     const planId = basename(planPath, '.json'); const resultPath = `revisions/${revisionId}/image-results/${planId}/hero.json`; const persisted = JSON.parse(decoder.decode(await store.read(resultPath))) as Record<string, unknown>
@@ -416,7 +416,7 @@ describe('md2wechat_generate_images', () => {
     const manyPlan = await installManyPlan(128)
     const deps = dependencies(new Gateway()); deps.imageJobTimeoutMs = 20_000
     const tool = createGenerateImagesTool(deps); await tool.execute({ manifestPath, planPaths: [manyPlan] }, exec()); const outcome = await hooks!.done
-    expect(outcome.status).toBe('completed'); expect(Buffer.byteLength(outcome.output ?? '')).toBeLessThanOrEqual(16 * 1024)
-    expect(JSON.parse(outcome.output ?? '{}')).toMatchObject({ total: 128, completed: 128, resultPathsOmitted: true })
+    expect(outcome.status).toBe('completed'); expect(Buffer.byteLength(outcome.result ?? '')).toBeLessThanOrEqual(16 * 1024)
+    expect(JSON.parse(outcome.result ?? '{}')).toMatchObject({ total: 128, completed: 128, resultPathsOmitted: true })
   }, 20_000)
 })

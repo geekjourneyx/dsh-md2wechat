@@ -157,16 +157,16 @@ export function createGenerateImagesTool({
         for (const name of REQUIRED_CREDENTIALS) if (resolved.env[name] === undefined) throw new SafeGenerateImagesError('fallback image credentials are incomplete')
         exec.signal.throwIfAborted()
 
-        const owner = exec.agent
+        const owner = exec.agent.id
         const registration = deferred<JobId | undefined>()
         const controller = new AbortController()
         let cancelRequested = false
         const worker = async (): Promise<JobOutcome> => {
           try {
             const jobId = await registration.promise
-            if (jobId === undefined) return { status: 'failed', detail: 'registration failed', output: safeJobOutput('failed', prepared.remaining.length, 0, []) }
+            if (jobId === undefined) return { status: 'failed', detail: 'registration failed', result: safeJobOutput('failed', prepared.remaining.length, 0, []) }
             return await runBatch({
-              jobId, ownerSession: String(owner.id), prepared, gateway, store, env: resolved.env, secrets: resolved.secrets,
+              jobId, ownerSession: String(owner), prepared, gateway, store, env: resolved.env, secrets: resolved.secrets,
               signal: controller.signal, imageJobTimeoutMs, imageMaxBytes, imageMaxRedirects,
               imageAcquisitionTimeoutMs, acquire, now,
               ...(claimNonce === undefined ? {} : { claimNonce }),
@@ -175,8 +175,8 @@ export function createGenerateImagesTool({
             })
           } catch {
             return controller.signal.aborted
-              ? { status: 'killed', detail: 'cancelled', output: safeJobOutput('killed', prepared.remaining.length, 0, []) }
-              : { status: 'failed', detail: 'image processing failed', output: safeJobOutput('failed', prepared.remaining.length, 0, []) }
+              ? { status: 'killed', detail: 'cancelled', result: safeJobOutput('killed', prepared.remaining.length, 0, []) }
+              : { status: 'failed', detail: 'image processing failed', result: safeJobOutput('failed', prepared.remaining.length, 0, []) }
           }
         }
         const done = Promise.resolve().then(worker).catch((): JobOutcome => ({ status: 'failed', detail: 'image processing failed' }))
@@ -261,9 +261,9 @@ async function runBatch(input: RunBatchInput): Promise<JobOutcome> {
   } finally {
     if (snapshotOwnership.created) await input.store.removeIfMatching(snapshotPath, sha256(snapshot)).catch(() => undefined)
   }
-  if (signal.aborted) return { status: 'killed', detail: 'cancelled', output: safeJobOutput('killed', input.prepared.remaining.length, resultPaths.length, resultPaths) }
-  if (failed > 0 || resultPaths.length !== input.prepared.remaining.length) return { status: 'failed', detail: 'partial failure', output: safeJobOutput('failed', input.prepared.remaining.length, resultPaths.length, resultPaths) }
-  return { status: 'completed', detail: 'all images complete', output: safeJobOutput('completed', input.prepared.remaining.length, resultPaths.length, resultPaths) }
+  if (signal.aborted) return { status: 'killed', detail: 'cancelled', result: safeJobOutput('killed', input.prepared.remaining.length, resultPaths.length, resultPaths) }
+  if (failed > 0 || resultPaths.length !== input.prepared.remaining.length) return { status: 'failed', detail: 'partial failure', result: safeJobOutput('failed', input.prepared.remaining.length, resultPaths.length, resultPaths) }
+  return { status: 'completed', detail: 'all images complete', result: safeJobOutput('completed', input.prepared.remaining.length, resultPaths.length, resultPaths) }
 }
 
 async function processImageItem(input: RunBatchInput, plan: LoadedImagePlan, item: LoadedImagePlanItem, signal: AbortSignal): Promise<string> {
@@ -428,7 +428,7 @@ function safeJobOutput(status: 'completed' | 'failed' | 'killed', total: number,
 }
 
 function defaultClaimOwnerIsLive(jobs: Pick<Context['jobs'], 'get'>, claim: ImageClaim, owner: NonNullable<Parameters<Context['jobs']['get']>[1]>, staleAfterMs: number): boolean {
-  if (claim.sessionId !== String(owner.id)) return Date.now() - Date.parse(claim.createdAt) <= staleAfterMs
+  if (claim.sessionId !== String(owner)) return Date.now() - Date.parse(claim.createdAt) <= staleAfterMs
   try { const snapshot = jobs.get(claim.jobId as JobId, owner); return snapshot.status === 'running' || snapshot.status === 'stopping' } catch { return false }
 }
 

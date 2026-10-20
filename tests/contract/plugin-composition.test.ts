@@ -1,7 +1,8 @@
+import { sandboxPolicyFixture } from '../fixtures/sandbox-policy.ts'
 import { resolve } from 'node:path'
-import { Context } from '../../../../web/deepseek-harness/vendor/cordis/src/index.ts'
-import ToolRuntime from '../../../../web/deepseek-harness/packages/core/tools/src/index.ts'
-import SystemPrompt from '../../../../web/deepseek-harness/packages/core/system-prompt/src/index.ts'
+import { Context } from '@deepseek-ai/cordis'
+import ToolRuntime from '@deepseek-ai/dsh-tools'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const captured = vi.hoisted(() => ({
@@ -76,6 +77,7 @@ describe('plugin factory composition', () => {
     disposers.push(() => tools.dispose(), () => prompt.dispose())
     ctx.provide('subprocess', subprocess() as never)
     ctx.provide('fs', {} as never)
+    ctx.provide('sandboxPolicy', sandboxPolicyFixture(process.cwd()) as never)
     ctx.provide('approval', { request: async () => 'rejected' } as never)
     ctx.provide('credentials', { resolve: async () => undefined } as never)
     ctx.provide('jobs', { start() { throw new Error('not used') }, get() { return undefined } } as never)

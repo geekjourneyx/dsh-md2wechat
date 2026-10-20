@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { JsonValue } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { CliGateway } from '../cli/gateway.ts'
 import { validateArtifactId, validateArtifactRelativePath } from '../workspace/artifact-store.ts'
 import type { ArtifactStore } from '../workspace/artifact-store.ts'

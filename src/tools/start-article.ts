@@ -1,5 +1,8 @@
+import { dirname, join } from 'node:path'
+import { discoverMarkdownImageDestinations, resolveLocalImagePath } from './preview.ts'
 import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { domainResult, genericCall, genericResult } from './shared.ts'
 import { computeArticleRevision } from '../workspace/revision.ts'
@@ -8,11 +11,12 @@ import type { ArtifactStore } from '../workspace/artifact-store.ts'
 
 const MAX_SOURCE_BYTES = 8 * 1024 * 1024
 
-interface StartArticleToolDependencies {
+export interface StartArticleToolDependencies {
   fs: Context['fs']
   workspace: string
   store: ArtifactStore
   now?: () => Date
+  importImages?: boolean
 }
 
 /**
@@ -20,12 +24,64 @@ interface StartArticleToolDependencies {
  * @param dependencies - Session filesystem, workspace, artifact store, and clock.
  * @returns Registry-ready typed DSH tool.
  */
-export function createStartArticleTool({
+export function createStartArticleOperation({
   fs,
   workspace,
   store,
   now = () => new Date(),
+  importImages = false,
 }: StartArticleToolDependencies) {
+  return async (args: { sourcePath: string; title?: string }, exec: Pick<ToolRunContext, 'agent' | 'callId' | 'signal'>) => {
+      assertKnownArguments(args, ['sourcePath', 'title'])
+      const source = await resolveSource(fs, workspace, args.sourcePath, exec.signal)
+      const bytes = await fs.readBytes(source.target, exec.signal, MAX_SOURCE_BYTES)
+      const images: Array<{ path: string; bytes: Uint8Array; source: string; targetKey: string }> = []
+      if (importImages) {
+        const sourceDirectory = await fs.resolve(dirname(fs.processPath(source.target)), { signal: exec.signal })
+        for (const destination of discoverMarkdownImageDestinations(bytes)) {
+          if (/^https?:\/\//u.test(destination) || destination.startsWith('__generate:')) continue
+          const path = resolveLocalImagePath('revision', destination).slice('revision/'.length)
+          const imageSource = await fs.resolve(path, { cwd: fs.processPath(sourceDirectory), signal: exec.signal })
+          if (!fs.contains(sourceDirectory, imageSource)) throw new Error('图片越过文章目录，请先将图片放入文章旁的 images 文件夹。')
+          const info = await fs.stat(imageSource, exec.signal)
+          if (!info || info.type !== 'file') throw new Error('正文图片不存在或不是普通文件。')
+          const imageBytes = await fs.readBytes(imageSource, exec.signal, MAX_SOURCE_BYTES)
+          images.push({ path, bytes: imageBytes, source: join(fs.processPath(sourceDirectory), path), targetKey: imageSource.targetKey })
+        }
+      }
+      const manifest: ArticleManifest = {
+        schemaVersion: 1,
+        articlePath: 'article.md',
+        manifestPath: 'manifest.json',
+        createdAt: now().toISOString(),
+        ...(args.title === undefined ? {} : { title: args.title }),
+      }
+      const revision = computeArticleRevision(bytes, manifest)
+      const articlePath = `revisions/${revision.id}/article.md`
+      const manifestPath = `revisions/${revision.id}/manifest.json`
+      await writeIdenticalOrNew(store, articlePath, bytes, exec.signal)
+      await assertSourceUnchanged(fs, workspace, args.sourcePath, source, bytes, exec.signal)
+      for (const image of images) {
+        const current = await fs.resolve(image.source, { signal: exec.signal })
+        const currentBytes = await fs.readBytes(current, exec.signal, MAX_SOURCE_BYTES)
+        if (current.targetKey !== image.targetKey || sha256(currentBytes) !== sha256(image.bytes)) throw new Error('正文图片已经变化，请重新打开文章。')
+        await writeIdenticalOrNew(store, `revisions/${revision.id}/${image.path}`, image.bytes, exec.signal)
+      }
+      await writeIdenticalOrNew(store, manifestPath, encodeJson(manifest), exec.signal)
+      const locations = [articlePath, manifestPath]
+      return domainResult({
+        revisionId: revision.id,
+        articlePath,
+        manifestPath,
+        articleSha256: revision.articleSha256,
+        ...(manifest.title === undefined ? {} : { title: manifest.title }),
+        locations,
+      })
+  }
+}
+
+export function createStartArticleTool(dependencies: StartArticleToolDependencies) {
+  const operation = createStartArticleOperation(dependencies)
   return defineTool({
     name: 'md2wechat_start_article',
     description: 'Copy a Markdown source into a new immutable md2wechat article revision without changing the source.',
@@ -53,33 +109,7 @@ export function createStartArticleTool({
         text: `Article revision ${value.revisionId} is ready at ${value.articlePath}; use ${value.manifestPath} for later md2wechat tools.`,
       }],
     },
-    async execute(args, exec) {
-      assertKnownArguments(args, ['sourcePath', 'title'])
-      const source = await resolveSource(fs, workspace, args.sourcePath, exec.signal)
-      const bytes = await fs.readBytes(source.target, exec.signal, MAX_SOURCE_BYTES)
-      const manifest: ArticleManifest = {
-        schemaVersion: 1,
-        articlePath: 'article.md',
-        manifestPath: 'manifest.json',
-        createdAt: now().toISOString(),
-        ...(args.title === undefined ? {} : { title: args.title }),
-      }
-      const revision = computeArticleRevision(bytes, manifest)
-      const articlePath = `revisions/${revision.id}/article.md`
-      const manifestPath = `revisions/${revision.id}/manifest.json`
-      await writeIdenticalOrNew(store, articlePath, bytes, exec.signal)
-      await assertSourceUnchanged(fs, workspace, args.sourcePath, source, bytes, exec.signal)
-      await writeIdenticalOrNew(store, manifestPath, encodeJson(manifest), exec.signal)
-      const locations = [articlePath, manifestPath]
-      return domainResult({
-        revisionId: revision.id,
-        articlePath,
-        manifestPath,
-        articleSha256: revision.articleSha256,
-        ...(manifest.title === undefined ? {} : { title: manifest.title }),
-        locations,
-      })
-    },
+    execute: operation,
     presentCall: args => genericCall('Start md2wechat article', 'edit', args.sourcePath, [args.sourcePath]),
     presentResult: () => genericResult('Article workspace ready'),
   })

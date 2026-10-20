@@ -560,6 +560,7 @@ export async function nodePinnedHttpsRequest(options: PinnedHttpsRequest): Promi
   return new Promise((resolve, reject) => {
     const request = httpsRequest({
       protocol: 'https:', hostname: options.hostname, port: options.port, path: options.path,
+      agent: false,
       method: 'GET', servername: options.servername, headers: { host: new URL(options.url).host, 'accept-encoding': 'identity' },
       lookup: (_hostname, lookupOptions, callback) => {
         const family = isIP(options.address) as 4 | 6
@@ -642,7 +643,7 @@ function extensionForMime(value: SupportedImageMime): AcquiredRemoteImage['exten
   switch (value) { case 'image/png': return '.png'; case 'image/jpeg': return '.jpg'; case 'image/gif': return '.gif'; case 'image/webp': return '.webp' }
 }
 
-function validateImageBytes(type: SupportedImageMime, bytes: Uint8Array): void {
+export function validateImageBytes(type: SupportedImageMime, bytes: Uint8Array): void {
   const matches = type === 'image/png' ? starts(bytes, [137, 80, 78, 71, 13, 10, 26, 10])
     : type === 'image/jpeg' ? starts(bytes, [0xff, 0xd8, 0xff])
       : type === 'image/gif' ? starts(bytes, [71, 73, 70, 56, 55, 97]) || starts(bytes, [71, 73, 70, 56, 57, 97])

@@ -132,6 +132,8 @@ describe('external image plan state', () => {
     await expect(fs.writeText(join(store.resolve('.trusted'), 'marker'), '{}')).rejects.toMatchObject({ code: 'FS_PERMISSION' })
     await expect(fs.writeText(join(store.resolve('.trusted'), '..', '.trusted', 'dot-marker'), '{}')).rejects.toMatchObject({ code: 'FS_PERMISSION' })
     await expect(fs.mkdir(join(store.resolve('.trusted'), 'directory'))).rejects.toMatchObject({ code: 'FS_PERMISSION' })
+    // Exercise a real alias on case-sensitive filesystems as well.
+    if (process.platform !== 'darwin') await symlink(stateDir, store.resolve('.TRUSTED'))
     await expect(fs.writeText(join(store.resolve('.TRUSTED'), 'case-marker'), '{}')).rejects.toMatchObject({ code: 'FS_PERMISSION' })
     await expect(state.verify(store, proposal())).resolves.toBeUndefined()
   })

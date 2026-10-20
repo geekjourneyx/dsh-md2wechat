@@ -1,7 +1,8 @@
+import { sandboxPolicyFixture } from '../fixtures/sandbox-policy.ts'
 import { resolve } from 'node:path'
-import { Context } from '../../../../web/deepseek-harness/vendor/cordis/src/index.ts'
-import ToolRuntime, { defineTool } from '../../../../web/deepseek-harness/packages/core/tools/src/index.ts'
-import SystemPrompt from '../../../../web/deepseek-harness/packages/core/system-prompt/src/index.ts'
+import { Context } from '@deepseek-ai/cordis'
+import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { afterEach, describe, expect, it } from 'vitest'
 import * as plugin from '../../src/index.ts'
 import type { Config } from '../../src/config.ts'
@@ -15,7 +16,8 @@ const BASE_TOOLS = [
   'md2wechat_export',
 ] as const
 
-const ALL_TOOLS = [...BASE_TOOLS, 'md2wechat_create_draft', 'md2wechat_generate_images'] as const
+const CREATOR_TOOLS = ['md2wechat_open_workspace', 'md2wechat_propose_changes'] as const
+const ALL_TOOLS = [...BASE_TOOLS, 'md2wechat_create_draft', 'md2wechat_generate_images', ...CREATOR_TOOLS] as const
 
 interface FakeSubprocessOptions {
   malformed?: boolean
@@ -99,6 +101,7 @@ async function harness(options: FakeSubprocessOptions = {}): Promise<HarnessFixt
   const runningJobs = new Set<string>()
   ctx.provide('subprocess', subprocess as never)
   ctx.provide('fs', {} as never)
+  ctx.provide('sandboxPolicy', sandboxPolicyFixture(process.cwd()) as never)
   ctx.provide('approval', { request: () => Promise.resolve('rejected') } as never)
   ctx.provide('credentials', { resolve: () => Promise.resolve(undefined) } as never)
   ctx.provide('jobs', {
@@ -146,7 +149,7 @@ describe('DSH plugin entry and activation', () => {
     expect(plugin.name).toBe('dsh-md2wechat')
     expect(plugin.Config).toBeTypeOf('function')
     expect(plugin.apply).toBeTypeOf('function')
-    expect(plugin.inject).toEqual(['tools', 'subprocess', 'fs', 'approval', 'credentials', 'jobs', 'systemPrompt'])
+    expect(plugin.inject).toEqual(['tools', 'subprocess', 'fs', 'approval', 'credentials', 'jobs', 'systemPrompt', 'sandboxPolicy'])
   })
 
   it('probes version then capabilities before registering anything', async () => {
@@ -204,10 +207,10 @@ describe('DSH plugin entry and activation', () => {
 
 describe('feature gates and lifecycle ownership', () => {
   it.each([
-    ['base only', false, false, [...BASE_TOOLS]],
-    ['write without fallback', true, false, [...BASE_TOOLS, 'md2wechat_create_draft']],
-    ['fallback switch without write', false, true, [...BASE_TOOLS]],
-    ['write with fallback', true, true, [...BASE_TOOLS, 'md2wechat_create_draft', 'md2wechat_generate_images']],
+    ['base only', false, false, [...BASE_TOOLS, ...CREATOR_TOOLS]],
+    ['write without fallback', true, false, [...BASE_TOOLS, 'md2wechat_create_draft', ...CREATOR_TOOLS]],
+    ['fallback switch without write', false, true, [...BASE_TOOLS, ...CREATOR_TOOLS]],
+    ['write with fallback', true, true, [...ALL_TOOLS]],
   ] as const)('registers %s in exact order with matching prompt text', async (_label, write, fallback, expected) => {
     const fixture = await harness()
     const fiber = await fixture.ctx.plugin(plugin, config({

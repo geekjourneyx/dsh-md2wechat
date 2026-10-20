@@ -92,6 +92,7 @@ export class ArtifactStore {
     readonly workspace: string,
     readonly rootRelative: string,
     private readonly internals: ArtifactStoreInternals = {},
+    private readonly authorizeMutation?: (path: string) => Promise<void>,
   ) {
     if (!isAbsolute(workspace)) throw new TypeError('workspace must be an absolute path')
     validateArtifactRelativePath(rootRelative)
@@ -152,6 +153,7 @@ export class ArtifactStore {
     if (info.type !== 'file') throw new Error('artifact input must be a regular file')
     const bytes = await this.fs.readBytes(target, signal, MAX_ARTIFACT_BYTES)
     if (sha256(bytes) !== expectedSha256) throw new Error('artifact input content changed before authorization')
+    const native = await requireNativeFileIdentity(this.fs.processPath(target), 'artifact input')
     const targetKey = target.targetKey
     const version = info.version
     return {
@@ -163,6 +165,7 @@ export class ArtifactStore {
         const currentInfo = await this.fs.stat(current, spawnSignal)
         if (currentInfo === undefined || currentInfo.type !== 'file') throw new Error('artifact input is no longer the same regular file before spawn')
         if (currentInfo.version !== version) throw new Error('artifact input version changed before spawn')
+        await requireSameNativeState(this.fs.processPath(current), native, 'artifact input')
         const currentBytes = await this.fs.readBytes(current, spawnSignal, MAX_ARTIFACT_BYTES)
         if (sha256(currentBytes) !== expectedSha256) throw new Error('artifact input content changed before spawn')
         const finalTarget = await this.resolveContained(relative, spawnSignal)
@@ -234,6 +237,7 @@ export class ArtifactStore {
     const tempRelative = `${tempDirectoryRelative}/payload`
     const tempTarget = await this.resolveContained(tempRelative, signal)
     const tempParent = await this.resolveContained(tempDirectoryRelative, signal)
+    await this.authorizeMutation?.(destination)
     await mkdir(dirname(destination), { recursive: true })
     let handle: Awaited<ReturnType<typeof open>> | undefined
     let primary: unknown
@@ -244,6 +248,7 @@ export class ArtifactStore {
       const binding = await this.bindPublication(target, relative, signal)
       const boundTempParent = await this.revalidateContained(tempDirectoryRelative, tempParent, signal, 'exclusive temporary directory changed before write')
       const boundTemp = await this.revalidateContained(tempRelative, tempTarget, signal, 'exclusive temporary file changed before write')
+      await this.authorizeMutation?.(this.fs.processPath(boundTemp))
       handle = await open(this.fs.processPath(boundTemp), 'wx', 0o600)
       await handle.writeFile(bytes, signal === undefined ? undefined : { signal })
       await handle.sync()
@@ -254,6 +259,7 @@ export class ArtifactStore {
       const current = await this.revalidateBinding(binding, signal)
       const currentTemp = await this.revalidateTemp(this.fs.processPath(boundTemp), boundTemp, boundTempParent, tempRelative, signal)
       try {
+        await this.authorizeMutation?.(this.fs.processPath(current.target))
         await (this.internals.link ?? link)(this.fs.processPath(currentTemp), this.fs.processPath(current.target))
       } catch (error) {
         if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
@@ -301,6 +307,7 @@ export class ArtifactStore {
       if (current.targetKey !== target.targetKey || currentInfo?.type !== 'file') return
       const currentBytes = await this.fs.readBytes(current, signal, MAX_ARTIFACT_BYTES)
       if (sha256(currentBytes) !== expectedSha256) return
+      await this.authorizeMutation?.(this.fs.processPath(current))
       await rm(this.fs.processPath(current))
     } catch (error) {
       if (error instanceof Error && (('code' in error && (error.code === 'FS_NOT_FOUND' || error.code === 'ENOENT')))) return
@@ -424,6 +431,7 @@ export class ArtifactStore {
       signal?.throwIfAborted()
       requireSameNativeStateSync(parentPath, parentNative, 'export destination ancestor')
       const destinationPath = join(parentPath, segment)
+      await this.authorizeMutation?.(destinationPath)
       await this.internals.beforeExportDirectoryCreate?.({ parentPath, destinationPath })
       signal?.throwIfAborted()
       requireSameNativeStateSync(parentPath, parentNative, 'export destination ancestor')
@@ -463,6 +471,7 @@ export class ArtifactStore {
     const stageRelative = `${stageDirectoryRelative}/output`
     const reservedTarget = await this.resolveContained(stageRelative, signal)
     const reservedParent = await this.resolveContained(stageDirectoryRelative, signal)
+    await this.authorizeMutation?.(this.fs.processPath(reservedTarget))
     await mkdir(this.fs.processPath(reservedParent), { recursive: true, mode: 0o700 })
     const parent = await this.revalidateContained(stageDirectoryRelative, reservedParent, signal, 'staging directory changed during reservation')
     const target = await this.revalidateContained(stageRelative, reservedTarget, signal, 'staging output changed during reservation')
@@ -490,6 +499,7 @@ export class ArtifactStore {
           throw new Error('staging output left its reserved directory before spawn')
         }
         if (await this.fs.stat(current, spawnSignal) !== undefined) throw new Error('staging output already exists before spawn')
+        await this.authorizeMutation?.(this.fs.processPath(current))
       },
       read: async (maxBytes: number, readSignal?: AbortSignal): Promise<Uint8Array> => {
         if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_ARTIFACT_BYTES) {
@@ -576,6 +586,7 @@ export class ArtifactStore {
     signal?.throwIfAborted()
     const initialDestination = this.fs.processPath(target)
     const initialDirectory = dirname(initialDestination)
+    await this.authorizeMutation?.(initialDestination)
     await mkdir(initialDirectory, { recursive: true })
     signal?.throwIfAborted()
     await this.internals.beforeNativeStage?.({ destinationPath: initialDestination, directoryPath: initialDirectory })
@@ -588,6 +599,7 @@ export class ArtifactStore {
     let handle: Awaited<ReturnType<typeof open>> | undefined
     let tempTarget: FsTarget | undefined
     try {
+      await this.authorizeMutation?.(temp)
       handle = await open(temp, 'wx', 0o600)
       tempTarget = await this.fs.resolve(temp, resolveOptions(signal))
       await this.revalidateTemp(temp, tempTarget, binding.parent, relative, signal)
@@ -599,6 +611,7 @@ export class ArtifactStore {
       await this.internals.beforeNativeCommit?.({ destinationPath: destination, tempPath: temp })
       const current = await this.revalidateBinding(binding, signal)
       const currentTemp = await this.revalidateTemp(temp, tempTarget, binding.parent, relative, signal)
+      await this.authorizeMutation?.(this.fs.processPath(current.target))
       await (this.internals.rename ?? rename)(
         this.fs.processPath(currentTemp),
         this.fs.processPath(current.target),
@@ -633,6 +646,7 @@ export class ArtifactStore {
     let handle: Awaited<ReturnType<typeof open>> | undefined
     let tempTarget: FsTarget | undefined
     try {
+      await this.authorizeMutation?.(temp)
       handle = await open(temp, 'wx', 0o600)
       tempTarget = await this.fs.resolve(temp, resolveOptions(signal))
       await this.revalidateTemp(temp, tempTarget, binding.parent, undefined, signal)
@@ -646,6 +660,7 @@ export class ArtifactStore {
       await prepareCommit()
       const current = await this.revalidateBinding(binding, signal)
       const currentTemp = await this.revalidateTemp(temp, tempTarget, binding.parent, undefined, signal)
+      await this.authorizeMutation?.(this.fs.processPath(current.target))
       this.commitAuthorizedSync(currentTemp, current, stagedTempNative, destinationNative, parentNative, expectedSha256, expectedSize)
     } catch (error) {
       let failure: unknown = error

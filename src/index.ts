@@ -3,7 +3,13 @@
  * @module @geekjourneyx/dsh-md2wechat
  */
 
+import type {} from '@deepseek-ai/dsh-system-prompt'
 import type { Context } from '@deepseek-ai/cordis'
+import { CreatorService } from './creator/service.ts'
+import { creatorOperations } from './creator/runtime.ts'
+import { createOperationTurnRunner } from './creator/operation-turn.ts'
+import { createOpenWorkspaceTool, createProposeChangesTool } from './creator/tool.ts'
+import { CreatorRemote } from './creator/remote.ts'
 import type { CliEnvelope } from './cli/protocol.ts'
 import { createCliGateway } from './cli/gateway.ts'
 import { resolveConfig } from './config.ts'
@@ -26,7 +32,7 @@ export { Config } from './config.ts'
 export const name = 'dsh-md2wechat'
 
 /** DSH services required before the plugin can activate. */
-export const inject = ['tools', 'subprocess', 'fs', 'approval', 'credentials', 'jobs', 'systemPrompt'] as const
+export const inject = ['tools', 'subprocess', 'fs', 'approval', 'credentials', 'jobs', 'systemPrompt', 'sandboxPolicy'] as const
 
 const SAFE_AUDIT_MESSAGES = new Set([
   'article preview operation history could not be recorded',
@@ -112,6 +118,11 @@ export async function apply(ctx: Context, input: PluginConfig): Promise<void> {
     }
   }
 
+  const turns = createOperationTurnRunner(ctx)
+  const creator = new CreatorService(creatorOperations(ctx, config, gateway, reportAuditFailure, turns), config.previewTheme)
+  ctx.plugin(CreatorRemote, creator)
+  tools.push(createOpenWorkspaceTool(creator), createProposeChangesTool(creator))
+
   for (const tool of tools) ctx.tools.register(tool)
   ctx.systemPrompt.section({
     name: 'tool:md2wechat',
@@ -163,3 +174,5 @@ function createAuditReporter(ctx: Context): (message: string) => void {
     }
   }
 }
+
+export { CreatorRemote } from './creator/remote.ts'

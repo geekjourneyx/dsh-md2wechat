@@ -1,21 +1,31 @@
 {
-  "extends": "../../web/deepseek-harness/tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "lib/types"
+    "outDir": "lib/types",
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "declaration": true,
+    "composite": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "src"
   ],
-  "references": [
-    { "path": "../../web/deepseek-harness/vendor/cordis" },
-    { "path": "../../web/deepseek-harness/vendor/schemastery" },
-    { "path": "../../web/deepseek-harness/packages/core/tools" },
-    { "path": "../../web/deepseek-harness/packages/subprocess/subprocess" },
-    { "path": "../../web/deepseek-harness/packages/fs/fs" },
-    { "path": "../../web/deepseek-harness/packages/interaction/user-approval" },
-    { "path": "../../web/deepseek-harness/packages/credentials/credentials" },
-    { "path": "../../web/deepseek-harness/packages/jobs/jobs" },
-    { "path": "../../web/deepseek-harness/packages/core/system-prompt" }
+  "exclude": [
+    "src/client"
   ]
 }
