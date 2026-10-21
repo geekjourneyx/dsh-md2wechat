@@ -13,31 +13,24 @@ Turn a Markdown article into a reviewed WeChat layout inside [DeepSeek Harness](
 
 > **Release status:** the creator workspace is on `main`; `2.0.0-rc.1` is the planned, **unreleased** prerelease. The [v1.0.0 archive](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v1.0.0) contains the earlier tool-based workflow and is not a creator-workspace package. Once published, use the prebuilt archive and checksum from [GitHub Releases](https://github.com/geekjourneyx/dsh-md2wechat/releases); until then, the source build below is a developer fallback. Real-browser and live-service acceptance remain separate checks.
 
-## Start with an article, not a tool checklist
+## Write in the conversation
 
-Ask your DSH agent:
+Tell the DSH assistant what you want to write. After composing the article, the assistant creates an article card directly in that conversation. You do not need to type a file path, choose a session, or recover an old version.
 
-```text
-Open article.md in the WeChat creator workspace.
-Keep my source unchanged; let me review the layout and choose any changes.
-```
+1. Click **预览与调整** on the article card. The article opens in DSH's native right panel; the conversation and its input remain available.
+2. Choose **排版**, **标题与文字**, or **配图**. Edit the title directly, compare suggested changes, and choose an image file. Body images attach to a paragraph you select.
+3. Click **保存到公众号草稿箱**. Check the configured account and actual publication title, prepare selected images, review the final preview, then explicitly confirm the unpublished draft. The plugin never publishes or mass-sends.
+4. **文章历史** is only for finding previously saved articles. Normal writing stays in the conversation.
 
-Use the fixed **文章 (Articles)** entry in DSH to open the article main panel. Select the session whose workspace contains your Markdown, then open the file or continue a saved article. The agent can also give you an **打开文章** shortcut in the conversation; the article itself is no longer confined to that message. You stay in DSH, not a separate website.
+Sources stay unchanged. Text imports are limited to 2 MiB; images to 8 MiB (PNG, JPEG, GIF, WebP). Imported text containing relative image references must be opened from its original workspace file, or have those references replaced before import. The assistant resolves existing file paths; the author need not know them.
 
-1. **See the article.** Approve sending article content to the configured layout service, then compare real previews, available themes and 320, 375 or 390 px reading widths.
-2. **Choose what improves it.** Review up to three exact before/after suggestions. Apply one, keep the original or undo.
-3. **Add images if they help.** Pick a cover or place a body image beside a supported paragraph. Nothing is selected for you.
-4. **Take away what you reviewed.** Export portable HTML, or prepare the selected WeChat images, review again and confirm an unpublished draft.
-
-Your source stays unchanged. Theme selections and applying edits do not ask a model to reinterpret your click. The plugin never publishes or mass-sends.
-
-**Tested path:** packed-plugin installation and the creator flow have been exercised against both supported official hosts and both CLI regression versions, with a loopback renderer and simulated WeChat writes. See the [acceptance harness](./scripts/creator-host-acceptance/README.md) for scope and limits.
+**Current repair verification:** automated checks and installed acceptance use DSH `0.2.1-rc.2`, CLI `3.8.0`, a local renderer fixture and simulated WeChat writes. The revised conversation UI has been opened in the real host. Earlier compatibility coverage does not replace re-running this revision on every target. Live WeChat writes and paid image generation are not claimed verified.
 
 ## Get started
 
 ### 1. Check the requirements
 
-- **DSH host and web client:** matching `0.2.0-rc.2` or `0.2.1-rc.2`. Both exact versions are covered by installed HTTP/Remote acceptance with CLI `3.3.0` and `3.8.0`; other host versions are not claimed compatible. The move from the v1 target, `0.1.0-rc.5`, remains breaking.
+- **DSH host and web client:** matching `0.2.0-rc.2` or `0.2.1-rc.2`. These are the supported targets; this repair was rechecked on `0.2.1-rc.2` with CLI `3.8.0`. Re-run the matrix before releasing to both targets. The move from the v1 target, `0.1.0-rc.5`, remains breaking.
 - **Runtime:** Node.js `^22.19.0` or `>=24.0.0`, with `dsh` available. Node.js `22.19.0` is supported; Node 24 is not mandatory. An npm-launched DSH host also needs pnpm available; a bundled host may include it. Source builds use pnpm `11.7.0`.
 - **Renderer:** a separately installed `md2wechat` CLI with the supported `v1` JSON protocol and required command capabilities. Versions `3.3.0` and `3.8.0` are regression targets, not an exact-version allowlist.
 - **Workspace:** your Markdown and any local images inside the current session workspace.

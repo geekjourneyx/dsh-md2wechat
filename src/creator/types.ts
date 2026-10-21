@@ -36,6 +36,7 @@ export interface CreatorView {
   suggestionRequest: CreatorSuggestionRequest | null
 }
 export type CreatorAction =
+  | { type: 'set-title'; title: string }
   | { type: 'select-theme'; theme: string }
   | { type: 'refresh-preview' }
   | { type: 'review-current'; previewPath: string; previewSha256: string; publicationTitle: string }
@@ -72,3 +73,7 @@ export interface CreatorDocumentV1 {
   version: number
   updatedAt: string
 }
+
+export interface ArticleImportRequest { name: string; markdown: string }
+
+export interface ImageBytesRequest { name: string; contentType: string; data: number[] }

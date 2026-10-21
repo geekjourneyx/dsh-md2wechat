@@ -1,3 +1,4 @@
+import { replaceArticleTitle } from './title.ts'
 import { creatorRemoteError } from './errors.ts'
 import { isLegacyRevisionSource, legacyRevisionSource, LEGACY_RECOVERY_MESSAGE } from './legacy.ts'
 import type { DocumentStore } from './documents.ts'
@@ -11,10 +12,12 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { Agent } from '@deepseek-ai/dsh-agent/types'
 import { CreatorSession } from './session.ts'
 import type { CreatorRevision, CreatorPreviewProof } from './session.ts'
-import type { ArticleSummary, CreatorAction, CreatorOpenOptions, CreatorRevisionSummary, CreatorTheme, CreatorView } from './types.ts'
+import type { ImageBytesRequest, ArticleImportRequest, ArticleSummary, CreatorAction, CreatorOpenOptions, CreatorRevisionSummary, CreatorTheme, CreatorView } from './types.ts'
 
 /** Session-scoped domain operations retain their own approval and filesystem checks. */
 export interface CreatorOperations {
+  importImageBytes?(input: ImageBytesRequest, signal: AbortSignal): Promise<string>
+  importSource?(input: ArticleImportRequest, signal: AbortSignal): Promise<string>
   documents: Pick<DocumentStore, 'list' | 'read' | 'save' | 'deliveryStatus' | 'beginDelivery' | 'completeDelivery' | 'reconcileDelivery'>
   assertReadable(signal: AbortSignal): Promise<void>
   sourceSnapshot(source: string, signal: AbortSignal): Promise<{ path: string; sha256: string }>
@@ -48,6 +51,19 @@ export class CreatorService {
 
   private readonly commits = new Map<string, Promise<unknown>>()
 
+  async importImageBytes(agent: Agent, input: ImageBytesRequest, signal: AbortSignal): Promise<{ sourcePath: string }> {
+    const operations = this.operations(agent)
+    await operations.assertReadable(signal); await operations.assertWritable(signal)
+    if (!operations.importImageBytes) throw new Error('unavailable')
+    return { sourcePath: await operations.importImageBytes(input, signal) }
+  }
+  async importSource(agent: Agent, input: ArticleImportRequest, signal: AbortSignal): Promise<CreatorView> {
+    const operations = this.operations(agent)
+    await operations.assertReadable(signal); await operations.assertWritable(signal)
+    if (!operations.importSource) throw new Error('unavailable')
+    const source = await operations.importSource(input, signal)
+    return this.open(agent, source, '', signal)
+  }
   async list(agent: Agent, signal: AbortSignal): Promise<ArticleSummary[]> {
     const operations = this.operations(agent)
     await operations.assertReadable(signal)
@@ -237,8 +253,9 @@ export class CreatorService {
         return this.owned(agent, articleId).view()
       }
       case 'dismiss-suggestion': state.dismiss(version, action.suggestionId); break
+      case 'set-title':
       case 'apply-suggestion': {
-        const markdown = applyExactChange(state.revision.markdown, state.suggestion(version, action.suggestionId))
+        const markdown = action.type === 'set-title' ? replaceArticleTitle(state.revision.markdown, action.title) : applyExactChange(state.revision.markdown, state.suggestion(version, action.suggestionId))
         const revised = await operations.revise(state.revision, markdown, signal, state.candidates())
         const candidates = await operations.rebindImages(revised, state.candidates(), signal)
         signal.throwIfAborted(); if (this.delivering.has(articleId)) throw new Error('正在交付当前版本，请完成后再修改。'); state.replaceRevision(version, revised, true); state.rebindCandidates(candidates)

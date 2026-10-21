@@ -15,7 +15,7 @@ const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('h
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 async function fixture() {
-  const parent = await mkdtemp(join(tmpdir(), 'creator-import-')); roots.push(parent)
+  const parent = await realpath(await mkdtemp(join(tmpdir(), 'creator-import-'))); roots.push(parent)
   const root = join(parent, 'workspace'); await mkdir(root)
   const hooks: { afterRead?: (path: string) => Promise<void>; beforePublish?: () => Promise<void> } = {}
   const fs = {

@@ -5,21 +5,23 @@ import type { CreatorService } from './service.ts'
 export function createOpenWorkspaceTool(service: CreatorService) {
   return defineTool({
     name: 'md2wechat_open_workspace',
-    description: 'Open a Markdown article in the native WeChat creator workspace to preview, compare themes and review changes. Original files remain unchanged.',
+    description: 'Show an article card in the current conversation so the author can preview, adjust and save a WeChat draft. Pass markdown for text just written in chat, or sourcePath for an existing workspace file. Never ask the author to type a path.',
     parameters: {
-      sourcePath: { type: 'string', required: true, description: 'Markdown source inside this session workspace.' },
+      markdown: { type: 'string', description: 'Full Markdown article composed in this conversation. Use instead of sourcePath for a new article.' },
+      sourcePath: { type: 'string', description: 'Markdown source inside this session workspace.' },
       title: { type: 'string', description: 'Optional article title.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: {
         articleId: { type: 'string', required: true }, title: { type: 'string', required: true },
       } },
-      render: (_args, value) => [{ type: 'text', text: `已打开「${value.title}」。在文章工作区中查看预览、选择主题和审阅，不必手动编排工具。` }],
+      render: (_args, value) => [{ type: 'text', text: `「${value.title}」已准备好。点开文章卡片，查看效果、调整标题与配图，最后保存到公众号草稿箱。` }],
       presentationMeta: (_args, value) => ({ kind: 'md2wechat-creator', schemaVersion: 1, articleId: value.articleId }),
     },
     async execute(args, exec) {
       if (!exec.agent) throw new Error('请在文章所属的会话中打开工作区。')
-      const view = await service.open(exec.agent, args.sourcePath, args.title ?? '', exec.signal)
+      if (!args.markdown && !args.sourcePath) throw new Error('请提供文章正文。')
+      const view = args.markdown ? await service.importSource(exec.agent, { name: args.title || '文章', markdown: args.markdown }, exec.signal) : await service.open(exec.agent, args.sourcePath!, args.title ?? '', exec.signal)
       return { articleId: view.articleId, title: view.title }
     },
   })

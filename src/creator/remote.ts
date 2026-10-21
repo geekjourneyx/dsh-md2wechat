@@ -2,9 +2,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent/types'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { creatorRemoteError } from './errors.ts'
-import type { ArticleSummary, CreatorAction, CreatorOpenOptions, CreatorRevisionSummary, CreatorView } from './types.ts'
+import type { ImageBytesRequest, ArticleImportRequest, ArticleSummary, CreatorAction, CreatorOpenOptions, CreatorRevisionSummary, CreatorView } from './types.ts'
 
 export interface CreatorBackend {
+  importImageBytes?(agent: Agent, input: ImageBytesRequest, signal: AbortSignal): Promise<{ sourcePath: string }>
+  importSource?(agent: Agent, input: ArticleImportRequest, signal: AbortSignal): Promise<CreatorView>
   discoverRevisions(agent: Agent, signal: AbortSignal): Promise<CreatorRevisionSummary[]>
   recoverRevision(agent: Agent, manifestPath: string, signal: AbortSignal): Promise<CreatorView>
   list(agent: Agent, signal: AbortSignal): Promise<ArticleSummary[]>
@@ -30,6 +32,14 @@ export class CreatorRemote extends TypertRemoteService {
   @Remote('open')
   async open(agent: Agent, source: string, title: string, options: CreatorOpenOptions, signal: AbortSignal): Promise<CreatorView> {
     return this.invoke(signal, backend => backend.open(agent, source, title, signal, options))
+  }
+  @Remote('importImageBytes')
+  async importImageBytes(agent: Agent, input: ImageBytesRequest, signal: AbortSignal): Promise<{ sourcePath: string }> {
+    return this.invoke(signal, backend => { if (!backend.importImageBytes) throw new Error('unavailable'); return backend.importImageBytes(agent, input, signal) })
+  }
+  @Remote('importSource')
+  async importSource(agent: Agent, input: ArticleImportRequest, signal: AbortSignal): Promise<CreatorView> {
+    return this.invoke(signal, backend => { if (!backend.importSource) throw new Error('unavailable'); return backend.importSource(agent, input, signal) })
   }
   @Remote('resume')
   async resume(agent: Agent, articleId: string, signal: AbortSignal): Promise<CreatorView> {

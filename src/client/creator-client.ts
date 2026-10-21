@@ -24,6 +24,12 @@ export function createCreatorClient(ctx: Context, sessionId: string, articleId: 
     return value.data
   }
   return {
+    async uploadImage(file, signal) {
+      if (file.size > 8*1024*1024) throw creatorErrorInfo(new Error('[md2wechat:IMAGE_INVALID]'))
+      const data = Array.from(new Uint8Array(await file.arrayBuffer()))
+      signal.throwIfAborted()
+      return remoteValue(() => ctx.remote.md2wechat.importImageBytes(id, { name: file.name, contentType: file.type, data }, signal))
+    },
     get: signal => remoteValue(() => ctx.remote.md2wechat.get(id, articleId, signal)),
     dispatch: (version, action, signal) => remoteValue(() => ctx.remote.md2wechat.dispatch(id, articleId, version, action, signal)),
     async readImage(image, signal) { return dataUrl(await readBytes(image.path, image.sha256, signal), image.contentType) },
@@ -41,6 +47,13 @@ export function createCreatorClient(ctx: Context, sessionId: string, articleId: 
 /** Catalog and navigation are hints only; every Remote method authenticates the exact session. */
 export function createArticlePanelClient(ctx: Context): ArticlePanelClient {
   return {
+    // Supported hosts do not expose global main-panel chat selection. Never infer it from catalog order.
+    getCurrentSessionId: () => undefined,
+    listFiles: (sessionId, path, signal) => remoteValue(() => ctx.remote.workspaceFiles.list(sessionId as SessionId, path, signal)),
+    async importSource(sessionId, input, signal) {
+      const view = await remoteValue(() => ctx.remote.md2wechat.importSource(sessionId as SessionId, input, signal))
+      return { articleId: view.articleId, title: view.title, sourcePath: '', updatedAt: '' }
+    },
     async listSessions(signal) {
       signal.throwIfAborted()
       try { await ctx.sessions.refresh() } catch (error) { throw creatorErrorInfo(error) }

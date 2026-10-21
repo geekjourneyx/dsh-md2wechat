@@ -70,7 +70,7 @@ async function failureCode(result: Promise<unknown>, code: CreatorErrorCode) {
 
 describe('authenticated article Remote contract', () => {
   it('marks every endpoint for injected Agent lookup and exposes no caller-supplied owner', () => {
-    expect(remoteMethods(remote()).map(marker => marker.exportName ?? marker.method).sort()).toEqual(['discoverRevisions', 'dispatch', 'get', 'list', 'open', 'recoverRevision', 'resume', 'session'])
+    expect(remoteMethods(remote()).map(marker => marker.exportName ?? marker.method).sort()).toEqual(['discoverRevisions', 'dispatch', 'get', 'importImageBytes', 'importSource', 'list', 'open', 'recoverRevision', 'resume', 'session'])
   })
 
   it('lists and resumes only the authenticated session even when sessions share a directory', async () => {

@@ -1,3 +1,4 @@
+import { withFrontmatterTitle } from './title.ts'
 import { createHash } from 'node:crypto'
 import type { ArtifactReadAuthorization, ArtifactStore } from '../workspace/artifact-store.ts'
 import { computeArticleRevision } from '../workspace/revision.ts'
@@ -24,6 +25,10 @@ export async function reviseCreatorArticle(
   if (typeof markdown !== 'string' || !markdown.isWellFormed()) throw new Error('文章必须是有效的 Unicode Markdown。')
   if (markdown.startsWith('\uFEFF')) throw new Error('文章开头含有 BOM，请先移除 BOM 后再保存；原文未更改。')
   if (Buffer.byteLength(markdown, 'utf8') > MAX_MARKDOWN_BYTES) throw new Error('article exceeds the 8-MiB limit')
+  const changedHeading = firstHeading(markdown)
+  if (changedHeading && changedHeading !== firstHeading(previous.markdown)) {
+    markdown = withFrontmatterTitle(markdown, changedHeading)
+  }
   const bytes = new TextEncoder().encode(markdown)
   const manifestBytes = await store.readBounded(previous.manifestPath, MAX_MARKDOWN_BYTES, signal)
   const manifestAuthorization = await store.authorizeRead(previous.manifestPath, sha256(manifestBytes), signal)

@@ -232,7 +232,7 @@ describe('feature gates and lifecycle ownership', () => {
     expect(visibleTools(fixture.ctx)).toEqual(expected)
     expect(new Set(fixture.registrations).size).toBe(fixture.registrations.length)
     const text = await promptText(fixture.ctx)
-    expect(text).toContain('md2wechat_open_workspace first')
+    expect(text).toContain('Keep article creation in the current conversation')
     expect(text).toContain('not the default creator experience')
     expect(text).toContain('signed preview')
     expect(text.includes('unpublished draft')).toBe(write)

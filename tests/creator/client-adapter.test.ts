@@ -54,3 +54,8 @@ describe('shared authenticated creator client adapter', () => {
     await expect(client.readPreview({ status: 'ready', path: 'preview.html', sha256: 'mismatch', assets: [], message: '' }, signal)).rejects.toMatchObject({ code: 'ARTIFACT_INVALID' })
   })
 })
+
+it('never guesses the current session from the first catalog entry', () => {
+ const client = createArticlePanelClient(host() as unknown as Context)
+ expect(client.getCurrentSessionId?.()).toBeUndefined()
+})

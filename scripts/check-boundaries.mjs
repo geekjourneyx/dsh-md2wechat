@@ -8,7 +8,7 @@ const FORBIDDEN_EXECUTABLES = [/^md2wechat(?:-|$)/u]
 const ALLOWED_ROOTS = new Set([
   '.gitignore', 'CHANGELOG.md', 'LICENSE', 'README.md', 'cordis.patch.yml',
   'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'scripts', 'src',
-  'tests', 'tsconfig.json', 'tsconfig.prepare.json', 'tsdown.config.ts',
+  'tests', 'docs', 'tsconfig.json', 'tsconfig.prepare.json', 'tsdown.config.ts',
   'tsdown.prepare.config.ts', 'vitest.config.ts', 'tsconfig.client.json', '.github', 'assets',
 ])
 const README_ASSETS = new Set(['assets', 'assets/readme', 'assets/readme/readme-hero.webp'])

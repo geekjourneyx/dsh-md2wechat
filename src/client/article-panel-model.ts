@@ -33,6 +33,9 @@ export interface ArticlePanelSessionReference {
 
 /** All article methods must recheck the authenticated session on the server. */
 export interface ArticlePanelClient {
+  importSource?(sessionId: string, input: { name: string; markdown: string }, signal: AbortSignal): Promise<ArticlePanelArticle>
+  listFiles?(sessionId: string, path: string, signal: AbortSignal): Promise<{ path: string; entries: readonly { name: string; type: string }[]; truncated: boolean }>
+  getCurrentSessionId?(): string | undefined
   listSessions(signal: AbortSignal): Promise<readonly ArticlePanelSession[]>
   retainSession(sessionId: string, signal: AbortSignal): ArticlePanelSessionReference
   getArticles(sessionId: string, signal: AbortSignal): Promise<readonly ArticlePanelArticle[]>
@@ -82,6 +85,8 @@ type FailureContext = 'sessions' | 'session' | 'articles' | 'open' | 'resume' | 
 export function describeArticlePanelFailure(error: unknown, context: FailureContext): ArticlePanelFailure {
   const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : ''
   switch (code) {
+    case 'IMPORT_INVALID': return { code, message: '请输入有效正文，文章不能超过 2 MiB。' }
+    case 'IMPORT_IMAGES': return { code, message: '文章包含本地配图，请从工作目录选择原文件；或移除引用后导入，再补充图片。' }
     case 'SOURCE_CHANGED': return { code, message: '源文件已变化。请选择继续已保存版本，或将当前文件重新导入为新文章；不会覆盖已保存进度。' }
     case 'FORBIDDEN': case 'PERMISSION_DENIED': return { code, message: '当前会话没有读取这篇文章的权限。请检查会话权限，或选择有权访问的会话后重试。' }
     case 'UNAUTHORIZED': case 'AUTH_REQUIRED': return { code, message: '会话认证已失效。请在宿主重新连接或登录后重试。' }

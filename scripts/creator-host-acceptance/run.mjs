@@ -8,7 +8,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {assertNoAutomaticEffects,assertPendingSuggestion,assertReadOnlyAccess,assertRestoredArticle} from './support.mjs';
 import {exerciseArticlePanel,restoreArticlePanel} from './browser.mjs';
 import assert from 'node:assert/strict';
-const options={};for(let i=2;i<process.argv.length;i++){const key=process.argv[i].replace(/^--/,'');options[key]=['browser','online','fixture-only','simulate-writes'].includes(key)?true:process.argv[++i];}
+const options={};for(let i=2;i<process.argv.length;i++){const key=process.argv[i].replace(/^--/,'');options[key]=['browser','online','fixture-only','simulate-writes','inspect'].includes(key)?true:process.argv[++i];}
 for(const k of ['package','host','cli','root'])assert.ok(typeof options[k]==='string'&&isAbsolute(options[k]),'--'+k+' absolute path required');
 const root=options.root;assert.ok(root.split('/').filter(Boolean).length>=3&&root!=='/workspace/shared','dedicated root required');
 await mkdir(root,{recursive:true,mode:0o700});
@@ -18,7 +18,7 @@ const logs=join(runRoot,'logs'),workspace=join(runRoot,'workspace'),home=join(ru
 const source=join(workspace,'article.md'),outside=join(runRoot,'outside.md');
 await writeFile(source,'---\ntitle: 离线验收文章\nauthor: Fixture\ndigest: 仅本地测试。\n---\n\n# 离线验收文章\n\n这一段验证真实 CLI 排版与原生工作区。\n\n## 小结\n\n保留原文，选择主题后预览。\n');await writeFile(outside,'# Outside the session workspace\n');const original=await readFile(source);
 const requestLog=[];let mockMode='success';
-const mock=createServer(async(req,res)=>{try{let raw='';for await(const chunk of req)raw+=chunk;assert.equal(req.url,'/api/convert');assert.equal(req.method,'POST');assert.equal(req.headers['x-api-key'],'fixture-local-key');const body=JSON.parse(raw);requestLog.push({path:req.url,body});res.setHeader('content-type','application/json');if(mockMode==='failure'){res.statusCode=400;res.end(JSON.stringify({code:1,msg:'fixture rejected'}));return;}const images=[...(body.markdown||'').matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map(m=>`<img src="${m[1]}" />`).join('');const html=`<section data-fixture-theme="${body.theme}"><h1>离线验收文章</h1><p>真实 CLI 接收的本地排版响应。</p>${images}</section>\n`;res.end(JSON.stringify({code:0,data:{html,theme:body.theme,fontSize:body.fontSize||'medium',backgroundType:body.backgroundType||'none',wordCount:30,estimatedReadTime:1}}));}catch(e){res.statusCode=500;res.end(JSON.stringify({error:String(e)}));}});
+const mock=createServer(async(req,res)=>{try{let raw='';for await(const chunk of req)raw+=chunk;assert.equal(req.url,'/api/convert');assert.equal(req.method,'POST');assert.equal(req.headers['x-api-key'],'fixture-local-key');const body=JSON.parse(raw);requestLog.push({path:req.url,body});res.setHeader('content-type','application/json');if(mockMode==='failure'){res.statusCode=400;res.end(JSON.stringify({code:1,msg:'fixture rejected'}));return;}const images=[...(body.markdown||'').matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map(m=>`<img src="${m[1]}" />`).join('');const heading=(/^#\s+(.+)$/mu.exec(body.markdown||'')?.[1]||'离线验收文章').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));const html=`<section data-fixture-theme="${body.theme}"><h1>${heading}</h1><p>真实 CLI 接收的本地排版响应。</p>${images}</section>\n`;res.end(JSON.stringify({code:0,data:{html,theme:body.theme,fontSize:body.fontSize||'medium',backgroundType:body.backgroundType||'none',wordCount:30,estimatedReadTime:1}}));}catch(e){res.statusCode=500;res.end(JSON.stringify({error:String(e)}));}});
 await new Promise(r=>mock.listen(0,'127.0.0.1',r));const api=`http://127.0.0.1:${mock.address().port}`;
 const bridgeLog=join(logs,'simulated-writes.jsonl'),bridgeControl=join(runRoot,'write-control.json');
 await writeFile(bridgeLog,'');await writeFile(bridgeControl,JSON.stringify({failDraft:false}));
@@ -70,7 +70,8 @@ try{
  result=await rpc('md2wechat/dispatch',{...identity,version:view.version,action:{type:'review-current',publicationTitle:view.publicationTitle,previewPath:view.preview.path,previewSha256:'0'.repeat(64)}});assert.equal(result.ok,false,'wrong displayed preview hash accepted');report.checks.wrongPreviewReviewDenied=true;
  result=await rpc('md2wechat/dispatch',{...identity,version:view.version,action:{type:'review-current',publicationTitle:view.publicationTitle,previewPath:view.preview.path,previewSha256:view.preview.sha256}});assert.equal(result.ok,true,JSON.stringify(result));view=result.value;assert.equal(view.reviewed,true);report.checks.review=true;
  mockMode='failure';result=await rpc('md2wechat/dispatch',{...identity,version:view.version,action:{type:'refresh-preview'}});assert.equal(result.ok,true);assert.notEqual(result.value.preview.status,'ready');report.checks.failedPreviewVisible=true;mockMode='success';
- assert.deepEqual(await readFile(source),original);report.checks.originalUnchanged=true;report.sessionId=trajectory.sessionId;report.articleId=trajectory.articleId;
+ assert.deepEqual(await readFile(source),original);report.checks.originalUnchanged=true;
+ report.sessionId=trajectory.sessionId;report.articleId=trajectory.articleId;
  if(options['simulate-writes']){
   const sha=b=>createHash('sha256').update(b).digest('hex');
   const pixel=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6cS8AAAAASUVORK5CYII=','base64');
@@ -145,6 +146,15 @@ try{
  await setFixtureControl({mode:'workspace-write',holdSuggestions:false});report.checks.readOnlyReadsPreservedWritesDenied=true;
  if(page){await restoreArticlePanel({page,launch,logs,panelState,rpc,waitFor,readAudit,effects,report,workspace});await browser.close();browser=undefined;report.browser='passed';}
  assert.deepEqual(await readFile(source),original);report.checks.originalUnchanged=true;
+ const imported=await rpc('md2wechat/importSource',{agentId:identity.agentId,input:{name:'对话文章.md',markdown:'# 对话文章\n\n直接在聊天里完成。'}});assert.equal(imported.ok,true,JSON.stringify(imported));
+ let conversationView=imported.value;
+ const changed=await rpc('md2wechat/dispatch',{agentId:identity.agentId,articleId:conversationView.articleId,version:conversationView.version,action:{type:'set-title',title:'新的公众号标题'}});assert.equal(changed.ok,true,JSON.stringify(changed));assert.equal(changed.value.title,'新的公众号标题');assert.equal(changed.value.reviewed,false);
+ const refreshed=await rpc('md2wechat/dispatch',{agentId:identity.agentId,articleId:conversationView.articleId,version:changed.value.version,action:{type:'refresh-preview'}});assert.equal(refreshed.ok,true,JSON.stringify(refreshed));assert.equal(refreshed.value.publicationTitle,'新的公众号标题');assert.equal(refreshed.value.preview.status,'ready');
+ const uploaded=await rpc('md2wechat/importImageBytes',{agentId:identity.agentId,input:{name:'封面.png',contentType:'image/png',data:[137,80,78,71,13,10,26,10,0]}});assert.equal(uploaded.ok,true,JSON.stringify(uploaded));
+ const offered=await rpc('md2wechat/dispatch',{agentId:identity.agentId,articleId:conversationView.articleId,version:refreshed.value.version,action:{type:'import-local-image',kind:'cover',anchorId:'',sourcePath:uploaded.value.sourcePath,alt:'封面'}});assert.equal(offered.ok,true,JSON.stringify(offered));assert.equal(offered.value.imageCandidates.length,1);
+ report.checks.conversationTextImport=true;report.checks.manualTitleMatchesPreview=true;report.checks.pickedImageImport=true;
+
+ if(options.inspect){await writeFile(join(runRoot,'inspect.json'),JSON.stringify({launch,origin,sessionId:identity.agentId,articleId:identity.articleId}));console.log('INSPECT_READY '+runRoot);await waitFor(async()=>{try{await readFile(join(runRoot,'finish-inspection'));return true}catch{return false}},1800000);}
 
  }
 }catch(e){report.error=(e.stack||String(e)).replace(/token=[^\s&]+/g,'token=[REDACTED]');if(page){report.browser='failed';await page.screenshot({path:join(logs,'00-browser-failure.png'),fullPage:true}).catch(()=>{});}process.exitCode=1;}

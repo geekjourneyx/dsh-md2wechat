@@ -19,7 +19,7 @@ const signal = new AbortController().signal
 const missingId = '00000000-0000-0000-0000-000000000000'
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 async function fixture() {
-  const workspace = await mkdtemp(join(tmpdir(), 'creator-legacy-')); roots.push(workspace)
+  const workspace = await realpath(await mkdtemp(join(tmpdir(), 'creator-legacy-'))); roots.push(workspace)
   const stateDir = await mkdtemp(join(process.cwd(), '.state-test-legacy-')); roots.push(stateDir)
   let readable = true; let mode = 'workspace-write'; let failSave = false
   const commands: string[] = []; const listings: string[] = []; const reads: string[] = []

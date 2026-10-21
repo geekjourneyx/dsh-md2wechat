@@ -1,9 +1,13 @@
 /** Finite browser-safe article failures; raw backend diagnostics never cross this boundary. */
-export type CreatorErrorCode = 'ARTICLE_NOT_FOUND' | 'RECOVERY_REQUIRED' | 'PERMISSION_DENIED' | 'SOURCE_CHANGED' | 'ARTIFACT_INVALID' | 'VERSION_CONFLICT' | 'HOST_UNAVAILABLE'
+export type CreatorErrorCode = 'IMAGE_INVALID' | 'TITLE_INVALID' | 'IMPORT_INVALID' | 'IMPORT_IMAGES' | 'ARTICLE_NOT_FOUND' | 'RECOVERY_REQUIRED' | 'PERMISSION_DENIED' | 'SOURCE_CHANGED' | 'ARTIFACT_INVALID' | 'VERSION_CONFLICT' | 'HOST_UNAVAILABLE'
 export type CreatorRecoveryAction = 'open-source' | 'recover-revision' | 'check-permissions' | 'select-session' | 'continue' | 'import-new' | 'check-artifacts' | 'refresh' | 'retry'
 export interface CreatorErrorInfo { code: CreatorErrorCode; message: string; actions: CreatorRecoveryAction[] }
 
 const failures: Record<CreatorErrorCode, { message: string; actions: readonly CreatorRecoveryAction[] }> = {
+  IMAGE_INVALID: { message: '请选择不超过 8 MiB 的 PNG、JPEG、GIF 或 WebP 图片。', actions: ['retry'] },
+  TITLE_INVALID: { message: '标题请填写 1–32 个字，不要换行或包含 HTML。', actions: ['retry'] },
+  IMPORT_INVALID: { message: '请输入有效正文，文章不能超过 2 MiB。', actions: ['retry'] },
+  IMPORT_IMAGES: { message: '文章引用了本地图片。请从工作目录选择原文件以保留图片；或移除图片引用后导入，再添加图片。', actions: ['open-source'] },
   ARTICLE_NOT_FOUND: { message: '没有找到这篇文章的保存记录。请选择原文，或从已有文章版本恢复。', actions: ['open-source', 'recover-revision'] },
   RECOVERY_REQUIRED: { message: '文章需要重新检查。请重新打开已保存文章，或选择原文恢复；未自动重试交付。', actions: ['open-source', 'recover-revision'] },
   PERMISSION_DENIED: { message: '当前会话无权完成此操作。请检查会话和工作区权限后重试。', actions: ['check-permissions', 'select-session'] },

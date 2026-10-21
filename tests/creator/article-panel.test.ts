@@ -54,7 +54,7 @@ describe('independent article main panel shell', () => {
     await mount(client)
     expect(PANEL_ID).toBe('md2wechat-articles')
     expect(container.querySelector('main[aria-label="文章主工作区"]')).not.toBeNull()
-    expect(container.textContent).toContain('先选择会话')
+    expect(container.textContent).toContain('回到对话，开始写文章')
     expect(container.textContent).toContain('会话 A')
     expect(client.retainSession).not.toHaveBeenCalled()
     expect(client.getArticles).not.toHaveBeenCalled()
@@ -73,7 +73,7 @@ describe('independent article main panel shell', () => {
     expect(client.resume).toHaveBeenCalledWith('A', 'recent', expect.any(AbortSignal))
     expect(client.createWorkspaceClient).toHaveBeenCalledWith('A', 'recent')
     expect(container.textContent).toContain('正文 recent')
-    expect(container.textContent).toContain('已保存不等于已审阅')
+    expect(container.textContent).toContain('文章进度自动保存')
   })
 
   it('supports an exact message navigation target without opening or guessing another article', async () => {
@@ -108,7 +108,7 @@ describe('independent article main panel shell', () => {
   it('shows a useful empty article state without importing automatically', async () => {
     const client = fixture({ getArticles: vi.fn(async () => []) })
     await mount(client); await choose('B')
-    expect(container.textContent).toContain('这个会话还没有已保存文章')
+    expect(container.textContent).toContain('这段对话还没有文章')
     expect(button('打开 Markdown').disabled).toBe(true)
     expect(client.open).not.toHaveBeenCalled()
     expect(client.resume).not.toHaveBeenCalled()

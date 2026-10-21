@@ -29,7 +29,7 @@ describe('generated baseline host contract', () => {
       import assert from 'node:assert/strict'
       import { TYPERT } from './typert.host.js'
       import { TYPERT_REMOTE } from './typert.remote-client.js'
-      const ids = ['md2wechat/discoverRevisions', 'md2wechat/dispatch', 'md2wechat/get', 'md2wechat/list', 'md2wechat/open', 'md2wechat/recoverRevision', 'md2wechat/resume', 'md2wechat/session']
+      const ids = ['md2wechat/discoverRevisions', 'md2wechat/dispatch', 'md2wechat/get', 'md2wechat/importImageBytes', 'md2wechat/importSource', 'md2wechat/list', 'md2wechat/open', 'md2wechat/recoverRevision', 'md2wechat/resume', 'md2wechat/session']
       for (const descriptors of [TYPERT.invocations, TYPERT_REMOTE.descriptors]) {
         assert.deepEqual(descriptors.map(value => value.namespace + '/' + value.method), ids)
         for (const descriptor of descriptors) {

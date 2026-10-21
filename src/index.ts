@@ -143,7 +143,7 @@ function assertReadyProbe(name: 'version' | 'capabilities', response: CliEnvelop
 
 function workflowPrompt(writeEnabled: boolean, fallbackEnabled: boolean): string {
   const lines = [
-    'For an article, open md2wechat_open_workspace first. The native workspace owns theme selection, exact suggestions, image choices, final review and delivery; do not ask the author to orchestrate a tool chain.',
+    'Keep article creation in the current conversation. Write the article with the user, then call md2wechat_open_workspace with the complete markdown to show its article card. For an existing file, resolve sourcePath yourself; never ask the author to type paths, choose sessions or recover versions. The card opens preview and adjustments beside the conversation. The separate entry is article history, not the main writing flow. Theme, title, images and draft confirmation belong to this same article. Never ask the author to orchestrate a tool chain.',
     'Only propose changes for a pending workspace request. Never silently rewrite source files. Treat the displayed signed preview as the review boundary; after final material preparation, review that exact final HTML again.',
     'Legacy low-level tools are retained for explicit compatibility or diagnostics, not the default creator experience.',
   ]

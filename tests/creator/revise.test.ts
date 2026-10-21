@@ -257,3 +257,11 @@ describe('immutable creator revisions', () => {
   })
 })
 import { createHash } from 'node:crypto'
+
+it('keeps frontmatter publication title consistent after a suggested heading change', async () => {
+ const original = '---\ntitle: Old\n---\n# Old\n\nBody'
+ const { store, previous } = await fixture(original, 'Old')
+ const next = await reviseCreatorArticle(store, previous, original.replace('# Old','# New'), signal)
+ expect(next.title).toBe('New'); expect(next.markdown).toContain('title: "New"')
+ expect(new TextDecoder().decode(await store.read(`revisions/${previous.id}/article.md`))).toBe(original)
+})

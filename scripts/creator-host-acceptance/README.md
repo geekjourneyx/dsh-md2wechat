@@ -1,3 +1,5 @@
+> Conversation-first repair: normal entry is the current conversation's article card and native right panel. The HTTP acceptance additionally exercises direct text import, manual publication-title consistency and picked-image import. `--inspect` keeps the isolated host open after checks and writes a private `inspect.json`; create `finish-inspection` in that run directory to finish. Do not publish its authentication URL. The old `--browser` script describes the former standalone panel and is not proof of the revised browser flow; use the recorded manual host checks until that runner is updated.
+
 # Installed article-panel acceptance
 
 This harness installs one supplied archive into an isolated profile using published

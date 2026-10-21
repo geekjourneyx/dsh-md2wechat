@@ -164,3 +164,18 @@ it('returns the same fallback job for repeated or concurrent calls of one image 
   await service.generateImages(...args)
   expect(calls).toBe(1)
 })
+
+it('manual title changes invalidate review, persist the revision and remain undoable', async () => {
+ const ops = operations()
+ const service = new CreatorService(() => ({ ...ops, revise: async (revision, markdown) => ({...revision,id:'title-revision',title:'新的标题',markdown}) }), 'default')
+ const signal = new AbortController().signal
+ let view = await service.open(agent,'article.md','',signal)
+ view = await service.dispatch(agent,view.articleId,view.version,{type:'refresh-preview'},signal)
+ view = await service.dispatch(agent,view.articleId,view.version,{type:'review-current',previewPath:view.preview.path,previewSha256:view.preview.sha256,publicationTitle:view.publicationTitle},signal)
+ expect(view.reviewed).toBe(true)
+ view = await service.dispatch(agent,view.articleId,view.version,{type:'set-title',title:'新的标题'},signal)
+ expect(view).toMatchObject({title:'新的标题',publicationTitle:'新的标题',reviewed:false,canUndo:true})
+ expect((await service.get(agent,view.articleId)).markdown).toContain('# 新的标题')
+ view = await service.dispatch(agent,view.articleId,view.version,{type:'undo-edit'},signal)
+ expect(view.title).toBe('文章')
+})

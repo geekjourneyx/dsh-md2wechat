@@ -56,7 +56,7 @@ describe('actionable workspace recovery and delivery reconciliation', () => {
     const dispatch = vi.fn(async () => ({ ...view, version: 2 }))
     await mount({ get: async () => unknown, dispatch, readPreview: async () => '<p>最终预览</p>' })
     expect(button('确认已核对，解除保护').disabled).toBe(true)
-    await click('交付')
+    await click('保存到公众号草稿箱')
     expect(button('重新准备微信素材').disabled).toBe(true)
     expect(button('导出已审阅 HTML').disabled).toBe(false)
     await act(async () => { (container.querySelector('input[aria-label="已核对公众号后台交付结果"]') as HTMLInputElement).click() })

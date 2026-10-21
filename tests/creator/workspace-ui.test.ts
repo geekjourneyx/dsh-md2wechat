@@ -31,7 +31,7 @@ describe('creator native workspace', () => {
   it('shows exact before/after and only applies when clicked', async () => {
     const dispatch = vi.fn(async () => ({ ...view, version: 2 }))
     await render({ get: async () => ({ ...view, suggestions: [{ id: 'suggestion', title: '改标题', reason: '更具体', before: '# 旧标题', after: '# 新标题' }] }), dispatch, readPreview: async () => '<p>文章</p>' })
-    await act(async () => { button('改进').click() })
+    await act(async () => { button('标题与文字').click() })
     expect(container.textContent).toContain('# 旧标题')
     expect(container.textContent).toContain('# 新标题')
     expect(dispatch).not.toHaveBeenCalled()
@@ -49,11 +49,11 @@ describe('creator native workspace', () => {
 it('requires current final review and explicit checkbox before saving an unpublished draft', async () => {
   const dispatch = vi.fn(async () => view)
   await render({ get: async () => ({ ...view, preparedForDraft: true, reviewed: true, coverId: 'cover' }), dispatch, readPreview: async () => '<p>最终文章</p>' })
-  await act(async () => { button('交付').click() })
-  expect(button('确认保存微信草稿').disabled).toBe(true)
+  await act(async () => { button('保存到公众号草稿箱').click() })
+  expect(button('确认保存到草稿箱').disabled).toBe(true)
   await act(async () => { (container.querySelector('input[type=checkbox]') as HTMLInputElement).click() })
-  expect(button('确认保存微信草稿').disabled).toBe(false)
-  await act(async () => { button('确认保存微信草稿').click() })
+  expect(button('确认保存到草稿箱').disabled).toBe(false)
+  await act(async () => { button('确认保存到草稿箱').click() })
   expect(dispatch.mock.calls[0]?.[1]).toEqual({ type: 'create-draft', confirmed: true })
 })
 
@@ -106,4 +106,11 @@ it('coalesces rapid theme clicks so the last intent uses the latest accepted ver
   await act(async () => { release() })
   await vi.waitFor(() => expect(selections).toEqual(['simple', 'default']))
   expect(container.querySelector('iframe')?.title).toBe('当前主题：default')
+})
+
+it('shows the actual publication title before allowing confirmation', async () => {
+ await render({get:async()=>({...view,publicationTitle:'公众号实际标题'}),dispatch:async()=>view,readPreview:async()=>'<p>文章</p>'})
+ await act(async()=>button('保存到公众号草稿箱').click())
+ expect(container.querySelector('[aria-label="交付文章"]')?.textContent).toContain('公众号实际标题')
+ expect(container.querySelector('[aria-label="交付文章"]')?.textContent).toContain('与文章名称不同')
 })

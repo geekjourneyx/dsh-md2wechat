@@ -4,3 +4,5 @@ coverage/
 *.tsbuildinfo
 .superpowers/
 .state-test-*/
+
+.acceptance/
