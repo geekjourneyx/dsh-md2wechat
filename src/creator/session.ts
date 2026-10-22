@@ -27,6 +27,7 @@ export class CreatorSession {
   private coverId = ''
   private finalProof: CreatorDeliveryProof | undefined
   private finalVersion = 0
+  private inspection: { version: number; result: import('./types.ts').CreatorInspection } | undefined
   private delivery: CreatorDelivery | null = null
   private suggestions: CreatorSuggestion[] = []
   private suggestionRequest: CreatorSuggestionRequest | null = null
@@ -153,7 +154,10 @@ export class CreatorSession {
     if (id && this.candidate(version, id).kind !== 'cover') throw new Error('请选择封面候选。')
     this.assertVersion(version)
     if (this.coverId === id) return
+    const currentPreview = this.view().preview.status === 'ready'
     this.coverId = id; this.version++; this.reviewedVersion = 0; this.delivery = null
+    if (currentPreview) this.previewVersion = this.version
+    this.finalProof = undefined
     this.cancelPreview(); this.imageRequest = null; this.suggestions = []; this.suggestionRequest = null
   }
   rebindCandidates(candidates: ImageCandidate[]): void {
@@ -242,8 +246,10 @@ export class CreatorSession {
     if (!this.preview || this.previewVersion !== this.version || this.view().preview.status !== 'ready') throw new Error('请先更新预览。')
     return this.preview
   }
+  inspected(version: number, result: import('./types.ts').CreatorInspection): void { this.assertVersion(version); this.inspection = { version, result } }
   view(): CreatorView {
     return {
+      ...(this.inspection?.version === this.version ? { inspection: structuredClone(this.inspection.result) } : {}),
       recovery: this.recovery ? { ...this.recovery } : null,
       preparedForDraft: !!this.final(), draftEnabled: this.draftEnabled,
       imageCandidates: this.candidates().map(image => ({ ...image, path: `${this.artifactRoot}/${image.path}` })), imagePlacements: /^[a-f0-9]{64}$/u.test(this.revision.id) ? paragraphImageAnchors(this.revision.id, this.revision.markdown).map(anchor => ({ id: anchor.id, context: anchor.context, hasImage: !!anchor.image })) : [],

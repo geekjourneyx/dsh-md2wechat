@@ -88,7 +88,7 @@ describe('resolveConfig', () => {
       imageMaxBytes: 20971520,
       imageMaxRedirects: 3,
       imageAcquisitionTimeoutMs: 60000,
-      credentialRefs: {},
+      credentialRefs: { MD2WECHAT_API_KEY: 'MD2WECHAT_API_KEY' },
     })
   })
 })

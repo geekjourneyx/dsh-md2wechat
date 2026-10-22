@@ -98,7 +98,7 @@ export function createOperationTurnRunner(ctx: Context): OperationTurnRunner {
       if (agent.status !== 'idle' || pending.has(agent) || agent.inbox.nextStep.length > 0 || agent.inbox.nextTurn.length > 0) {
         throw new Error('creator operation requires an idle agent with no pending input')
       }
-      const message = createUserMessage({ content: [{ type: 'text', text: 'Run the requested creator action.' }], source: { kind: 'user' } })
+      const message = createUserMessage({ content: [{ type: 'text', text: 'Confirm permission for the requested article action. No model response is needed.' }], source: { kind: 'md2wechat', form: 'notice', summary: '确认文章操作授权' } })
       return new Promise<T>((resolve, reject) => {
         const controller = new AbortController()
         const abort = (): void => stop(entry, new Error('creator operation cancelled'))

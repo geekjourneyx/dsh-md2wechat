@@ -16,6 +16,7 @@ import type { ImageBytesRequest, ArticleImportRequest, ArticleSummary, CreatorAc
 
 /** Session-scoped domain operations retain their own approval and filesystem checks. */
 export interface CreatorOperations {
+  inspect?(revision: CreatorRevision, theme: string, cover: ImageCandidate | undefined, signal: AbortSignal): Promise<import('./types.ts').CreatorInspection>
   importImageBytes?(input: ImageBytesRequest, signal: AbortSignal): Promise<string>
   importSource?(input: ArticleImportRequest, signal: AbortSignal): Promise<string>
   documents: Pick<DocumentStore, 'list' | 'read' | 'save' | 'deliveryStatus' | 'beginDelivery' | 'completeDelivery' | 'reconcileDelivery'>
@@ -196,6 +197,15 @@ export class CreatorService {
     if (action.type === 'prepare-delivery' || action.type === 'create-draft') {
       if (await operations.documents.deliveryStatus(articleId, signal)) throw new Error('微信交付结果尚未核对，请先到公众号后台核对后明确确认。')
       return this.deliver(agent, articleId, version, action, operations, signal)
+    }
+    if (action.type === 'check-article') {
+      if (!operations.inspect) throw new Error('当前版本暂不支持文章检查。')
+      const inspection = await operations.inspect(original.revision, original.theme, original.selectedCover(), signal)
+      signal.throwIfAborted()
+      if (this.owned(agent, articleId) !== original) throw new Error('文章已经更新，请重新检查。')
+      original.assertVersion(version)
+      original.inspected(version, inspection)
+      return original.view()
     }
     if (action.type === 'refresh-preview') return this.refresh(agent, articleId, version, operations, signal)
     const state = original.fork()
@@ -404,10 +414,11 @@ export class CreatorService {
         const current = this.owned(agent, articleId); const state = current.fork()
         if (state.finishPreview(attempt, proof)) { state.committed(current); this.articles.set(articleId, state) }
       })
-    } catch {
+    } catch (error) {
+      const missingLayoutKey = error instanceof Error && error.message === 'MD2WECHAT_API_KEY is not configured for article preview'
       await this.serialize(articleId, async () => {
         const current = this.owned(agent, articleId); const state = current.fork()
-        if (state.failPreview(attempt, combined.aborted ? '预览已取消，原预览仍保留。' : '预览未完成。请检查排版配置或重试；原文未更改。')) { state.committed(current); this.articles.set(articleId, state) }
+        if (state.failPreview(attempt, combined.aborted ? '预览已取消，原预览仍保留。' : missingLayoutKey ? '尚未连接排版密钥，请在 DSH 中配置 MD2WECHAT_API_KEY 后重试。原文未更改。' : '预览未完成。请检查排版配置或重试；原文未更改。')) { state.committed(current); this.articles.set(articleId, state) }
       })
     }
     const state = this.owned(agent, articleId)

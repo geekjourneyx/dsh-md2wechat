@@ -114,3 +114,31 @@ it('shows the actual publication title before allowing confirmation', async () =
  expect(container.querySelector('[aria-label="交付文章"]')?.textContent).toContain('公众号实际标题')
  expect(container.querySelector('[aria-label="交付文章"]')?.textContent).toContain('与文章名称不同')
 })
+
+it('selects a cover without calling the layout provider again', async () => {
+  const candidate = { id: 'cover', revisionId: 'r', kind: 'cover' as const, path: 'cover.png', sha256: 'c', contentType: 'image/png' as const, byteSize: 12, alt: '封面' }
+  const initial = { ...view, imageCandidates: [candidate] }
+  const dispatch = vi.fn(async () => ({ ...initial, version: 2, coverId: 'cover' }))
+  await render({ get: async () => initial, dispatch, readPreview: async () => '<p>正文</p>' })
+  await act(async () => button('选作封面').click())
+  expect(dispatch.mock.calls).toHaveLength(1)
+  expect(dispatch.mock.calls[0]).toEqual([1, { type: 'select-cover', candidateId: 'cover' }, expect.any(AbortSignal)])
+})
+
+it('shows missing draft requirements without asking the model or uploading anything', async () => {
+  const dispatch = vi.fn(async () => view)
+  await render({ get: async () => ({ ...view, preview: { ...view.preview, status: 'empty' as const } }), dispatch, readPreview: async () => '' })
+  await act(async () => button('保存到公众号草稿箱').click())
+  const checklist = container.querySelector('[aria-label="保存前检查"]')!
+  expect(checklist.textContent).toContain('尚未选择封面')
+  expect(checklist.textContent).toContain('需要更新预览')
+  expect(dispatch).not.toHaveBeenCalled()
+})
+
+it('renders structured CLI inspection results in the save panel', async () => {
+  const dispatch = vi.fn(async () => ({ ...view, inspection: { ready: false, checks: [{ level: 'error' as const, message: '请选择一张封面。' }] } }))
+  await render({ get: async () => view, dispatch, readPreview: async () => '<p>正文</p>' })
+  await act(async () => button('检查发布条件').click())
+  expect(dispatch.mock.calls[0]).toEqual([1, { type: 'check-article' }, expect.any(AbortSignal)])
+  expect(container.textContent).toContain('需要处理：请选择一张封面。')
+})

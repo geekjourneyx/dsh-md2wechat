@@ -60,12 +60,11 @@ try{
  const theme=view.themes.find(t=>t.name!==view.theme)?.name;assert.ok(theme);let result=await rpc('md2wechat/dispatch',{...identity,version:view.version,action:{type:'select-theme',theme}});assert.equal(result.ok,true,JSON.stringify(result));const oldVersion=view.version;view=result.value;assert.equal(view.theme,theme);report.checks.themeSelection=true;
  result=await rpc('md2wechat/dispatch',{...identity,version:oldVersion,action:{type:'review-current',publicationTitle:view.publicationTitle,previewPath:view.preview.path,previewSha256:view.preview.sha256}});assert.equal(result.ok,false,'stale version accepted');report.checks.staleVersionDenied=true;
  result=await rpc('md2wechat/dispatch',{...identity,version:view.version,action:{type:'refresh-preview'}});assert.equal(result.ok,true,JSON.stringify(result));view=result.value;assert.equal(view.preview.status,'ready',JSON.stringify(view));assert.ok(requestLog.length>=1,'real CLI did not call loopback renderer');report.checks.realCliPreview=true;report.checks.signedEndpointOverridesAmbient=true;
- const afterPreview=await waitFor(async()=>{const a=JSON.parse(await readFile(fixtureResult,'utf8'));return a.events.filter(e=>e.type==='turn/end').length>trajectory.events.filter(e=>e.type==='turn/end').length?a:null;});
+ const afterPreview=JSON.parse(await readFile(fixtureResult,'utf8'));
  assert.equal(afterPreview.modelRequests,trajectory.modelRequests,'preview unexpectedly requested model');report.checks.previewNoModelRequest=true;
- const starts=new Map(),ends=new Map();for(const e of afterPreview.events){if(e.type==='turn/start')starts.set(e.data.turn,e.seq);if(e.type==='turn/end')ends.set(e.data.turn,e.seq);}
- const asked=afterPreview.events.filter(e=>e.type==='approval/asked'),decided=afterPreview.events.filter(e=>e.type==='approval/decided');assert.ok(asked.length>0,'preview approval not audited');assert.equal(asked.length,decided.length,'approval pairs unbalanced');for(const a of asked){const matches=decided.filter(d=>d.data.id===a.data.id);assert.equal(matches.length,1,'approval ID pair missing/duplicated');assert.ok(matches[0].seq>a.seq);assert.equal(matches[0].data.outcome,'allowed-once');}
- for(const e of [...asked,...decided])assert.ok([...starts].some(([turn,start])=>start<e.seq&&ends.get(turn)>e.seq),'approval event outside completed official turn: '+JSON.stringify(e));
- assert.equal(starts.size,ends.size,'turn boundaries unbalanced');report.checks.approvalEnclosedBalancedTurns=true;report.modelRequestsBeforePreview=trajectory.modelRequests;report.modelRequestsAfterPreview=afterPreview.modelRequests;await writeFile(join(logs,'preview-audit.json'),JSON.stringify(afterPreview,null,2));
+ assert.equal(afterPreview.events.filter(e=>e.type==='approval/asked').length,trajectory.events.filter(e=>e.type==='approval/asked').length,'preview unexpectedly requested approval');
+ assert.equal(afterPreview.events.filter(e=>e.type==='turn/start').length,trajectory.events.filter(e=>e.type==='turn/start').length,'preview unexpectedly opened a conversation turn');
+ report.checks.previewNoApprovalOrTurn=true;report.modelRequestsBeforePreview=trajectory.modelRequests;report.modelRequestsAfterPreview=afterPreview.modelRequests;await writeFile(join(logs,'preview-audit.json'),JSON.stringify(afterPreview,null,2));
 
  result=await rpc('md2wechat/dispatch',{...identity,version:view.version,action:{type:'review-current',publicationTitle:view.publicationTitle,previewPath:view.preview.path,previewSha256:'0'.repeat(64)}});assert.equal(result.ok,false,'wrong displayed preview hash accepted');report.checks.wrongPreviewReviewDenied=true;
  result=await rpc('md2wechat/dispatch',{...identity,version:view.version,action:{type:'review-current',publicationTitle:view.publicationTitle,previewPath:view.preview.path,previewSha256:view.preview.sha256}});assert.equal(result.ok,true,JSON.stringify(result));view=result.value;assert.equal(view.reviewed,true);report.checks.review=true;
@@ -154,6 +153,10 @@ try{
  const offered=await rpc('md2wechat/dispatch',{agentId:identity.agentId,articleId:conversationView.articleId,version:refreshed.value.version,action:{type:'import-local-image',kind:'cover',anchorId:'',sourcePath:uploaded.value.sourcePath,alt:'封面'}});assert.equal(offered.ok,true,JSON.stringify(offered));assert.equal(offered.value.imageCandidates.length,1);
  report.checks.conversationTextImport=true;report.checks.manualTitleMatchesPreview=true;report.checks.pickedImageImport=true;
 
+ const inspectionAuditBefore=JSON.parse(await readFile(fixtureResult,'utf8'));
+ const inspection=await rpc('md2wechat/dispatch',{agentId:identity.agentId,articleId:conversationView.articleId,version:refreshed.value.version,action:{type:'check-article'}});
+ assert.equal(inspection.ok,true,JSON.stringify(inspection));assert.equal(inspection.value.inspection.ready,false);assert.ok(inspection.value.inspection.checks.some(item=>item.level==='error'));
+ const inspectionAuditAfter=JSON.parse(await readFile(fixtureResult,'utf8'));assert.equal(inspectionAuditBefore.modelRequests,inspectionAuditAfter.modelRequests);report.checks.directCliInspection=true;
  if(options.inspect){await writeFile(join(runRoot,'inspect.json'),JSON.stringify({launch,origin,sessionId:identity.agentId,articleId:identity.articleId}));console.log('INSPECT_READY '+runRoot);await waitFor(async()=>{try{await readFile(join(runRoot,'finish-inspection'));return true}catch{return false}},1800000);}
 
  }

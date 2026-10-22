@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.0-rc.2 - 2026-10-22
+
+- Run sidebar layout previews directly through the CLI without a model request or redundant approval. Keep approval requirements for agent tools and external delivery.
+- Prepare title and image requests through the CLI, send creative work to the current conversation, and return structured results to the article sidebar.
+- Add direct article checks with actionable cover and layout guidance; retain results until the article changes. Preserve the body preview when selecting a cover.
+- Keep pending suggestions and image results refreshing during longer tasks. Improve missing preview credential guidance and default credential lookup.
+- Verified 806 tests and 33 isolated host checks with DSH 0.2.1-rc.2 and CLI 3.8.0, plus a real article layout preview in the browser. Paid image generation and live WeChat delivery were not exercised.
+
 ## 2.0.0-rc.1 - 2026-10-21
 
 - Fixed article loading dependencies, direct conversation-text import, title/preview consistency and safe image-byte import. Simplified article controls and collapsed internal suggestion requests in the conversation.

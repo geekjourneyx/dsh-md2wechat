@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { CliEnvelope } from '../../src/cli/protocol.ts'
 import type { CliGateway, CliRunOptions } from '../../src/cli/gateway.ts'
-import { createPreviewTool } from '../../src/tools/preview.ts'
+import { createPreviewTool, createPreviewOperation } from '../../src/tools/preview.ts'
 import { ArtifactStore } from '../../src/workspace/artifact-store.ts'
 import { computeArticleRevision } from '../../src/workspace/revision.ts'
 import type { ArticleManifest } from '../../src/workspace/revision.ts'
@@ -278,6 +278,15 @@ describe('md2wechat_preview', () => {
       snapshotInput: { ...await currentSnapshotInput(), cliVersion: '3.9.0' },
       credentialValue, now: new Date(fixedNow),
     })).rejects.toThrow('stale preview')
+  })
+
+  it('executes a user-clicked preview without a second approval request', async () => {
+    const gateway = new PreviewGateway()
+    const operation = createPreviewOperation(dependencies(gateway), 'user-interface')
+    await operation({ manifestPath }, exec())
+    expect(approvalRequests).toHaveLength(0)
+    expect(gateway.calls).toHaveLength(1)
+    expect(resolvedReferences).toHaveLength(1)
   })
 
   it('uses one approval, one credential, exact command and isolated environment, then commits only safe artifacts', async () => {

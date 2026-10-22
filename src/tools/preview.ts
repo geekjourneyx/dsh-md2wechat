@@ -91,7 +91,7 @@ export function createPreviewOperation({
   now = () => new Date(),
   previewTtlMs = DEFAULT_PREVIEW_TTL_MS,
   reportAuditFailure,
-}: PreviewToolDependencies) {
+}: PreviewToolDependencies, origin: 'tool' | 'user-interface' = 'tool') {
   if (!Number.isSafeInteger(previewTtlMs) || previewTtlMs < 1) throw new TypeError('preview TTL must be a positive safe integer')
   requiredSafeString(layoutBaseUrl, 'preview layout base URL')
   requiredSafeString(previewTheme, 'preview theme')
@@ -104,6 +104,9 @@ export function createPreviewOperation({
         exec.signal.throwIfAborted()
         const preparedBeforeApproval = await preparePreviewInputs(store, args.manifestPath, exec.signal)
         if (exec.agent === undefined) throw new SafePreviewError('article preview requires an active agent')
+        // A direct preview button is the user's request to use the configured renderer.
+        // Agent-initiated tools retain their separate host approval.
+        if (origin === 'tool') {
         const outcome = await approval.request({
           agent: exec.agent,
           toolName: TOOL_NAME,
@@ -112,6 +115,7 @@ export function createPreviewOperation({
           signal: exec.signal,
         })
         assertApproved(outcome)
+        }
         exec.signal.throwIfAborted()
 
         const credentialReference = credentialRefs.MD2WECHAT_API_KEY

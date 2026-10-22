@@ -150,3 +150,22 @@ describe('bounded image candidate request batches', () => {
     expect(state.candidates()[0]!.alt).toBe('one')
   })
 })
+
+it('keeps a current body preview when selecting a cover but revokes final review', () => {
+  const state = session()
+  batch(state, ['one'])
+  state.finishPreview(state.beginPreview(1), { path: 'body.html', receipt: 'receipt', sha256: 'body', assets: [], publicationTitle: '标题' })
+  state.review(1)
+  state.selectCover(1, 'one')
+  expect(state.view()).toMatchObject({ preview: { status: 'ready', path: 'body.html' }, reviewed: false, preparedForDraft: false })
+  expect(state.proof().path).toBe('body.html')
+})
+
+it('retains inspection through view refreshes and invalidates it when the article changes', () => {
+  const state = session()
+  state.inspected(1, { ready: false, checks: [{ level: 'error', message: '请选择封面。' }] })
+  expect(state.view().inspection?.ready).toBe(false)
+  expect(state.fork().view().inspection?.checks).toHaveLength(1)
+  state.selectTheme(1, 'simple')
+  expect(state.view().inspection).toBeUndefined()
+})

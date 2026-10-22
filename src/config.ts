@@ -199,7 +199,7 @@ function isSessionWorkspacePath(value: string): boolean {
 }
 
 function resolveCredentialRefs(value: unknown): Readonly<Record<string, string>> {
-  if (value === undefined) return {}
+  if (value === undefined) return { MD2WECHAT_API_KEY: 'MD2WECHAT_API_KEY' }
   const refs = asPlainObject(value, 'credentialRefs must be an object')
   const resolved: Record<string, string> = {}
   for (const [name, reference] of Object.entries(refs)) {

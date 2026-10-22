@@ -12,7 +12,9 @@ export interface ArticleSummary { articleId: string; title: string; sourcePath: 
 export interface CreatorRevisionSummary { revisionId: string; manifestPath: string; title: string; createdAt: string }
 export interface CreatorOpenOptions { mode?: 'continue' | 'import-new' }
 export interface CreatorRecovery { message: string; sourceChanged: boolean; themeUnavailable: boolean }
+export interface CreatorInspection { ready: boolean; checks: { level: 'error' | 'warn' | 'info'; message: string }[] }
 export interface CreatorView {
+  inspection?: CreatorInspection
   recovery?: CreatorRecovery | null
   schemaVersion: 1
   articleId: string
@@ -36,6 +38,7 @@ export interface CreatorView {
   suggestionRequest: CreatorSuggestionRequest | null
 }
 export type CreatorAction =
+  | { type: 'check-article' }
   | { type: 'set-title'; title: string }
   | { type: 'select-theme'; theme: string }
   | { type: 'refresh-preview' }

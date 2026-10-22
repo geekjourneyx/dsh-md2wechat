@@ -1,3 +1,6 @@
+import { inspectionView } from './inspection.ts'
+import { loadCurrentArticleRevision } from '../tools/improve-article.ts'
+import { createUiApproval } from './ui-approval.ts'
 import { importMarkdown, importImageBytes } from './import-source.ts'
 import { bindLegacyRevision, discoverLegacyRevisions } from './legacy.ts'
 import { createHash, randomUUID } from 'node:crypto'
@@ -74,8 +77,17 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
     const execution = (signal: AbortSignal): Pick<ToolRunContext, 'agent' | 'callId' | 'signal'> => ({
       agent, signal, callId: `creator-${randomUUID()}` as ToolRunContext['callId'],
     })
-    const delivery = createCreatorDelivery({ store, gateway: scopedGateway, state: draftState, approval: ctx.approval, credentialRefs: config.credentialRefs, credentials: ctx.credentials, layoutBaseUrl: config.layoutBaseUrl, previewFontSize: config.previewFontSize, previewBackgroundType: config.previewBackgroundType })
+    const uiApproval = createUiApproval(ctx.approval, turns)
+    const delivery = createCreatorDelivery({ store, gateway: scopedGateway, state: draftState, approval: uiApproval, credentialRefs: config.credentialRefs, credentials: ctx.credentials, layoutBaseUrl: config.layoutBaseUrl, previewFontSize: config.previewFontSize, previewBackgroundType: config.previewBackgroundType })
     const operations: CreatorOperations = {
+      async inspect(revision, theme, cover, signal) {
+        const current = await loadCurrentArticleRevision(store, revision.manifestPath, signal)
+        const image = cover ? await store.authorizeRead(cover.path, cover.sha256, signal) : undefined
+        const argv = ['inspect', current.articleAuthorization.processPath, '--draft', '--theme', theme, '--json', ...(image ? ['--cover', image.processPath] : [])]
+        const result = await gateway.run(argv, { signal, cwd: workspace, beforeSpawn: async signal => { await assertReadable(signal); await current.articleAuthorization.beforeSpawn(signal); await image?.beforeSpawn(signal) } })
+        if (!result.success || result.code !== 'INSPECT_COMPLETED') throw new Error('文章检查失败，请确认当前 md2wechat 支持文章检查。')
+        return inspectionView(result.data)
+      },
       documents: new DocumentStore(store, imagePlanState.stateDir, agent.id, signal => assertWritable(signal ?? new AbortController().signal)),
       assertReadable,
       importImageBytes: (input, signal) => importImageBytes(store, input, signal),
@@ -112,13 +124,13 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
         return verified
       },
       assertWritable,
-      prepareDelivery: (revision, theme, proof, cover, signal) => turns.run(agent, signal, signal => delivery.prepare({ revision, theme, previewReceiptId: proof.receipt, cover }, execution(signal))),
+      prepareDelivery: (revision, theme, proof, cover, signal) => delivery.prepare({ revision, theme, previewReceiptId: proof.receipt, cover }, execution(signal)),
       async exportFinal(revision, theme, proof, coverId, destination, signal) {
         const target = await ctx.fs.resolve(destination, { cwd: workspace, signal })
         await assertPathWritable(ctx.fs.processPath(target))
-        return turns.run(agent, signal, signal => delivery.exportFinal({ proof, revision, theme, coverId, destinationPath: ctx.fs.processPath(target) }, execution(signal)))
+        return delivery.exportFinal({ proof, revision, theme, coverId, destinationPath: ctx.fs.processPath(target) }, execution(signal))
       },
-      createDraft: (revision, theme, proof, coverId, signal) => turns.run(agent, signal, signal => delivery.createDraftFinal({ proof, revision, theme, coverId }, execution(signal))),
+      createDraft: (revision, theme, proof, coverId, signal) => delivery.createDraftFinal({ proof, revision, theme, coverId }, execution(signal)),
       async themes(signal) {
         const result = await gateway.run(['themes', 'list', '--json'], { signal, cwd: workspace, beforeSpawn: assertReadable })
         if (!result.success || result.status !== 'completed' || result.code !== 'THEMES_SHOWN') throw new Error('无法读取排版主题，请检查 md2wechat。')
@@ -131,12 +143,18 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
       },
       async requestImages(revision, kind, context, request, signal) {
         signal.throwIfAborted()
+        const requestKey = createHash('sha256').update(request.requestId).digest('hex').slice(0, 24)
+        const images = kind === 'cover'
+          ? [{ id: `cover-${requestKey}`, kind: 'cover' as const, prompt: revision.title, targetPath: `images/cover-${requestKey}.png`, aspect: '16:9' }]
+          : [{ id: `body-${requestKey}`, kind: 'image' as const, prompt: `${revision.title}\n${context}`, targetPath: `images/body-${requestKey}.png` }]
+        const plan = await createPlanImagesOperation({ gateway: scopedGateway, store, state: imagePlanState })({ manifestPath: revision.manifestPath, images }, { signal })
+        signal.throwIfAborted()
         agent.followup(createUserMessage({ source: { kind: 'md2wechat', form: 'notice', summary: kind === 'cover' ? '准备封面候选' : '准备段落配图' }, content: [{ type: 'text', text: [
           `用户在文章工作区请求${kind === 'cover' ? '3 张风格不同的封面候选' : '一张适合指定段落的正文配图'}，不是要求自动替换正文或发布。`,
           '优先使用你当前已有的图片能力，将结果保存到当前会话工作区；不假设任何未安装的工具。',
           '若没有宿主图片能力且用户同意备用方案，可调用 md2wechat_generate_creator_images。该方案会生成并上传所有候选图片到微信素材库，可能收费，必须通过工具的单次授权，不能隐瞒上传。',
           '图片完成后逐个调用 md2wechat_import_creator_image，使用下方 articleId/version/requestId 与实际本地 sourcePath、简短 alt，最多 3 张。不得修改文章文件或替用户选封面。',
-          JSON.stringify({ ...request, kind, title: revision.title, paragraph: context }),
+          JSON.stringify({ ...request, kind, title: revision.title, paragraph: context, preparedPlan: plan.items }),
         ].join('\n') }] }))
       },
       importImage: (revision, source, kind, alt, signal) => importCreatorImage({ fs: ctx.fs, workspace, store }, revision.id, source, kind, alt, signal),
@@ -171,7 +189,7 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
         const target = await ctx.fs.resolve(destination, { cwd: workspace, signal })
         await assertPathWritable(ctx.fs.processPath(target))
         if (!proof.localProof) throw new Error('请重新生成当前文章预览，再导出。')
-        return turns.run(agent, signal, signal => delivery.exportLocal({ proof: proof.localProof!, revision, theme, destinationPath: ctx.fs.processPath(target) }, execution(signal)))
+        return delivery.exportLocal({ proof: proof.localProof!, revision, theme, destinationPath: ctx.fs.processPath(target) }, execution(signal))
       },
       async suggest(revision, kind, request, signal) {
         const operation = kind === 'layout' ? 'advise' : kind === 'title' ? 'title' : 'humanize'
@@ -191,17 +209,15 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
         return revision
       },
       async preview(revision, theme, signal) {
-        return turns.run(agent, signal, async signal => {
         const result = await createPreviewOperation({
           gateway: scopedGateway, store, layoutBaseUrl: config.layoutBaseUrl,
-          credentialRefs: config.credentialRefs, credentials: ctx.credentials, approval: ctx.approval,
+          credentialRefs: config.credentialRefs, credentials: ctx.credentials, approval: uiApproval,
           previewTheme: theme, previewFontSize: config.previewFontSize, previewBackgroundType: config.previewBackgroundType,
           reportAuditFailure,
-        })({ manifestPath: revision.manifestPath }, execution(signal))
+        }, 'user-interface')({ manifestPath: revision.manifestPath }, execution(signal))
         const localProof = await delivery.prepareLocal({ revision, theme, previewReceiptId: result.previewReceiptId }, execution(signal))
         const signed = await preflightCurrentPreview(store, revision.id, result.previewReceiptId, new Date(), signal)
         return { publicationTitle: signed.receipt.metadata.title, path: localProof.path, receipt: result.previewReceiptId, sha256: localProof.sha256, assets: [], localProof }
-        })
       },
     }
     cache.set(agent, operations)
