@@ -9,7 +9,7 @@ import { domainResult, genericCall, genericResult } from './shared.ts'
 import type { ArtifactReadAuthorization, ArtifactStore } from '../workspace/artifact-store.ts'
 import {
   appendOperation,
-  computeArticleRevision,
+  verifyArticleRevision,
   validateRevisionManifest,
 } from '../workspace/revision.ts'
 import type { ArticleManifest, ArticleRevision } from '../workspace/revision.ts'
@@ -53,8 +53,7 @@ export async function loadCurrentArticleRevision(
   }
   const articlePath = `revisions/${directoryId}/article.md`
   const articleBytes = await store.read(articlePath, signal)
-  const revision = computeArticleRevision(articleBytes, manifest)
-  if (revision.id !== directoryId) throw new Error('stale revision: manifest, article, or directory identity does not match')
+  const revision = verifyArticleRevision(articleBytes, manifest, directoryId)
   const articleAuthorization = await store.authorizeRead(articlePath, revision.articleSha256, signal)
   return { revision, manifest, manifestPath, articlePath, articleAuthorization, articleBytes }
 }

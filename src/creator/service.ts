@@ -4,7 +4,7 @@ import { isLegacyRevisionSource, legacyRevisionSource, LEGACY_RECOVERY_MESSAGE }
 import type { DocumentStore } from './documents.ts'
 import { CreatorDeliveryUnknownError } from './delivery.ts'
 import type { CreatorDeliveryProof } from './delivery.ts'
-import { applyBodyImage } from './image-choices.ts'
+import { applyBodyImage, paragraphImageAnchors } from './image-choices.ts'
 import type { ImageCandidate } from './image-choices.ts'
 import { applyExactChange } from './edits.ts'
 import type { ProposedChange } from './edits.ts'
@@ -32,7 +32,7 @@ export interface CreatorOperations {
   prepareDelivery(revision: CreatorRevision, theme: string, proof: CreatorPreviewProof, cover: ImageCandidate, signal: AbortSignal): Promise<CreatorDeliveryProof>
   exportFinal(revision: CreatorRevision, theme: string, proof: CreatorDeliveryProof, coverId: string, destination: string, signal: AbortSignal): Promise<{ path: string }>
   createDraft(revision: CreatorRevision, theme: string, proof: CreatorDeliveryProof, coverId: string, signal: AbortSignal): Promise<{ draftId: string; draftUrl?: string }>
-  generateImages(revision: CreatorRevision, kind: 'cover' | 'body', context: string, signal: AbortSignal, requestId: string): Promise<{ kind: 'background' | 'completed'; jobId?: string; sourcePaths: string[] }>
+  generateImages(revision: CreatorRevision, kind: 'cover' | 'body', context: string, signal: AbortSignal, requestId: string): Promise<{ kind: 'background' | 'completed'; jobId?: string; sourcePaths: string[]; completion?: Promise<void> }>
   requestImages(revision: CreatorRevision, kind: 'cover' | 'body', context: string, request: { articleId: string; version: number; requestId: string }, signal: AbortSignal): Promise<void>
   importImage(revision: CreatorRevision, source: string, kind: 'cover' | 'body', alt: string, signal: AbortSignal): Promise<ImageCandidate>
   rebindImages(revision: CreatorRevision, candidates: readonly ImageCandidate[], signal: AbortSignal): Promise<ImageCandidate[]>
@@ -222,7 +222,7 @@ export class CreatorService {
         })
       }
       case 'import-local-image': {
-        const request = state.requestImages(version, action.kind, action.anchorId)
+        const request = state.requestImages(version, action.kind, action.anchorId, 1)
         const candidate = await operations.importImage(state.revision, action.sourcePath, action.kind, action.alt, signal)
         signal.throwIfAborted(); if (this.delivering.has(articleId)) throw new Error('正在交付当前版本，请完成后再导入图片。'); state.addImage(version, request.id, candidate)
         break
@@ -231,7 +231,7 @@ export class CreatorService {
         const request = state.requestImages(version, action.kind, action.anchorId)
         await this.commit(agent, original, state, operations, signal)
         try { await operations.requestImages(state.revision, action.kind, action.kind === 'body' ? state.anchor(version, action.anchorId).context : '', { articleId, version, requestId: request.id }, signal) }
-        catch (error) { await this.failRequest(agent, articleId, operations, signal, next => next.failImages(request.id)); throw error }
+        catch (error) { await this.failImageRequest(agent, articleId, version, request.id); throw error }
         return this.owned(agent, articleId).view()
       }
       case 'select-cover': state.selectCover(version, action.candidateId); break
@@ -263,9 +263,10 @@ export class CreatorService {
         return this.owned(agent, articleId).view()
       }
       case 'dismiss-suggestion': state.dismiss(version, action.suggestionId); break
+      case 'edit-text':
       case 'set-title':
       case 'apply-suggestion': {
-        const markdown = action.type === 'set-title' ? replaceArticleTitle(state.revision.markdown, action.title) : applyExactChange(state.revision.markdown, state.suggestion(version, action.suggestionId))
+        const markdown = action.type === 'edit-text' ? editParagraph(state.revision, action.before, action.after) : action.type === 'set-title' ? replaceArticleTitle(state.revision.markdown, action.title) : applyExactChange(state.revision.markdown, state.suggestion(version, action.suggestionId))
         const revised = await operations.revise(state.revision, markdown, signal, state.candidates())
         const candidates = await operations.rebindImages(revised, state.candidates(), signal)
         signal.throwIfAborted(); if (this.delivering.has(articleId)) throw new Error('正在交付当前版本，请完成后再修改。'); state.replaceRevision(version, revised, true); state.rebindCandidates(candidates)
@@ -305,7 +306,14 @@ export class CreatorService {
       if (existing?.requestId === requestId) return existing
       state.imageRequestFor(version, requestId, true)
       const context = request.kind === 'body' ? state.anchor(version, request.anchorId).context : ''
-      const result = operations.generateImages(state.revision, request.kind, context, signal, requestId)
+      const result = Promise.resolve().then(() => operations.generateImages(state.revision, request.kind, context, signal, requestId)).then(result => {
+        const { completion, ...response } = result
+        void completion?.catch(() => this.failImageRequest(agent, articleId, version, requestId))
+        return response
+      }).catch(async error => {
+        await this.failImageRequest(agent, articleId, version, requestId)
+        throw error
+      })
       const job = { requestId, result }
       this.imageJobs.set(articleId, job)
       return job
@@ -319,7 +327,10 @@ export class CreatorService {
     const sourceState = this.owned(agent, articleId)
     const request = sourceState.imageRequestFor(version, requestId)
     const revision = sourceState.revision
-    const candidate = await operations.importImage(revision, source, request.kind, alt, signal)
+    const candidate = await operations.importImage(revision, source, request.kind, alt, signal).catch(async error => {
+      await this.failImageRequest(agent, articleId, version, requestId)
+      throw error
+    })
     // Compatible members of one batch merge into the latest state, not a pre-import fork.
     await this.serialize(articleId, async () => {
       signal.throwIfAborted()
@@ -395,6 +406,20 @@ export class CreatorService {
     if (pending) state.delivered({ kind: pending.kind, status: 'unknown', path: '', message: '上次微信素材或草稿交付结果尚未核对。请到公众号后台检查，再明确确认已核对；新预览不会解除重试限制。' })
     else if (state.view().delivery?.status === 'unknown') state.delivered(null)
   }
+  /** Request progress is ephemeral: cancellation cleanup needs neither a disk write nor a live caller signal. */
+  private async failImageRequest(agent: Agent, articleId: string, version: number, requestId: string): Promise<void> {
+    await this.serialize(articleId, async () => {
+      const current = this.articles.get(articleId)
+      if (!current || current.version !== version) return
+      current.assertOwner(agent.id)
+      const request = current.view().imageRequest
+      if (request?.id !== requestId || request.status !== 'pending') return
+      const next = current.fork()
+      next.failImages(requestId)
+      next.committed(current)
+      this.articles.set(articleId, next)
+    }).catch(() => { /* Preserve the original provider/import failure if the session has closed. */ })
+  }
   private async failRequest(agent: Agent, articleId: string, operations: CreatorOperations, signal: AbortSignal, fail: (state: CreatorSession) => void): Promise<void> {
     const current = this.owned(agent, articleId); const next = current.fork(); fail(next)
     await this.commit(agent, current, next, operations, signal)
@@ -451,4 +476,16 @@ export class CreatorService {
     state.assertOwner(agent.id)
     return state
   }
+}
+
+/** Inline editing is limited to a complete plain paragraph, preserving document structure. */
+function editParagraph(revision: CreatorRevision, before: string, after: string): string {
+  const markdown = applyExactChange(revision.markdown, { title: '修改段落', reason: '用户直接修改', before, after })
+  const paragraph = paragraphImageAnchors(revision.id, revision.markdown).find(item => item.context === before && revision.markdown.slice(item.start, item.end) === before)
+  if (!paragraph || paragraph.image?.start === paragraph.start) throw new Error('请选择完整的正文段落进行修改。')
+  if (after !== '') {
+    const paragraphs = paragraphImageAnchors(revision.id, after)
+    if (paragraphs.length !== 1 || paragraphs[0]!.start !== 0 || paragraphs[0]!.end !== after.length || paragraphs[0]!.context !== after) throw new Error('段落修改不能包含标题、图片或其他独立内容。')
+  }
+  return markdown
 }

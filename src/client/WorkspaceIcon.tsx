@@ -1,0 +1,3 @@
+import { FileTextIcon, ArrowTopRightIcon, CheckIcon, ChevronDownIcon, ChevronUpIcon, Cross2Icon, EnterFullScreenIcon, ExitFullScreenIcon, ImageIcon, MagicWandIcon, Pencil1Icon, ReloadIcon, ResetIcon } from '@radix-ui/react-icons'
+const icons = { article: FileTextIcon, open: ArrowTopRightIcon, check: CheckIcon, down: ChevronDownIcon, up: ChevronUpIcon, close: Cross2Icon, expand: EnterFullScreenIcon, collapse: ExitFullScreenIcon, image: ImageIcon, magic: MagicWandIcon, edit: Pencil1Icon, refresh: ReloadIcon, undo: ResetIcon }
+export function WorkspaceIcon({ name }: { name: keyof typeof icons }) { const Icon = icons[name]; return <Icon aria-hidden="true" width={18} height={18} /> }

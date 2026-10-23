@@ -7,11 +7,12 @@ import { CreatorWorkspace } from '../../src/client/CreatorWorkspace.tsx'
 import type { CreatorClient } from '../../src/client/CreatorWorkspace.tsx'
 import type { CreatorView } from '../../src/creator/types.ts'
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+HTMLElement.prototype.scrollIntoView = vi.fn()
 let root: Root | undefined
 let container: HTMLDivElement
 const view: CreatorView = { schemaVersion: 1, articleId: 'a', version: 1, title: '已保存正文', publicationTitle: '已保存正文', markdown: '# 正文', theme: 'default', themes: [], preview: { status: 'ready', path: 'preview.html', sha256: 'digest', assets: [], message: '' }, reviewed: true, preparedForDraft: true, draftEnabled: true, imageCandidates: [], imagePlacements: [], imageRequest: null, coverId: 'cover', delivery: null, suggestions: [], suggestionRequest: null, canUndo: false }
 async function mount(client: CreatorClient, onRecover?: () => void) { container = document.createElement('div'); document.body.append(container); root = createRoot(container); await act(async () => { root!.render(createElement(CreatorWorkspace, { client, ...(onRecover ? { onRecover } : {}) })) }) }
-function button(text: string) { const result = [...container.querySelectorAll('button')].find(item => item.textContent === text); expect(result).toBeDefined(); return result! }
+function button(text: string) { const result = [...container.querySelectorAll('button')].find(item => item.textContent === text || item.getAttribute('aria-label') === text); expect(result).toBeDefined(); return result! }
 async function click(text: string) { await act(async () => { button(text).click() }) }
 afterEach(async () => { await act(async () => root?.unmount()); root = undefined; document.body.innerHTML = '' })
 describe('actionable workspace recovery and delivery reconciliation', () => {
@@ -56,7 +57,7 @@ describe('actionable workspace recovery and delivery reconciliation', () => {
     const dispatch = vi.fn(async () => ({ ...view, version: 2 }))
     await mount({ get: async () => unknown, dispatch, readPreview: async () => '<p>最终预览</p>' })
     expect(button('确认已核对，解除保护').disabled).toBe(true)
-    await click('保存到公众号草稿箱')
+    await click('存为草稿')
     expect(button('重新准备微信素材').disabled).toBe(true)
     expect(button('导出已审阅 HTML').disabled).toBe(false)
     await act(async () => { (container.querySelector('input[aria-label="已核对公众号后台交付结果"]') as HTMLInputElement).click() })

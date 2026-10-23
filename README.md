@@ -11,7 +11,7 @@ Turn a Markdown article into a reviewed WeChat layout inside [DeepSeek Harness](
 
 [Get started](#get-started) · [Choose images](#choose-images) · [Export or save a draft](#export-or-save-a-draft) · [Troubleshooting](#troubleshooting)
 
-> **Release status:** `2.0.0-rc.2` is the current creator-workspace prerelease. Download the prebuilt archive and checksum from [GitHub Releases](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.2). The v1.0.0 archive contains the earlier tool-based workflow. Paid image generation and live WeChat delivery remain separate acceptance checks.
+> **Release status:** `2.0.0-rc.3` is the current creator-workspace prerelease. Download the prebuilt archive and checksum from [GitHub Releases](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.3). The v1.0.0 archive contains the earlier tool-based workflow. Paid image generation and live WeChat delivery remain separate acceptance checks.
 
 ## Write in the conversation
 
@@ -49,13 +49,13 @@ export MD2WECHAT_BINARY_PATH=/absolute/path/to/md2wechat
 
 Use the executable file inside the installation, not a directory such as `.tools/md2wechat-330`. Start or restart DSH from that same environment; exporting a variable in a second terminal does not change an already running host. Alternatively, set `binaryPath` to that absolute executable path in the profile configuration, preserving the other fields below. An explicit invalid path fails with setup guidance; the plugin never silently substitutes a different CLI from PATH.
 
-**Preferred customer path: a prebuilt GitHub Release.** From [v2.0.0-rc.2](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.2), download its `geekjourneyx-dsh-md2wechat-2.0.0-rc.2.tgz` and `SHA256SUMS` assets into the same directory. These commands are for those published assets, not the old v1 archive:
+**Preferred customer path: a prebuilt GitHub Release.** From [v2.0.0-rc.3](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.3), download its `geekjourneyx-dsh-md2wechat-2.0.0-rc.3.tgz` and `SHA256SUMS` assets into the same directory. These commands are for those published assets, not the old v1 archive:
 
 ```sh
 sha256sum --check SHA256SUMS
 # On macOS, use: shasum -a 256 --check SHA256SUMS
 # Continue only if checksum verification succeeds.
-dsh plugin --profile web add ./geekjourneyx-dsh-md2wechat-2.0.0-rc.2.tgz
+dsh plugin --profile web add ./geekjourneyx-dsh-md2wechat-2.0.0-rc.3.tgz
 ```
 
 A prebuilt archive does not require cloning or building this repository. It still requires the compatible DSH host, its package manager and the external CLI. Releases are GitHub assets, not npm publications.
@@ -70,10 +70,10 @@ git clone https://github.com/geekjourneyx/dsh-md2wechat.git
 cd dsh-md2wechat
 pnpm install --frozen-lockfile
 pnpm pack --pack-destination ./dist
-dsh plugin --profile web add ./dist/geekjourneyx-dsh-md2wechat-2.0.0-rc.2.tgz
+dsh plugin --profile web add ./dist/geekjourneyx-dsh-md2wechat-2.0.0-rc.3.tgz
 ```
 
-This builds the current checkout, not a published release. The current package version is `2.0.0-rc.2`, so it no longer reuses the old v1 archive's filename.
+This builds the current checkout, not a published release. The current package version is `2.0.0-rc.3`, so it no longer reuses the old v1 archive's filename.
 
 </details>
 
@@ -218,7 +218,7 @@ The [installed acceptance harness](./scripts/creator-host-acceptance/README.md) 
 
 Controlled fixtures and simulated writes do not verify paid image providers, a live WeChat account or completed real-browser acceptance. No passing CI or screenshot claim is implied by this README.
 
-Release delivery is tag-triggered: a `v*` tag must match the package version and point to a commit on `main`. The release workflow runs validation, builds and packs the plugin, then publishes the `.tgz` and `SHA256SUMS` as GitHub Release assets. A prerelease version such as `2.0.0-rc.2` is marked as a prerelease. It does not publish to npm, and merging a PR alone does not create a release.
+Release delivery is tag-triggered: a `v*` tag must match the package version and point to a commit on `main`. The release workflow runs validation, builds and packs the plugin, then publishes the `.tgz` and `SHA256SUMS` as GitHub Release assets. A prerelease version such as `2.0.0-rc.3` is marked as a prerelease. It does not publish to npm, and merging a PR alone does not create a release.
 
 ## License
 

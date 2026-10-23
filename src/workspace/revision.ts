@@ -5,6 +5,9 @@ import { validateArtifactId, validateArtifactRelativePath } from './artifact-sto
 import type { ArtifactStore } from './artifact-store.ts'
 
 const REVISION_SCHEMA_VERSION = 1
+// Released versions sharing schema 1 and source-only (unknown CLI) identities.
+const READABLE_REVISION_VERSIONS = [PLUGIN_VERSION, '2.0.0-rc.2', '2.0.0-rc.1'] as const
+type RevisionPluginVersion = typeof READABLE_REVISION_VERSIONS[number]
 const manifestKeys = new Set<keyof ArticleManifest>([
   'schemaVersion',
   'articlePath',
@@ -33,7 +36,7 @@ export interface ArticleRevision {
   articlePath: string
   articleSha256: string
   manifestPath: string
-  pluginVersion: typeof PLUGIN_VERSION
+  pluginVersion: RevisionPluginVersion
   cliVersion: typeof UNKNOWN_CLI_VERSION
   createdAt: string
 }
@@ -95,12 +98,26 @@ export function validateRevisionManifest(value: unknown): ArticleManifest {
  * @returns Revision identity and safe persisted paths.
  */
 export function computeArticleRevision(articleBytes: Uint8Array, manifestValue: ArticleManifest): ArticleRevision {
+  return deriveArticleRevision(articleBytes, manifestValue, PLUGIN_VERSION)
+}
+
+/** Verify persisted content against the exact directory identity using known compatible releases only. */
+export function verifyArticleRevision(articleBytes: Uint8Array, manifestValue: ArticleManifest, directoryId: string): ArticleRevision {
+  if (!/^[a-f0-9]{64}$/u.test(directoryId)) throw new Error('stale revision: invalid directory identity')
+  for (const version of READABLE_REVISION_VERSIONS) {
+    const revision = deriveArticleRevision(articleBytes, manifestValue, version)
+    if (revision.id === directoryId) return revision
+  }
+  throw new Error('stale revision: manifest, article, or directory identity does not match')
+}
+
+function deriveArticleRevision(articleBytes: Uint8Array, manifestValue: ArticleManifest, pluginVersion: RevisionPluginVersion): ArticleRevision {
   const article = canonicalUtf8(articleBytes)
   const manifest = validateRevisionManifest(manifestValue)
   const articleSha256 = sha256(article)
   const normalized = canonicalJson({
     ...manifest,
-    pluginVersion: PLUGIN_VERSION,
+    pluginVersion,
     cliVersion: UNKNOWN_CLI_VERSION,
   })
   const id = createHash('sha256').update(article).update('\0').update(normalized, 'utf8').digest('hex')
@@ -109,7 +126,7 @@ export function computeArticleRevision(articleBytes: Uint8Array, manifestValue: 
     articlePath: manifest.articlePath,
     articleSha256,
     manifestPath: manifest.manifestPath,
-    pluginVersion: PLUGIN_VERSION,
+    pluginVersion,
     cliVersion: UNKNOWN_CLI_VERSION,
     createdAt: manifest.createdAt,
   }

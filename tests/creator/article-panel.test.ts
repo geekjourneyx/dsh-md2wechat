@@ -24,7 +24,7 @@ function fixture(overrides: Partial<ArticlePanelClient> = {}): ArticlePanelClien
     resume: vi.fn(async (_sessionId, articleId) => article(articleId)),
     discoverRevisions: vi.fn(async () => []),
     recoverRevision: vi.fn(async () => article('recovered')),
-    createWorkspaceClient: vi.fn((_sessionId, articleId) => ({ get: async () => ({ ...baseView, articleId, title: `正文 ${articleId}` }), dispatch: async () => baseView, readPreview: async () => '' })),
+    createWorkspaceClient: vi.fn((_sessionId, articleId) => ({ get: async () => ({ ...baseView, articleId, title: `正文 ${articleId}`, publicationTitle: `正文 ${articleId}` }), dispatch: async () => baseView, readPreview: async () => '' })),
     ...overrides,
   }
 }
@@ -69,11 +69,13 @@ describe('independent article main panel shell', () => {
     expect(client.getArticles).toHaveBeenCalledWith('A', expect.any(AbortSignal))
     expect(client.resume).not.toHaveBeenCalled()
     expect(container.textContent).toContain('最近文章')
-    await click('继续最近文章')
+    await click('查看最近文章')
     expect(client.resume).toHaveBeenCalledWith('A', 'recent', expect.any(AbortSignal))
     expect(client.createWorkspaceClient).toHaveBeenCalledWith('A', 'recent')
     expect(container.textContent).toContain('正文 recent')
-    expect(container.textContent).toContain('文章进度自动保存')
+    expect(container.textContent).toContain('这里只查看已保存的文章')
+    expect(container.querySelector('[aria-label="历史文章预览"]')).not.toBeNull()
+    for (const label of ['换个标题', '更换封面', '存为草稿', '编辑正文']) expect(container.textContent).not.toContain(label)
   })
 
   it('supports an exact message navigation target without opening or guessing another article', async () => {
@@ -197,7 +199,7 @@ describe('independent article main panel shell', () => {
     const navigation = await mount(client); await choose('A')
     await act(async () => { navigation.openArticle('A', 'A') })
     edited = true
-    await click('返回文章列表'); await click('继续最近文章')
+    await click('返回文章列表'); await click('查看最近文章')
     expect(client.resume).toHaveBeenLastCalledWith('A', 'A', expect.any(AbortSignal))
   })
 

@@ -179,3 +179,39 @@ it('manual title changes invalidate review, persist the revision and remain undo
  view = await service.dispatch(agent,view.articleId,view.version,{type:'undo-edit'},signal)
  expect(view.title).toBe('文章')
 })
+
+
+describe('direct paragraph edits', () => {
+  const markdown = '---\ntitle: 文章\n---\n\n# 文章\n\n完整正文。\n\n下一段。'
+  const setup = () => new CreatorService(() => ({ ...operations(), start: async () => ({ id: 'a'.repeat(64), manifestPath: 'revisions/a/manifest.json', title: '文章', markdown }), revise: async (revision: any, text: string) => ({ ...revision, id: 'b'.repeat(64), markdown: text }) }), 'default')
+  const signal = new AbortController().signal
+  it('saves a new paragraph revision, rejects stale callbacks, and restores it through undo', async () => {
+    const service = setup()
+    const opened = await service.open(agent, 'a.md', '', signal)
+    const requested = await service.dispatch(agent, opened.articleId, 1, { type: 'request-images', kind: 'cover', anchorId: '' }, signal)
+    const edited = await service.dispatch(agent, opened.articleId, 1, { type: 'edit-text', before: '完整正文。', after: '修改后的正文。' }, signal)
+    expect(edited).toMatchObject({ title: '文章', version: 2, canUndo: true, markdown: markdown.replace('完整正文。', '修改后的正文。'), imageRequest: null })
+    await expect(service.importImage(agent, opened.articleId, 1, requested.imageRequest!.id, 'old.png', '', signal)).rejects.toThrow('更新')
+    await expect(service.dispatch(agent, opened.articleId, 1, { type: 'edit-text', before: '下一段。', after: '过时修改。' }, signal)).rejects.toThrow('更新')
+    const undone = await service.dispatch(agent, opened.articleId, 2, { type: 'undo-edit' }, signal)
+    expect(undone).toMatchObject({ markdown, version: 3, canUndo: false })
+  })
+  it('rejects partial paragraphs, title/frontmatter changes and structured replacements', async () => {
+    const service = setup()
+    const opened = await service.open(agent, 'a.md', '', signal)
+    for (const [before, after] of [['完整', '部分'], ['# 文章', '# 改名'], ['title: 文章', 'title: 改名'], ['完整正文。', '# 改名'], ['完整正文。', '两个\n\n段落'], ['完整正文。', '<script>bad</script>']]) {
+      await expect(service.dispatch(agent, opened.articleId, 1, { type: 'edit-text', before: before!, after: after! }, signal)).rejects.toThrow()
+    }
+    expect((await service.get(agent, opened.articleId)).markdown).toBe(markdown)
+  })
+})
+
+it('completes an explicit uploaded cover as a single-image request', async () => {
+  const revisionId = 'a'.repeat(64)
+  const candidate = { id: 'uploaded', revisionId, kind: 'cover' as const, path: `revisions/${revisionId}/images/cover.png`, sha256: 'b'.repeat(64), contentType: 'image/png' as const, byteSize: 10, alt: '封面' }
+  const service = new CreatorService(() => ({ ...operations(), start: async () => ({ id: revisionId, manifestPath: 'revisions/a/manifest.json', title: '文章', markdown: '# 文章' }), importImage: async () => candidate }), 'default')
+  const signal = new AbortController().signal
+  const opened = await service.open(agent, 'a.md', '', signal)
+  const uploaded = await service.dispatch(agent, opened.articleId, 1, { type: 'import-local-image', kind: 'cover', anchorId: '', sourcePath: 'cover.png', alt: '封面' }, signal)
+  expect(uploaded.imageRequest).toMatchObject({ expected: 1, completed: 1, candidateIds: ['uploaded'], status: 'ready' })
+})

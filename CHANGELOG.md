@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.0-rc.3 - 2026-10-24
+
+- Replace article tabs with a single-page editor: cover/title message card, inline cover choices and paragraph editing.
+- Track three-cover batches, preserve partial results, and report background failures without affecting newer requests.
+- Keep article history read-only with navigation back to its source conversation; fix clipped scrolling.
+- Replace the wide conversation article banner with a compact icon disclosure aligned to the composer; correct suggestion labels.
+- Preserve unsaved edits and delivery checks, fix browser icon loading, and reopen intact rc.1/rc.2 articles after upgrading without rewriting originals.
+- Browser-verified local installation, real CLI preview, and wide/narrow layouts. Paid generation and live WeChat delivery were not exercised.
+
 ## 2.0.0-rc.2 - 2026-10-22
 
 - Run sidebar layout previews directly through the CLI without a model request or redundant approval. Keep approval requirements for agent tools and external delivery.

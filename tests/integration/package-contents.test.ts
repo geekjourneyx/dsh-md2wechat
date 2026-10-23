@@ -2,6 +2,8 @@ import { sandboxPolicyFixture } from '../fixtures/sandbox-policy.ts'
 import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { createRequire } from 'node:module'
+import { runInNewContext } from 'node:vm'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -37,6 +39,15 @@ async function linkRuntimePackages(fixtureRoot: string): Promise<void> {
 describe('packed plugin artifact', () => {
   it('contains the built host and client entries, generated Remote contracts, and one bundle patch', async () => {
     const fixture = await packedFixture()
+    // The host loads this bundle in a browser, where Node's process is absent.
+    let clientExports: unknown
+    const require = createRequire(import.meta.url)
+    runInNewContext(await readFile(join(fixture.packageRoot, 'lib/client.js'), 'utf8'), {
+      window: { __ModuleLoader__: { load(registration: { factory: (load: typeof require) => unknown }) {
+        clientExports = registration.factory(require)
+      } } },
+    })
+    expect(clientExports).toHaveProperty('apply')
     expect(fixture.entries).toContain('package/lib/index.js')
     expect(fixture.entries).toContain('package/lib/types/index.d.ts')
     for (const entry of ['client.js', 'typert.host.js', 'typert.host.d.ts', 'typert.remote-client.js', 'typert.remote-client.d.ts']) {
@@ -80,8 +91,8 @@ describe('packed plugin artifact', () => {
     expect(hero.subarray(8, 12).toString()).toBe('WEBP')
     expect(hero.byteLength).toBeLessThan(350_000)
     expect(changelog.match(/^## 1\.0\.0\b/gmu)).toHaveLength(1)
-    expect(changelog.match(/^## \d/gmu)).toHaveLength(3)
-    expect(changelog).toContain('## 2.0.0-rc.2 - 2026-10-22')
+    expect(changelog.match(/^## \d/gmu)).toHaveLength(4)
+    expect(changelog).toContain('## 2.0.0-rc.3 - 2026-10-24')
     expect(license.startsWith('MIT License\n')).toBe(true)
     expect(license).toContain('Copyright (c) 2026 geekjourneyx')
   }, 120_000)

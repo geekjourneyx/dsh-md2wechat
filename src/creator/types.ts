@@ -6,7 +6,7 @@ export interface CreatorSuggestion { id: string; title: string; reason: string; 
 export interface CreatorSuggestionRequest { id: string; kind: 'layout' | 'title' | 'polish'; status: 'pending' | 'ready' | 'error' }
 export interface CreatorImageCandidate { id: string; revisionId: string; kind: 'cover' | 'body'; path: string; sha256: string; contentType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'; byteSize: number; alt: string }
 export interface CreatorImagePlacement { id: string; context: string; hasImage: boolean }
-export interface CreatorImageRequest { id: string; kind: 'cover' | 'body'; anchorId: string; status: 'pending' | 'ready' | 'error' }
+export interface CreatorImageRequest { id: string; kind: 'cover' | 'body'; anchorId: string; status: 'pending' | 'ready' | 'error'; expected: number; completed: number; candidateIds: string[] }
 export interface CreatorDelivery { kind: 'export' | 'draft' | 'materials'; status: 'completed' | 'unknown'; path: string; message: string }
 export interface ArticleSummary { articleId: string; title: string; sourcePath: string; theme: string; version: number; updatedAt: string }
 export interface CreatorRevisionSummary { revisionId: string; manifestPath: string; title: string; createdAt: string }
@@ -40,6 +40,7 @@ export interface CreatorView {
 export type CreatorAction =
   | { type: 'check-article' }
   | { type: 'set-title'; title: string }
+  | { type: 'edit-text'; before: string; after: string }
   | { type: 'select-theme'; theme: string }
   | { type: 'refresh-preview' }
   | { type: 'review-current'; previewPath: string; previewSha256: string; publicationTitle: string }

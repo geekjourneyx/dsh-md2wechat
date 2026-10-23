@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { CliEnvelope } from '../../src/cli/protocol.ts'
 import type { CliGateway, CliRunOptions } from '../../src/cli/gateway.ts'
-import { createPreviewTool, createPreviewOperation } from '../../src/tools/preview.ts'
+import { createPreviewTool, createPreviewOperation, preparePreviewInputs } from '../../src/tools/preview.ts'
 import { ArtifactStore } from '../../src/workspace/artifact-store.ts'
 import { computeArticleRevision } from '../../src/workspace/revision.ts'
 import type { ArticleManifest } from '../../src/workspace/revision.ts'
@@ -203,6 +203,21 @@ describe('md2wechat_preview', () => {
 
   afterEach(async () => {
     await import('node:fs/promises').then(nodeFs => nodeFs.rm(temporary, { recursive: true, force: true }))
+  })
+
+  it('loads released historical content for preview without rewriting its files', async () => {
+    const id = 'bddaadb0f8ba78e393e19a7e6114a7636caf4f34128fe7977a08484885306e3b'
+    const article = encoder.encode('# Historical fixture\n\nOriginal paragraph.\n')
+    const manifest = encoder.encode(JSON.stringify({ schemaVersion: 1, articlePath: 'article.md', manifestPath: 'manifest.json', createdAt: '2026-10-21T00:00:00.000Z', title: 'Historical fixture' }))
+    const path = `revisions/${id}/manifest.json`
+    await store.writeAtomic(`revisions/${id}/article.md`, article)
+    await store.writeAtomic(path, manifest)
+    const loaded = await preparePreviewInputs(store, path)
+    expect(loaded.current.revision).toMatchObject({ id, pluginVersion: '2.0.0-rc.1' })
+    expect([...await store.read(path)]).toEqual([...manifest])
+    expect([...await store.read(`revisions/${id}/article.md`)]).toEqual([...article])
+    await store.writeAtomic(`revisions/${id}/article.md`, encoder.encode('# Tampered\n'))
+    await expect(preparePreviewInputs(store, path)).rejects.toThrow('stale revision')
   })
 
   function dependencies(gateway: CliGateway, selectedStore = store) {

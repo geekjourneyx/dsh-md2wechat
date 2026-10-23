@@ -22,6 +22,7 @@ function host() {
     sessions: { refresh: vi.fn(async () => {}), list: { getSnapshot: () => ({ ids: ['A'], byId: { A: { id: 'A', displayTitle: '会话 A', cwd: '/same' } }, phase: 'ready' }) }, retain: vi.fn(() => ({ ready: Promise.resolve({}), release })) },
     inject: (_names: string[], callback: (child: unknown) => void) => callback(ctx),
     layout: { selectPanel: vi.fn() },
+    uiWorkspace: { openSession: vi.fn() },
     sidebarRight: { mounted: { getSnapshot: () => 'A' }, openTab: vi.fn() },
     sidebarRightTabs: { register: vi.fn(() => () => {}) },
     effect: (callback: () => (() => void)) => { cleanups.push(callback()) },
@@ -34,6 +35,22 @@ function button(text: string) { const item = [...container.querySelectorAll('but
 afterEach(async () => { await act(async () => root?.unmount()); root = undefined; document.body.innerHTML = ''; document.head.querySelectorAll('style').forEach(style => style.remove()) })
 
 describe('official article panel registration', () => {
+  it('returns a history article to its exact source conversation without invoking editing actions', async () => {
+    const h = host(); await apply(h.ctx as unknown as Context)
+    await render(h.entries.get('main')!.component)
+    await act(async () => {
+      const select = container.querySelector('select[aria-label="选择会话"]') as HTMLSelectElement
+      select.value = 'A'; select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await act(async () => { button('查看最近文章').click() })
+    expect(container.querySelector('[aria-label="历史文章预览"]')).not.toBeNull()
+    expect(h.ctx.remote.md2wechat.dispatch).not.toHaveBeenCalled()
+    await act(async () => { button('回到原对话继续编辑').click() })
+    expect(h.ctx.uiWorkspace.openSession).toHaveBeenCalledWith('A')
+    expect(h.ctx.sidebarRight.openTab).toHaveBeenCalledWith('md2wechat-article', { params: { articleId: 'saved' } })
+    h.dispose()
+  })
+
   it('registers a fixed main entry and sidebar metadata after Remote mount, independently of any tool call', async () => {
     const h = host(); let mounted!: () => void; h.ctx.remote.$mount.mockImplementation(() => new Promise(resolve => { mounted = resolve }))
     const applying = apply(h.ctx as unknown as Context)

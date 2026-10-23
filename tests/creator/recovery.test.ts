@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import { CreatorService } from '../../src/creator/service.ts'
 import type { CreatorOperations } from '../../src/creator/service.ts'
@@ -347,4 +347,58 @@ describe('durable creator lifecycle', () => {
     expect(failed.preview.message).toContain('预览未完成')
   })
 
+})
+
+it('marks failed imports as errors while retaining earlier successful candidates', async () => {
+  const f = fixture(); const service = f.service(); const opened = await service.open(agent, 'a.md', '', signal)
+  const requested = await service.dispatch(agent, opened.articleId, 1, { type: 'request-images', kind: 'cover', anchorId: '' }, signal)
+  await service.importImage(agent, opened.articleId, 1, requested.imageRequest!.id, 'cover.png', '封面', signal)
+  const failure = new Error('image import failed')
+  f.ops.importImage = async () => { throw failure }
+  await expect(service.importImage(agent, opened.articleId, 1, requested.imageRequest!.id, 'bad.png', '', signal)).rejects.toBe(failure)
+  expect(await service.get(agent, opened.articleId)).toMatchObject({ imageRequest: { status: 'error', completed: 1 }, imageCandidates: [{ id: 'cover' }] })
+})
+
+it('marks rejected fallback generation as error even after caller cancellation without writing storage', async () => {
+  const f = fixture(); const service = f.service(); const opened = await service.open(agent, 'a.md', '', signal)
+  const requested = await service.dispatch(agent, opened.articleId, 1, { type: 'request-images', kind: 'cover', anchorId: '' }, signal)
+  const abort = new AbortController(); const failure = new Error('provider canceled')
+  f.ops.generateImages = async () => { abort.abort(); throw failure }
+  f.ops.documents.save = async () => { throw new Error('cleanup must not write') }
+  await expect(service.generateImages(agent, opened.articleId, 1, requested.imageRequest!.id, abort.signal)).rejects.toBe(failure)
+  expect((await service.get(agent, opened.articleId)).imageRequest).toMatchObject({ status: 'error', completed: 0 })
+})
+
+it.each(['import', 'generate'] as const)('does not let a late %s failure poison a replacement request', async kind => {
+  const f = fixture(); const service = f.service(); const opened = await service.open(agent, 'a.md', '', signal)
+  const requested = await service.dispatch(agent, opened.articleId, 1, { type: 'request-images', kind: 'cover', anchorId: '' }, signal)
+  let reject!: (error: Error) => void; let started!: () => void
+  const reached = new Promise<void>(resolve => { started = resolve })
+  const pending = () => { started(); return new Promise<never>((_, fail) => { reject = fail }) }
+  f.ops.importImage = pending; f.ops.generateImages = pending
+  const args = [agent, opened.articleId, 1, requested.imageRequest!.id] as const
+  const running = (kind === 'import' ? service.importImage(...args, 'cover.png', '', signal) : service.generateImages(...args, signal)).catch(error => error)
+  await reached
+  const next = await service.dispatch(agent, opened.articleId, 1, { type: 'request-images', kind: 'cover', anchorId: '' }, signal)
+  const failure = new Error('old request failed'); reject(failure)
+  expect(await running).toBe(failure)
+  expect((await service.get(agent, opened.articleId)).imageRequest).toMatchObject({ id: next.imageRequest!.id, status: 'pending', completed: 0 })
+})
+
+it.each([false, true])('handles delayed background failure without affecting a newer request (%s)', async restart => {
+  const f = fixture(); const service = f.service(); const opened = await service.open(agent, 'a.md', '', signal)
+  const requested = await service.dispatch(agent, opened.articleId, 1, { type: 'request-images', kind: 'cover', anchorId: '' }, signal)
+  let fail!: (error: Error) => void
+  const completion = new Promise<void>((_, reject) => { fail = reject })
+  f.ops.generateImages = async () => ({ kind: 'background', jobId: 'background-job', sourcePaths: [], completion })
+  const response = await service.generateImages(agent, opened.articleId, 1, requested.imageRequest!.id, signal)
+  expect(response).not.toHaveProperty('completion')
+  await service.importImage(agent, opened.articleId, 1, requested.imageRequest!.id, 'cover.png', '封面', signal)
+  const current = restart ? await service.dispatch(agent, opened.articleId, 1, { type: 'request-images', kind: 'cover', anchorId: '' }, signal) : requested
+  fail(new Error('worker failed later'))
+  await vi.waitFor(async () => {
+    const view = await service.get(agent, opened.articleId)
+    expect(view.imageRequest).toMatchObject({ id: current.imageRequest!.id, status: restart ? 'pending' : 'error', completed: restart ? 0 : 1 })
+    expect(view.imageCandidates).toHaveLength(1)
+  })
 })

@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-api-gateway/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
@@ -17,7 +18,7 @@ import { createArticlePanelClient } from './creator-client.ts'
 import workspaceStyle from './CreatorWorkspace.css'
 import panelStyle from './ArticlePanel.css'
 
-export const inject = ['remote', 'slots', 'sessions', 'layout', 'sidebarRight', 'sidebarRightTabs']
+export const inject = ['remote', 'slots', 'sessions', 'layout', 'sidebarRight', 'sidebarRightTabs', 'uiWorkspace']
 
 declare module '@deepseek-ai/dsh-client-ui-sidebar-right/client' { interface SidebarRightTabParamsMap { 'md2wechat-article': { articleId: string } } }
 
@@ -48,7 +49,7 @@ function mountArticlePanel(ctx: Context): void {
     return () => style.remove()
   })
   ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: panelId }, function Articles() {
-    return createElement(ArticlePanel, { client, navigation })
+    return createElement(ArticlePanel, { client, navigation, onContinue: (sessionId: string, articleId: string) => { ctx.uiWorkspace.openSession(sessionId as SessionId); openConversationArticle(sessionId, articleId) } })
   }))
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: panelId, order: 1, label: '文章历史' }, function ArticleIcon({ size }: { size: number }) {
     return createElement('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, 'aria-hidden': true },

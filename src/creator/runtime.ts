@@ -145,7 +145,7 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
         signal.throwIfAborted()
         const requestKey = createHash('sha256').update(request.requestId).digest('hex').slice(0, 24)
         const images = kind === 'cover'
-          ? [{ id: `cover-${requestKey}`, kind: 'cover' as const, prompt: revision.title, targetPath: `images/cover-${requestKey}.png`, aspect: '16:9' }]
+          ? createCoverRequests(revision.id, revision.title).map(item => ({ ...item, id: `${item.id}-${requestKey}`, targetPath: `images/${item.id}-${requestKey}.png` }))
           : [{ id: `body-${requestKey}`, kind: 'image' as const, prompt: `${revision.title}\n${context}`, targetPath: `images/body-${requestKey}.png` }]
         const plan = await createPlanImagesOperation({ gateway: scopedGateway, store, state: imagePlanState })({ manifestPath: revision.manifestPath, images }, { signal })
         signal.throwIfAborted()
@@ -181,8 +181,9 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
           beforeSpawn: async signal => { await draftState.validateEmptyRuntime(runtime, signal); await options.beforeSpawn?.(signal) },
         }) }
         const imageApproval: typeof ctx.approval = { request: request => ctx.approval.request({ ...request, reason: `${request.reason} Image provider origin: ${provider.origin}. Model and provider configuration come from the host environment, not this article directory.` }) } as typeof ctx.approval
-        const result = await createGenerateImagesOperation({ gateway: imageGateway, store, state: imagePlanState, credentialRefs: config.credentialRefs, credentials: ctx.credentials, approval: imageApproval, jobs: ctx.jobs, imageJobTimeoutMs: config.imageJobTimeoutMs, imageMaxBytes: config.imageMaxBytes, imageMaxRedirects: config.imageMaxRedirects, imageAcquisitionTimeoutMs: config.imageAcquisitionTimeoutMs, reportAuditFailure })({ manifestPath: revision.manifestPath, planPaths: [plan.planPath] }, execution(signal))
-        return { ...result, sourcePaths: images.map(image => `${config.artifactsDir}/revisions/${revision.id}/${image.targetPath}`) }
+        const observed = observeCreatorImageJob(ctx.jobs)
+        const result = await createGenerateImagesOperation({ gateway: imageGateway, store, state: imagePlanState, credentialRefs: config.credentialRefs, credentials: ctx.credentials, approval: imageApproval, jobs: observed.jobs, imageJobTimeoutMs: config.imageJobTimeoutMs, imageMaxBytes: config.imageMaxBytes, imageMaxRedirects: config.imageMaxRedirects, imageAcquisitionTimeoutMs: config.imageAcquisitionTimeoutMs, reportAuditFailure })({ manifestPath: revision.manifestPath, planPaths: [plan.planPath] }, execution(signal))
+        return { ...result, ...(result.kind === 'background' ? { completion: observed.completion } : {}), sourcePaths: images.map(image => `${config.artifactsDir}/revisions/${revision.id}/${image.targetPath}`) }
       },
       async exportHtml(revision, theme, proof, destination, signal) {
         if (!destination.trim() || destination.length > 4096) throw new Error('请输入导出文件的位置。')
@@ -223,4 +224,25 @@ export function creatorOperations(ctx: Context, config: ResolvedConfig, gateway:
     cache.set(agent, operations)
     return operations
   }
+}
+
+/** Observe the existing worker without invoking it twice or replacing its cancellation hooks. */
+export function observeCreatorImageJob(registry: Pick<Context['jobs'], 'start' | 'get'>) {
+  let resolve!: () => void
+  let reject!: (error: unknown) => void
+  const completion = new Promise<void>((done, fail) => { resolve = done; reject = fail })
+  // The worker can finish before its operation returns the background-job response.
+  void completion.catch(() => {})
+  const jobs: Pick<Context['jobs'], 'start' | 'get'> = {
+    get: (...args) => registry.get(...args),
+    start: spec => registry.start({ ...spec, run: handle => {
+      const hooks = spec.run(handle)
+      void hooks.done.then(outcome => {
+        if (outcome.status === 'completed') resolve()
+        else reject(new Error('后台图片处理未完成，请重试。'))
+      }, reject)
+      return hooks
+    } }),
+  }
+  return { jobs, completion }
 }

@@ -69,7 +69,7 @@ export class CreatorSession {
   fork(): CreatorSession {
     const copy = Object.assign(Object.create(CreatorSession.prototype) as CreatorSession, this)
     copy.imageCandidates = this.candidates(); copy.undo = [...this.undo]; copy.suggestions = this.suggestions.map(item => ({ ...item }))
-    copy.imageRequest = this.imageRequest ? { ...this.imageRequest } : null
+    copy.imageRequest = this.imageRequest ? { ...this.imageRequest, candidateIds: [...this.imageRequest.candidateIds] } : null
     copy.suggestionRequest = this.suggestionRequest ? { ...this.suggestionRequest } : null
     copy.imageBatch = this.imageBatch ? { ...this.imageBatch, candidateIds: new Set(this.imageBatch.candidateIds) } : undefined
     copy.deferCancellation = true
@@ -91,12 +91,12 @@ export class CreatorSession {
     this.delivery = null; this.theme = theme; this.version++; this.error = ''; this.reviewedVersion = 0
     this.suggestions = []; this.suggestionRequest = null; this.imageRequest = null
   }
-  requestImages(version: number, kind: 'cover' | 'body', anchorId: string): CreatorImageRequest {
+  requestImages(version: number, kind: 'cover' | 'body', anchorId: string, expected: 1 | 3 = kind === 'cover' ? 3 : 1): CreatorImageRequest {
     this.assertVersion(version)
     if (kind !== 'cover' && kind !== 'body') throw new Error('图片请求用途无效。')
     if (kind === 'body') this.anchor(version, anchorId)
-    // Reserve the full three-result batch before any provider can be asked to work.
-    let remove = Math.max(0, this.imageCandidates.length + 3 - 24)
+    // Reserve the entire requested batch before any provider can be asked to work.
+    let remove = Math.max(0, this.imageCandidates.length + expected - 24)
     let retained = this.imageCandidates
     if (remove) {
       const used = new Set(discoverMarkdownImageDestinations(new TextEncoder().encode(this.revision.markdown))
@@ -110,16 +110,16 @@ export class CreatorSession {
       if (remove) throw new Error('已使用的图片较多，没有足够空间保存新一轮候选；请先移除不需要的正文图片或取消封面选择。')
     }
     this.imageCandidates = retained
-    this.imageRequest = { id: randomUUID(), kind, anchorId, status: 'pending' }
+    this.imageRequest = { id: randomUUID(), kind, anchorId, status: 'pending', expected, completed: 0, candidateIds: [] }
     this.imageBatch = { version, revisionId: this.revision.id, candidateIds: new Set() }
-    return { ...this.imageRequest }
+    return { ...this.imageRequest, candidateIds: [...this.imageRequest.candidateIds] }
   }
   imageRequestFor(version: number, id: string, requireCapacity = false): CreatorImageRequest {
     this.assertVersion(version)
     if (this.imageRequest?.id !== id || this.imageRequest.status === 'error'
       || this.imageBatch?.version !== version || this.imageBatch.revisionId !== this.revision.id) throw new Error('图片请求已失效，请重新选择。')
-    if (requireCapacity && this.imageBatch.candidateIds.size + (this.imageRequest.kind === 'cover' ? 3 : 1) > 3) throw new Error('每轮最多 3 张图片，当前剩余空间不足以执行备用生成；请先发起新一轮请求。')
-    return { ...this.imageRequest }
+    if (requireCapacity && this.imageBatch.candidateIds.size + (this.imageRequest.kind === 'cover' ? 3 : 1) > this.imageRequest.expected) throw new Error(`本轮需要 ${this.imageRequest.expected} 张图片，当前剩余空间不足以执行备用生成；请先发起新一轮请求。`)
+    return { ...this.imageRequest, candidateIds: [...this.imageRequest.candidateIds] }
   }
   failImages(id: string): void { if (this.imageRequest?.id === id) this.imageRequest.status = 'error' }
   addImage(version: number, requestId: string, candidate: ImageCandidate): void {
@@ -129,13 +129,15 @@ export class CreatorSession {
     if (existing && !sameCandidateIdentity(existing, candidate)) throw new Error('同一图片候选的内容已经变化，请重新导入。')
     const accepted = this.imageBatch!.candidateIds
     if (accepted.has(candidate.id)) return
-    if (accepted.size >= 3) throw new Error('每轮最多接收 3 张候选图片，请发起新一轮请求。')
+    if (accepted.size >= request.expected) throw new Error(`本轮最多接收 ${request.expected} 张候选图片，请发起新一轮请求。`)
     if (!existing) {
       if (this.imageCandidates.length >= 24) throw new Error('候选图片空间已满，请重新发起图片请求。')
       this.imageCandidates.push({ ...candidate })
     }
     accepted.add(candidate.id)
-    this.imageRequest!.status = 'ready'
+    this.imageRequest!.completed = accepted.size
+    this.imageRequest!.candidateIds = [...accepted]
+    this.imageRequest!.status = accepted.size >= request.expected ? 'ready' : 'pending'
   }
   candidates(): ImageCandidate[] { return this.imageCandidates.map(item => ({ ...item })) }
   candidate(version: number, id: string): ImageCandidate {
@@ -253,7 +255,7 @@ export class CreatorSession {
       recovery: this.recovery ? { ...this.recovery } : null,
       preparedForDraft: !!this.final(), draftEnabled: this.draftEnabled,
       imageCandidates: this.candidates().map(image => ({ ...image, path: `${this.artifactRoot}/${image.path}` })), imagePlacements: /^[a-f0-9]{64}$/u.test(this.revision.id) ? paragraphImageAnchors(this.revision.id, this.revision.markdown).map(anchor => ({ id: anchor.id, context: anchor.context, hasImage: !!anchor.image })) : [],
-      imageRequest: this.imageRequest ? { ...this.imageRequest } : null, coverId: this.coverId,
+      imageRequest: this.imageRequest ? { ...this.imageRequest, candidateIds: [...this.imageRequest.candidateIds] } : null, coverId: this.coverId,
       delivery: this.delivery ? { ...this.delivery } : null,
       canUndo: this.undo.length > 0, suggestions: this.suggestions.map(item => ({ ...item })),
       suggestionRequest: this.suggestionRequest ? { ...this.suggestionRequest } : null,

@@ -31,6 +31,7 @@ export default defineConfig([{
   },
 }, {
   entry: { client: 'src/client/index.ts' },
+  alias: { '@radix-ui/react-icons': resolve('node_modules/@radix-ui/react-icons/dist/react-icons.esm.js') },
   outDir: 'lib', format: 'cjs', platform: 'browser', target: 'es2024',
   dts: false, clean: false, minify: true,
   plugins: [{ name: 'creator-css', resolveId(source, importer) { if (source.endsWith('.css') && importer) return '\0creator-css:' + resolve(dirname(importer), source) + '.mjs' }, async load(id) { if (id.startsWith('\0creator-css:')) return 'export default ' + JSON.stringify(await readFile(id.slice(13, -4), 'utf8')) } }],

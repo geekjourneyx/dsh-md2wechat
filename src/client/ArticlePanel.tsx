@@ -4,7 +4,7 @@ import type { CreatorClient } from './CreatorWorkspace.tsx'
 import { describeArticlePanelFailure } from './article-panel-model.ts'
 import type { ArticlePanelArticle, ArticlePanelClient, ArticlePanelFailure, ArticlePanelNavigation, ArticlePanelOpenRequest, ArticlePanelRevision, ArticlePanelSession, ArticlePanelSessionReference } from './article-panel-model.ts'
 
-interface ArticlePanelProps { client: ArticlePanelClient; navigation: ArticlePanelNavigation }
+interface ArticlePanelProps { client: ArticlePanelClient; navigation: ArticlePanelNavigation; onContinue?: (sessionId: string, articleId: string) => void }
 interface SessionState { client: ArticlePanelClient; sessionId: string; status: 'loading' | 'ready' | 'error'; error?: ArticlePanelFailure }
 interface ArticleListState { sessionId: string; status: 'loading' | 'ready' | 'error'; articles: readonly ArticlePanelArticle[]; error?: ArticlePanelFailure }
 interface RestoreState { sequence: number; status: 'loading' | 'ready' | 'error'; workspaceClient?: CreatorClient; error?: ArticlePanelFailure }
@@ -12,7 +12,7 @@ interface LegacyState { sequence: number; status: 'loading' | 'ready' | 'recover
 interface OpenState { sequence: number; sourcePath: string; status: 'loading' | 'error'; error?: ArticlePanelFailure }
 
 /** A global main panel whose selected session is explicit, retained and never inferred from chat. */
-export function ArticlePanel({ client, navigation }: ArticlePanelProps) {
+export function ArticlePanel({ client, navigation, onContinue }: ArticlePanelProps) {
   const selection = useSyncExternalStore(navigation.subscribe, navigation.getSnapshot, navigation.getSnapshot)
   const [sessions, setSessions] = useState<readonly ArticlePanelSession[]>([])
   const [directoryStatus, setDirectoryStatus] = useState<'loading' | 'ready' | 'error'>('loading')
@@ -169,7 +169,7 @@ export function ArticlePanel({ client, navigation }: ArticlePanelProps) {
           {!sessionReady && sessionState?.status !== 'error' && <p role="status">正在连接所选会话…</p>}
           {sessionReady && (!currentArticles || currentArticles.status === 'loading') && <p role="status">正在读取已保存文章…</p>}
           {currentArticles?.status === 'error' && <div className="md2-article-notice" role="alert"><p>{currentArticles.error?.message}</p><button type="button" onClick={() => setListRetry(value => value + 1)}>重试读取文章</button></div>}
-          {recent && <button className="md2-article-primary md2-article-continue" type="button" onClick={() => navigation.openArticle(sessionId, recent.articleId)}>继续最近文章</button>}
+          {recent && <button className="md2-article-primary md2-article-continue" type="button" onClick={() => navigation.openArticle(sessionId, recent.articleId)}>查看最近文章</button>}
           {currentArticles?.status === 'ready' && !currentArticles.articles.length && <p className="md2-article-empty-list">这段对话还没有文章。回到对话，让助手帮你写一篇文章。</p>}
           {!!currentArticles?.articles.length && <ul className="md2-article-list">{currentArticles.articles.map(item => <li key={item.articleId}><button type="button" aria-current={articleId === item.articleId ? 'page' : undefined} onClick={() => navigation.openArticle(sessionId, item.articleId)}><strong>{item.title || '未命名文章'}</strong><span>{item.sourcePath}</span><time dateTime={item.updatedAt}>保存于 {displayTime(item.updatedAt)}</time></button></li>)}</ul>}
           {sessionReady && <details className="md2-article-more"><summary>更多：按路径打开或恢复旧文章</summary><form className="md2-article-open-form" onSubmit={event => { event.preventDefault(); void openMarkdown({ sourcePath: source.trim() }) }}>
@@ -187,9 +187,9 @@ export function ArticlePanel({ client, navigation }: ArticlePanelProps) {
         </aside>
         <section className="md2-article-content" aria-label="当前文章">
           {articleId && sessionReady ? <>
-            <div className="md2-article-restore-note"><p>文章进度自动保存。</p><button type="button" onClick={() => navigation.clearArticle()}>返回文章列表</button></div>
+            <div className="md2-article-restore-note"><p>这里只查看已保存的文章，修改请回到原对话。</p>{onContinue && <button type="button" onClick={() => onContinue(sessionId, articleId)}>回到原对话继续编辑</button>}<button type="button" onClick={() => navigation.clearArticle()}>返回文章列表</button></div>
             {currentRestore?.status === 'error' ? <div className="md2-article-restore-error md2-article-notice" role="alert"><h2>文章暂未恢复</h2><p>{currentRestore.error?.message}</p><button type="button" onClick={() => navigation.openArticle(sessionId, articleId)}>重试恢复文章</button></div>
-              : currentRestore?.status === 'ready' && currentRestore.workspaceClient ? <div className="md2-article-workspace"><CreatorWorkspace key={`${sessionId}:${articleId}:${sequence}`} client={currentRestore.workspaceClient} onRecover={() => navigation.clearArticle()} /></div>
+              : currentRestore?.status === 'ready' && currentRestore.workspaceClient ? <div className="md2-article-workspace"><CreatorWorkspace key={`${sessionId}:${articleId}:${sequence}`} readOnly client={currentRestore.workspaceClient} onRecover={() => navigation.clearArticle()} /></div>
                 : <div className="md2-article-content-empty" role="status"><h2>正在恢复文章…</h2><p>正在读取此会话已保存的正文和选择，不会自动生成内容或上传素材。</p></div>}
           </> : <div className="md2-article-content-empty"><span className="md2-article-eyebrow">保存的文章，随时继续</span><h2>{sessionReady ? '选择一篇文章，继续创作' : '文章只属于你选定的会话'}</h2><p>{sessionReady ? '从列表选择文章，或打开 Markdown。正文、主题和已保存候选会保留，交付前仍需审阅当前版本。' : '连接后才能读取文章。切换会话不会把另一会话的文章带过来。'}</p></div>}
         </section>
