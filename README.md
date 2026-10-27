@@ -9,20 +9,38 @@ Turn a Markdown article into a reviewed WeChat layout inside [DeepSeek Harness](
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![DSH targets](https://img.shields.io/badge/DSH-0.2.0--rc.2%20%7C%200.2.1--rc.2-475569.svg)](./package.json)
 
-[Get started](#get-started) · [Choose images](#choose-images) · [Export or save a draft](#export-or-save-a-draft) · [Troubleshooting](#troubleshooting)
+[中文安装说明](#中文安装说明) · [Get started](#get-started) · [Choose images](#choose-images) · [Export or save a draft](#export-or-save-a-draft) · [Troubleshooting](#troubleshooting)
 
 > **Release status:** `2.0.0-rc.3` is the current creator-workspace prerelease. Download the prebuilt archive and checksum from [GitHub Releases](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.3). The v1.0.0 archive contains the earlier tool-based workflow. Paid image generation and live WeChat delivery remain separate acceptance checks.
+
+## 中文安装说明
+
+当前版本 **2.0.0-rc.3** 为预发布版。需要 DSH 宿主和网页客户端 `0.2.0-rc.2` 或 `0.2.1-rc.2`，以及单独安装的 md2wechat；历史 v1.0.0 使用不同的宿主版本，不适用于下面的步骤。
+
+1. 按 [环境要求](#1-check-the-requirements) 准备宿主和 md2wechat。已有兼容的 md2wechat 可以继续使用，安装插件不需要重新安装它。
+2. 从 [发布页](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.3) 下载插件压缩包和 `SHA256SUMS`，按 [安装步骤](#2-install-the-creator-workspace) 校验成功后安装。
+3. 按 [安装检查](#3-verify-and-activate) 确认插件版本为 `2.0.0-rc.3`，让 DSH 能找到 md2wechat，再重启对应的宿主。密钥由你自己在 DSH 中配置，不要发到聊天里。
+
+也可以把下面这段发给助手：
+
+```text
+请阅读 https://github.com/geekjourneyx/dsh-md2wechat 的 README，按 Get started 安装 2.0.0-rc.3 预发布版。
+先检查环境，已有兼容的 md2wechat 就继续使用；不满足要求时告诉我原因，不要强制安装。
+不要配置或读取密钥。完成后告诉我实际看到的插件版本和 md2wechat 版本。
+```
+
+使用时，在对话里让助手写文章，点击「打开文章」或「预览与调整文章」。在右侧编辑标题、正文、主题和配图，再点击「存为草稿」，检查最终预览后「确认保存到草稿箱」。只需 HTML 时可导出已审阅内容；「文章历史」用来找回以前的文章。
 
 ## Write in the conversation
 
 Tell the DSH assistant what you want to write. After composing the article, the assistant creates an article card directly in that conversation. You do not need to type a file path, choose a session, or recover an old version.
 
-1. Click **预览与调整** on the article card. The article opens in DSH's native right panel; the conversation and its input remain available.
-2. Choose **排版**, **标题与文字**, or **配图**. Edit the title directly, compare suggested changes, and choose an image file. Body images attach to a paragraph you select.
-3. Click **保存到公众号草稿箱**. Check the configured account and actual publication title, prepare selected images, review the final preview, then explicitly confirm the unpublished draft. The plugin never publishes or mass-sends.
+1. Click **打开文章** in the conversation article menu or **预览与调整文章** on the tool card. The article opens in DSH's native right panel; the conversation and its input remain available.
+2. Use **排版主题** to change the theme and **编辑正文** to edit the article. Edit the title directly, compare suggested changes, and choose an image file in the same editor. Body images attach to a paragraph you select.
+3. Click **存为草稿**. Check the configured account and actual publication title, prepare selected images, review the final preview, then click **确认保存到草稿箱** to confirm the unpublished draft. The plugin never publishes or mass-sends.
 4. **文章历史** is only for finding previously saved articles. Normal writing stays in the conversation.
 
-Sources stay unchanged. Text imports are limited to 2 MiB; images to 8 MiB (PNG, JPEG, GIF, WebP). Imported text containing relative image references must be opened from its original workspace file, or have those references replaced before import. The assistant resolves existing file paths; the author need not know them.
+Sources stay unchanged. Text imported from the conversation is limited to 2 MiB; articles opened from workspace files to 8 MiB; images to 8 MiB (PNG, JPEG, GIF, WebP). Imported text containing relative image references must be opened from its original workspace file, or have those references replaced before import. The assistant resolves existing file paths; the author need not know them.
 
 **Current repair verification:** automated checks and installed acceptance use DSH `0.2.1-rc.2`, CLI `3.8.0`, a local renderer fixture and simulated WeChat writes. The revised conversation UI has been opened in the real host. Earlier compatibility coverage does not replace re-running this revision on every target. Live WeChat writes and paid image generation are not claimed verified.
 
@@ -86,7 +104,7 @@ dsh plugin --profile web why @geekjourneyx/dsh-md2wechat
 dsh --profile web --dump-config
 ```
 
-Activation stops before tool registration if the configured CLI is missing, does not satisfy the JSON protocol or lacks a required command. Add the preview credential in DSH, open an article using the example above, then approve its first preview.
+Confirm that the installed plugin version is `2.0.0-rc.3`. Activation stops before tool registration if the configured CLI is missing, does not satisfy the JSON protocol or lacks a required command. Add the preview credential in DSH, open an article using the example above, then generate its first preview. Preview actions in the article UI run directly; assistant-initiated previews require host approval.
 
 <details>
 <summary>Looking for the earlier tool-based v1.0.0 release?</summary>
@@ -111,7 +129,7 @@ An interrupted upload or draft is different from an unsaved preview: its private
 
 ## Review the real output
 
-Preview sends article content to the configured layout service after approval; it is not an offline Markdown renderer. Suggestions use your existing host agent.
+Preview sends article content to the configured layout service; it is not an offline Markdown renderer. Suggestions use your existing host agent.
 
 - Compare successful previews. A failed refresh keeps the previous result visible but marks it stale.
 - Review the actual publication title returned by the service, including front-matter precedence, rather than assuming it matches the source heading.
@@ -149,7 +167,7 @@ For WeChat-ready delivery:
 3. Review the final HTML after local image references have been replaced with verified WeChat material URLs.
 4. Export those exact bytes, or explicitly confirm one **unpublished** draft using that HTML and the selected cover.
 
-Preview, upload/generation, file export and draft creation have separate approvals. Pre-upload review is not approval of a changed final document. If an upload or draft outcome is unknown, inspect the WeChat account before recovery; the plugin does not automatically reissue an uncertain write.
+Assistant-initiated previews, upload/generation, file export and draft creation have separate approvals. Preview actions in the article UI run directly. Pre-upload review is not approval of a changed final document. If an upload or draft outcome is unknown, inspect the WeChat account before recovery; the plugin does not automatically reissue an uncertain write.
 
 ## Configuration
 
@@ -189,10 +207,10 @@ Save the row in the profile's `cordis.patch.yml`. Setting `enableWechatWriteTool
 - **Host peer-version mismatch:** the creator package accepts DSH `0.2.0-rc.2` or `0.2.1-rc.2`; `0.1.0-rc.5` and other host versions do not satisfy that requirement. Resolve the host/plugin version choice explicitly, rather than forcing peer dependency installation. The plugin never upgrades the host.
 - **CLI activation failure:** check the configured executable file, the actual host PATH, `md2wechat version --json` and `md2wechat capabilities --json`. The JSON envelope and required commands are checked before plugin tools register; a different version number alone is not a rejection. The detected version is recorded in compatibility results and preview authority, so changing the CLI requires a new preview and review. Source-only article starts and generated image records report `cliVersion: unknown`: source-only work does not invoke the CLI, and a separate version probe cannot prove which executable produced an image. The plugin never installs or upgrades the CLI.
 - **Earlier build fails on `protocol/remote-info`:** install the corrected plugin package on a supported host. The generated contracts now use the official shared baseline, without that newer-only import. Do not patch host exports or force an incompatible peer range.
-- **Installed but no article entry:** after verifying matching host/client packages and CLI compatibility, restart the profile so the client extension reloads. Look for **文章** in the fixed navigation, select a session, and open the Markdown file. Conversation shortcuts are optional; old generic cards do not turn into an editor.
+- **Installed but no article entry:** after verifying matching host/client packages and CLI compatibility, restart the profile so the client extension reloads. Look for **文章历史** in the fixed navigation, select a session, and open the Markdown file. Conversation shortcuts are optional; old generic cards do not turn into an editor.
 - **Read-only or outside-workspace error:** creator actions respect the session's current sandbox policy and canonical workspace boundary. Use a permitted location or change policy through the host; the plugin does not grant itself access. Export can replace an existing destination only after the host approval.
 - **Upgrading an earlier source build:** recover a compatible saved revision, or explicitly open the original Markdown (or a preserved revision’s article.md) as a new article, then create/review a fresh preview. Source-only revisions no longer claim an unobserved CLI version; their IDs can change once. A manifest using the older identity format cannot be restored by weakening validation. Existing artifacts are retained, not automatically migrated or trusted.
-- **Restarted or reopened session:** choose the same session in **文章** and continue a saved article. Files and saved choices can be restored; pending requests, previews and review authority cannot. For an older unsaved card, explicitly choose an existing revision or reopen the original Markdown. Permission, connection and invalid-file errors offer different recovery actions; none silently creates a replacement article.
+- **Restarted or reopened session:** choose the same session in **文章历史** and continue a saved article. Files and saved choices can be restored; pending requests, previews and review authority cannot. For an older unsaved card, explicitly choose an existing revision or reopen the original Markdown. Permission, connection and invalid-file errors offer different recovery actions; none silently creates a replacement article.
 - **Missing credentials:** add the named reference in DSH. Do not paste secrets into the conversation.
 - **State directory rejected:** revision artifacts default to `.dsh/md2wechat` inside the workspace. Private image-plan and operation authority defaults to `$DSH_HOME/plugins/dsh-md2wechat` (or `~/.dsh/plugins/dsh-md2wechat`). Set an absolute `stateDir` outside workspaces, artifacts and temporary directories if those overlap.
 - **Upload or draft result unknown:** inspect the WeChat account before recovery. The plugin blocks automatic reissue, but the CLI can retry uploads internally; approval describes that boundary.
