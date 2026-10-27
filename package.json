@@ -124,7 +124,7 @@
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/geekjourneyx/dsh-md2wechat.git"

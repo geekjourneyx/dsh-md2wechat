@@ -1,87 +1,117 @@
 # dsh-md2wechat
 
-<img src="./assets/readme/readme-hero.webp" alt="dsh-md2wechat — Your article first. Editorial illustration of a Markdown draft becoming a polished article, not a product screenshot." width="100%">
+<img src="./assets/readme/readme-hero.webp" alt="dsh-md2wechat：从 Markdown 草稿到公众号文章的创作插画，非产品截图。" width="100%">
 
-**Your article first. Tools in the background.**
+**DSH 一站式公众号创作插件**
 
-Turn a Markdown article into a reviewed WeChat layout inside [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Compare themes, choose edits and images, then export the HTML you reviewed or save an unpublished draft.
+在 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) 中完成公众号写作、文字润色、标题优化、排版和配图，预览确认后导出 HTML 或保存到公众号草稿箱。排版与交付能力由 [md2wechat](https://github.com/geekjourneyx/md2wechat-skill) 提供。
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![DSH targets](https://img.shields.io/badge/DSH-0.2.0--rc.2%20%7C%200.2.1--rc.2-475569.svg)](./package.json)
+[![许可证：AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
+[![DSH 兼容版本](https://img.shields.io/badge/DSH-0.2.0--rc.2%20%7C%200.2.1--rc.2-475569.svg)](./package.json)
 
-[中文安装说明](#中文安装说明) · [Get started](#get-started) · [Choose images](#choose-images) · [Export or save a draft](#export-or-save-a-draft) · [Troubleshooting](#troubleshooting)
+[功能介绍](#功能介绍) · [安装](#安装) · [开始创作](#开始创作) · [配置](#配置) · [常见问题](#常见问题)
 
-> **Release status:** `2.0.0-rc.3` is the current creator-workspace prerelease. Download the prebuilt archive and checksum from [GitHub Releases](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.3). The v1.0.0 archive contains the earlier tool-based workflow. Paid image generation and live WeChat delivery remain separate acceptance checks.
+> 当前版本 **2.0.0-rc.3** 为预发布版，可从 [发布页](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.3) 下载。历史 v1.0.0 是更早的工具流程，使用不同的宿主版本。
 
-## 中文安装说明
+## 功能介绍
 
-当前版本 **2.0.0-rc.3** 为预发布版。需要 DSH 宿主和网页客户端 `0.2.0-rc.2` 或 `0.2.1-rc.2`，以及单独安装的 md2wechat；历史 v1.0.0 使用不同的宿主版本，不适用于下面的步骤。
+| 功能 | 可以做什么 |
+|---|---|
+| 对话写作 | 在 DSH 中描述选题，让助手写成文章，并直接打开文章编辑器 |
+| 文字润色 | 获取修改建议、比较前后差异，选择采用或继续编辑正文 |
+| 标题优化 | 直接修改标题，或让助手提供新的标题建议 |
+| 主题排版 | 切换公众号主题，查看实际排版效果 |
+| 高级排版模块 | 在正文中使用 md2wechat 的模块语法，制作主视觉、提示卡片等版式，再通过预览检查效果 |
+| 封面与正文配图 | 导入本地图片或使用生图能力，选择封面，并为指定段落配图 |
+| 导出与草稿 | 导出已审阅的 HTML，或准备微信素材后保存到公众号草稿箱 |
+| 文章历史 | 保存文章、主题、图片选择和修订记录，继续之前的创作 |
 
-1. 按 [环境要求](#1-check-the-requirements) 准备宿主和 md2wechat。已有兼容的 md2wechat 可以继续使用，安装插件不需要重新安装它。
-2. 从 [发布页](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.3) 下载插件压缩包和 `SHA256SUMS`，按 [安装步骤](#2-install-the-creator-workspace) 校验成功后安装。
-3. 按 [安装检查](#3-verify-and-activate) 确认插件版本为 `2.0.0-rc.3`，让 DSH 能找到 md2wechat，再重启对应的宿主。密钥由你自己在 DSH 中配置，不要发到聊天里。
+高级排版模块由 md2wechat 的 API 排版服务处理，插件没有单独的模块选择面板。模块用法见 [高级排版指南](https://github.com/geekjourneyx/md2wechat-skill/blob/main/docs/LAYOUT.md)，实际效果以当前服务返回的预览为准。
 
-也可以把下面这段发给助手：
+md2wechat 还提供多公众号账号配置，以及微信接口 IP 白名单和固定出口的接入说明。插件当前使用 DSH 中配置的一组公众号凭据，不提供界面内多账号切换或批量投递；相关配置见 [多账号与 IP 白名单](#多账号与-ip-白名单)。完整能力与配置文档请查看 [md2wechat-skill](https://github.com/geekjourneyx/md2wechat-skill)。
 
-```text
-请阅读 https://github.com/geekjourneyx/dsh-md2wechat 的 README，按 Get started 安装 2.0.0-rc.3 预发布版。
-先检查环境，已有兼容的 md2wechat 就继续使用；不满足要求时告诉我原因，不要强制安装。
-不要配置或读取密钥。完成后告诉我实际看到的插件版本和 md2wechat 版本。
-```
+## 安装
 
-使用时，在对话里让助手写文章，点击「打开文章」或「预览与调整文章」。在右侧编辑标题、正文、主题和配图，再点击「存为草稿」，检查最终预览后「确认保存到草稿箱」。只需 HTML 时可导出已审阅内容；「文章历史」用来找回以前的文章。
+### 环境要求
 
-## Write in the conversation
+- **DSH 宿主与网页客户端：** 使用相互匹配的 `0.2.0-rc.2` 或 `0.2.1-rc.2`。
+- **Node.js：** `^22.19.0` 或 `>=24.0.0`，且 `dsh` 命令可用。
+- **包管理器：** 通过 npm 启动的 DSH 需要可用的 pnpm；打包宿主可能已内置。源码构建使用 pnpm `11.7.0`。
+- **md2wechat CLI：** 单独安装，支持 `v1` JSON 协议及插件需要的命令。`3.3.0` 和 `3.8.0` 是回归验证目标，不是唯一允许的版本。
+- **工作区：** Markdown 文件和本地图片放在当前会话工作区内。
+- **凭据：** 预览和导出需要排版服务的 API Key；保存公众号草稿及备用生图另需相应凭据，见 [配置](#配置)。
 
-Tell the DSH assistant what you want to write. After composing the article, the assistant creates an article card directly in that conversation. You do not need to type a file path, choose a session, or recover an old version.
-
-1. Click **打开文章** in the conversation article menu or **预览与调整文章** on the tool card. The article opens in DSH's native right panel; the conversation and its input remain available.
-2. Use **排版主题** to change the theme and **编辑正文** to edit the article. Edit the title directly, compare suggested changes, and choose an image file in the same editor. Body images attach to a paragraph you select.
-3. Click **存为草稿**. Check the configured account and actual publication title, prepare selected images, review the final preview, then click **确认保存到草稿箱** to confirm the unpublished draft. The plugin never publishes or mass-sends.
-4. **文章历史** is only for finding previously saved articles. Normal writing stays in the conversation.
-
-Sources stay unchanged. Text imported from the conversation is limited to 2 MiB; articles opened from workspace files to 8 MiB; images to 8 MiB (PNG, JPEG, GIF, WebP). Imported text containing relative image references must be opened from its original workspace file, or have those references replaced before import. The assistant resolves existing file paths; the author need not know them.
-
-**Current repair verification:** automated checks and installed acceptance use DSH `0.2.1-rc.2`, CLI `3.8.0`, a local renderer fixture and simulated WeChat writes. The revised conversation UI has been opened in the real host. Earlier compatibility coverage does not replace re-running this revision on every target. Live WeChat writes and paid image generation are not claimed verified.
-
-## Get started
-
-### 1. Check the requirements
-
-- **DSH host and web client:** matching `0.2.0-rc.2` or `0.2.1-rc.2`. These are the supported targets; this repair was rechecked on `0.2.1-rc.2` with CLI `3.8.0`. Re-run the matrix before releasing to both targets. The move from the v1 target, `0.1.0-rc.5`, remains breaking.
-- **Runtime:** Node.js `^22.19.0` or `>=24.0.0`, with `dsh` available. Node.js `22.19.0` is supported; Node 24 is not mandatory. An npm-launched DSH host also needs pnpm available; a bundled host may include it. Source builds use pnpm `11.7.0`.
-- **Renderer:** a separately installed `md2wechat` CLI with the supported `v1` JSON protocol and required command capabilities. Versions `3.3.0` and `3.8.0` are regression targets, not an exact-version allowlist.
-- **Workspace:** your Markdown and any local images inside the current session workspace.
-- **Credentials:** `MD2WECHAT_API_KEY` in DSH's credential service for preview/export. WeChat and image-provider credentials are only needed for their optional operations.
-
-The plugin and its GitHub Release do not contain or install md2wechat. Neither the host nor CLI is upgraded automatically. The plugin archive is platform-independent; check the external CLI distributor for platform support. CLI compatibility is checked by protocol and capabilities, not assumed from a version number; operation outputs remain validated. The version matrix does not certify live paid services or every future CLI release.
-
-### 2. Install the creator workspace
-
-By default, the plugin resolves `md2wechat` from the **DSH host process PATH**, not from an unrelated terminal or the article directory. For a side-by-side installation, point DSH at the exact executable that passed your `version --json` and `capabilities --json` checks:
+### 先安装 md2wechat CLI
 
 ```sh
-# Replace this with your installed CLI's absolute executable path.
-export MD2WECHAT_BINARY_PATH=/absolute/path/to/md2wechat
+npm install -g @geekjourneyx/md2wechat
 ```
 
-Use the executable file inside the installation, not a directory such as `.tools/md2wechat-330`. Start or restart DSH from that same environment; exporting a variable in a second terminal does not change an already running host. Alternatively, set `binaryPath` to that absolute executable path in the profile configuration, preserving the other fields below. An explicit invalid path fails with setup guidance; the plugin never silently substitutes a different CLI from PATH.
+具体配置文档可查看 [md2wechat-skill](https://github.com/geekjourneyx/md2wechat-skill)。已有兼容版本可以继续使用；插件及其发布包不包含、也不会自动安装或升级 md2wechat。
 
-**Preferred customer path: a prebuilt GitHub Release.** From [v2.0.0-rc.3](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.3), download its `geekjourneyx-dsh-md2wechat-2.0.0-rc.3.tgz` and `SHA256SUMS` assets into the same directory. These commands are for those published assets, not the old v1 archive:
+安装后可检查版本和能力：
+
+```sh
+md2wechat version --json
+md2wechat capabilities --json
+```
+
+插件启动时还会检查协议和必需命令，不会仅凭版本号判断兼容。外部 CLI 的平台支持以其发行说明为准。
+
+### 安装插件
+
+从 [v2.0.0-rc.3 发布页](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.3) 下载 `geekjourneyx-dsh-md2wechat-2.0.0-rc.3.tgz` 和 `SHA256SUMS`，放在同一目录，先校验：
 
 ```sh
 sha256sum --check SHA256SUMS
-# On macOS, use: shasum -a 256 --check SHA256SUMS
-# Continue only if checksum verification succeeds.
+```
+
+macOS 可改用：
+
+```sh
+shasum -a 256 --check SHA256SUMS
+```
+
+确认校验成功后，在该目录安装：
+
+```sh
 dsh plugin --profile web add ./geekjourneyx-dsh-md2wechat-2.0.0-rc.3.tgz
 ```
 
-A prebuilt archive does not require cloning or building this repository. It still requires the compatible DSH host, its package manager and the external CLI. Releases are GitHub assets, not npm publications.
+使用发布包不需要克隆或构建本仓库。插件通过 GitHub 发布包分发，不是通过 npm 安装；前面的 npm 命令安装的是 md2wechat CLI。
+
+插件从 **DSH 宿主进程的 PATH** 查找 `md2wechat`。如果单独安装在其他位置，启动 DSH 前设置可执行文件的绝对路径：
+
+```sh
+# 替换为你实际安装的可执行文件路径，不要填写目录。
+export MD2WECHAT_BINARY_PATH=/absolute/path/to/md2wechat
+```
+
+从同一终端启动或重启 DSH。在另一个终端设置变量，不会改变已经运行的宿主。也可以在配置中设置 `binaryPath`，并保留 [配置](#配置) 中的凭据引用。指定路径无效时插件会报错，不会自动换用其他程序。
+
+### 检查并启用
+
+```sh
+dsh plugin --profile web why @geekjourneyx/dsh-md2wechat
+dsh --profile web --dump-config
+```
+
+确认安装的插件版本是 `2.0.0-rc.3`，然后重启对应配置的 DSH，让宿主和网页客户端加载同一版本。CLI 缺失或不兼容时，插件会停止启用并提示原因。用户自行在 DSH 中添加所需凭据后，即可打开文章生成预览。
+
+### 交给助手安装
+
+把下面这段发给助手：
+
+```text
+请阅读 https://github.com/geekjourneyx/dsh-md2wechat 的 README，按「安装」章节安装 2.0.0-rc.3 预发布版。
+先检查环境；尚未安装 md2wechat CLI 时，执行 npm install -g @geekjourneyx/md2wechat，已有兼容版本则继续使用。
+不要强制安装不兼容版本，不要配置或读取密钥。完成后告诉我实际看到的插件版本和 md2wechat 版本。
+```
 
 <details>
-<summary>Developer fallback: build the unreleased workspace from source</summary>
+<summary>从源码构建</summary>
 
-Clone this repository and run these commands from its root with pnpm `11.7.0`. No sibling DeepSeek Harness checkout is required.
+仅修改本仓库时需要。在 pnpm `11.7.0` 环境下运行，无需另行克隆 DSH 源码：
 
 ```sh
 git clone https://github.com/geekjourneyx/dsh-md2wechat.git
@@ -91,25 +121,14 @@ pnpm pack --pack-destination ./dist
 dsh plugin --profile web add ./dist/geekjourneyx-dsh-md2wechat-2.0.0-rc.3.tgz
 ```
 
-This builds the current checkout, not a published release. The current package version is `2.0.0-rc.3`, so it no longer reuses the old v1 archive's filename.
+这里打包的是当前源码，文件名中的版本取自 `package.json`。
 
 </details>
 
-### 3. Verify and activate
-
-Verify the installation and composed configuration, then restart the profile so host and client load the same package:
-
-```sh
-dsh plugin --profile web why @geekjourneyx/dsh-md2wechat
-dsh --profile web --dump-config
-```
-
-Confirm that the installed plugin version is `2.0.0-rc.3`. Activation stops before tool registration if the configured CLI is missing, does not satisfy the JSON protocol or lacks a required command. Add the preview credential in DSH, open an article using the example above, then generate its first preview. Preview actions in the article UI run directly; assistant-initiated previews require host approval.
-
 <details>
-<summary>Looking for the earlier tool-based v1.0.0 release?</summary>
+<summary>安装历史 v1.0.0</summary>
 
-This installs the earlier release, **not the creator workspace**. Its package targets DSH `0.1.0-rc.5`, not the host version above. See the [v1.0.0 README](https://github.com/geekjourneyx/dsh-md2wechat/blob/v1.0.0/README.md) for legacy usage.
+v1.0.0 使用早期工具流程，目标宿主是 DSH `0.1.0-rc.5`。仅在明确需要旧版时使用，并阅读 [旧版说明](https://github.com/geekjourneyx/dsh-md2wechat/blob/v1.0.0/README.md)：
 
 ```sh
 dsh plugin --profile web add https://github.com/geekjourneyx/dsh-md2wechat/releases/download/v1.0.0/geekjourneyx-dsh-md2wechat-1.0.0.tgz
@@ -117,71 +136,84 @@ dsh plugin --profile web add https://github.com/geekjourneyx/dsh-md2wechat/relea
 
 </details>
 
-## Continue where you left off
+## 开始创作
 
-The article panel saves the article identity, immutable revision references, theme, selected cover, candidate references and undo history. Changing panels or restarting DSH does not require recreating that saved article. Select the same session and continue it. Two sessions sharing a directory still have separate article lists.
+在 DSH 对话里告诉助手要写什么。文章生成后，点击「打开文章」或工具卡片上的「预览与调整文章」，在右侧文章栏继续编辑，对话和输入框仍然可用。
 
-Saved progress is not saved permission. On restart, pending suggestions and image jobs are not replayed, and previous preview reviews or approvals are not restored. Generate a fresh preview and review it before delivery. If the original Markdown changed, explicitly choose the saved version or import a new article; the plugin never overwrites the source.
+1. 用「排版主题」切换主题，直接编辑标题，或请求新标题。
+2. 点击「编辑正文」修改内容，也可让助手润色或改善阅读体验，再决定采用哪些建议。
+3. 选择封面和正文图片，为指定段落配图。
+4. 生成或更新预览，检查最终标题、正文和图片。
+5. 点击「存为草稿」，完成素材准备和审阅后「确认保存到草稿箱」；只需本地文件时可导出已审阅的 HTML。
 
-For older builds with revision files but no saved article record, compatible revisions can be recovered: choose **选择已保存版本** and select a validated revision in the current workspace. This creates a new article identity without deleting the old files. Older manifests did not store the original Markdown path; recovery therefore uses the existing revision’s article file rather than guessing that path. Old themes, image selections and undo history that were never saved cannot be reconstructed. An expired message shortcut does not guess which article you meant. If an older revision uses a different identity format and fails validation, explicitly import its preserved article.md as a new source; recovery never relaxes integrity checks.
+插件只保存未发布草稿，不发布、不群发。发布前仍需到公众号后台确认。
 
-An interrupted upload or draft is different from an unsaved preview: its private pending-operation record survives restart and blocks another delivery attempt. Check the actual WeChat account before explicitly clearing that block. Reopening the panel never retries an external write.
+源文件不会被覆盖。对话导入正文上限为 2 MiB，工作区文件上限为 8 MiB，图片上限为 8 MiB，支持 PNG、JPEG、GIF、WebP。含本地或相对图片引用的正文，应从原工作区文件打开，或先替换这些引用。
 
-## Review the real output
+### 预览与定稿
 
-Preview sends article content to the configured layout service; it is not an offline Markdown renderer. Suggestions use your existing host agent.
+预览会把文章发送到配置的排版服务，并非离线排版。文章界面的预览操作直接执行；助手发起的预览工具调用仍需宿主授权。
 
-- Compare successful previews. A failed refresh keeps the previous result visible but marks it stale.
-- Review the actual publication title returned by the service, including front-matter precedence, rather than assuming it matches the source heading.
-- Refresh and review after changes to content, theme or selection. Expired or stale previews cannot stand in for a current review.
-- Ordinary HTML export embeds verified local images **before** review, then copies those exact bytes. It needs no cover, image generation or WeChat credentials.
-- Existing WeChat image URLs remain remote. Other remote image hosts prompt you to import a local image instead because the protected preview cannot display them.
+- 刷新失败时保留上一次结果，但会标记为过期。
+- 检查服务返回的实际公众号标题，文章头部信息可能影响最终标题。
+- 正文、主题或图片变化后，需要重新预览和审阅。
+- 普通 HTML 导出会在审阅前嵌入经过检查的本地图片，导出内容与审阅结果一致，不需要封面、生图或公众号凭据。
+- 已有微信图片链接保持远程引用；其他远程图片需先导入本地，受保护的预览不会直接显示它们。
 
-Browser rendering is isolated; pixel-identical appearance in every WeChat client is not guaranteed.
+预览采用隔离显示，不能保证与每一种微信客户端逐像素一致。
 
-## Choose images
+### 配图
 
-**Start with a local image or the host's existing image capability.** Imported PNG, JPEG, GIF and WebP files must be inside the session workspace and pass validation. Importing a candidate does not select or upload it.
+优先使用本地图片或 DSH 已有的生图能力。图片须位于当前工作区并通过检查；导入候选图片不会自动选中或上传。
 
-A cover request asks for three candidates. Body candidates belong to a specific paragraph, with controls to place, replace or remove the image. Positions inside code, YAML front matter, lists, tables, quotes, raw HTML and custom modules are deliberately excluded rather than guessed.
+封面生成会请求三个候选。正文图片关联到指定段落，可放置、替换或移除；不会猜测代码、文章头部信息、列表、表格、引用、原始 HTML 或自定义模块内部的插图位置。
 
 <details>
-<summary>Optional CLI fallback: generation also uploads every candidate</summary>
+<summary>备用生图及上传说明</summary>
 
-Use fallback generation only when the current DSH agent has no other image-generation capability.
+仅当当前助手没有其他生图能力时，才使用 CLI 备用生图。它会生成并上传每张请求的候选图到微信素材库，包括最终未选中的图片，可能产生费用，执行前需要单独确认。取消选择不会撤回已经上传的素材或费用。
 
-CLI 3.3.0 fallback **generates and uploads every requested candidate to WeChat material storage**, including unused candidates. It can incur provider charges and requires separate one-time approval. Deselecting a candidate does not reverse an upload or charge. Wait for background work to finish before using its results.
-
-Provider settings come from the DSH host environment, not the article directory: `IMAGE_PROVIDER`, `IMAGE_API_BASE`, `IMAGE_MODEL` and `IMAGE_SIZE`. Supported providers are OpenAI, ModelScope, OpenRouter, Volcengine and Tuzi; Tuzi needs an explicit HTTPS API base. Approval names the destination origin. Unsupported or ambiguous settings fail closed.
+备用生图读取宿主环境中的 `IMAGE_PROVIDER`、`IMAGE_API_BASE`、`IMAGE_MODEL`、`IMAGE_SIZE`。当前插件接受 OpenAI、ModelScope、OpenRouter、Volcengine、Tuzi；Tuzi 需要明确的 HTTPS API 地址。不支持或含糊的配置会被拒绝。
 
 </details>
 
-## Export or save a draft
+### 保存到公众号草稿箱
 
-**Just need a local HTML file?** Review the current preview and export to a workspace destination. No cover or upload step is required.
+1. 选择一个封面和需要保留的正文图片。
+2. 确认准备微信素材：只上传当前选中的封面和本地正文图片，未选中的本地候选不会上传；之前备用生图产生的上传不会撤回。
+3. 本地图片替换为微信素材链接后，检查最终预览和公众号标题。
+4. 审阅当前版本，再导出 HTML，或确认保存一条未发布草稿。
 
-For WeChat-ready delivery:
+上传、生图、导出和保存草稿分别确认。上传前的审阅不能代替对最终内容的审阅。上传或保存结果不明时，应先到公众号后台核对；插件不会自动重复投递。
 
-1. Choose one cover and the body images to keep.
-2. Approve preparation: upload only that cover and the current local body images. Unselected local candidates are excluded; earlier fallback uploads are not reversed.
-3. Review the final HTML after local image references have been replaced with verified WeChat material URLs.
-4. Export those exact bytes, or explicitly confirm one **unpublished** draft using that HTML and the selected cover.
+### 继续之前的文章
 
-Assistant-initiated previews, upload/generation, file export and draft creation have separate approvals. Preview actions in the article UI run directly. Pre-upload review is not approval of a changed final document. If an upload or draft outcome is unknown, inspect the WeChat account before recovery; the plugin does not automatically reissue an uncertain write.
+从「文章历史」选择同一会话，继续已保存文章。主题、图片选择、修订和撤回记录会保留；共享目录的不同会话仍有各自的文章列表。
 
-## Configuration
+重启不会重放未完成的建议或生图任务，也不会恢复旧预览的审阅授权。继续交付前需重新预览和审阅。原 Markdown 已变化时，明确选择保存版本或导入新文章。
 
-The bundled patch reads optional `MD2WECHAT_BINARY_PATH` (otherwise the host PATH command `md2wechat`) and resolves these credential references through DSH:
+旧版只有修订文件、没有文章记录时，可用「选择已保存版本」恢复兼容修订。恢复不会删除旧文件，也不会猜测原始文件路径或还原从未保存的选择。若旧格式无法恢复，可把保留的 `article.md` 作为新文章打开。
 
-| Reference | Purpose |
+## 配置
+
+插件通过 DSH 凭据服务读取以下引用：
+
+| 引用名 | 用途 |
 |---|---|
-| `MD2WECHAT_API_KEY` | Layout preview and authentication of reviewed output |
-| `WECHAT_APPID`, `WECHAT_SECRET` | WeChat material uploads and unpublished draft creation |
-| `IMAGE_API_KEY` | Optional fallback image provider |
+| `MD2WECHAT_API_KEY` | 排版预览与已审阅结果校验 |
+| `WECHAT_APPID`、`WECHAT_SECRET` | 上传微信素材、创建公众号草稿 |
+| `IMAGE_API_KEY` | 可选备用生图 |
 
-Configure values in DSH's credential service, not in article text, prompts or patches. Credentials are resolved for the operation that needs them and are not stored in article artifacts.
+由用户在 DSH 中配置密钥，不要写进聊天、正文或插件配置文件。凭据只在需要时读取，不保存在文章文件中。排版使用 md2wechat API 服务，需要有效的 API Key；服务范围与费用见 [md2wechat 文档](https://github.com/geekjourneyx/md2wechat-skill#专业-api)。
 
-Both write and fallback feature gates default to `true`; enabling a gate does not grant approval for an operation. To keep draft creation but disable fallback generation, use this later profile patch row. DSH replaces the row's complete `config`, so retain the executable and credential references:
+### 多账号与 IP 白名单
+
+- **多公众号账号：** md2wechat CLI 支持命名账号及指定目标账号，配置方法见 [多账号配置文档](https://github.com/geekjourneyx/md2wechat-skill/blob/main/docs/CONFIG.md)。当前插件保存草稿时使用 DSH 配置的 `WECHAT_APPID` 和 `WECHAT_SECRET`，不会自动采用 CLI 的命名账号列表。使用其他公众号前，需配置对应的 DSH 凭据，并重新预览、核对目标账号和确认保存。
+- **IP 白名单：** 调用微信接口需要满足账号的 IP 白名单要求。配置步骤见 [微信凭证与 IP 白名单指南](https://github.com/geekjourneyx/md2wechat-skill/blob/main/docs/WECHAT-CREDENTIALS.md)。md2wechat 高级 API 服务可提供固定出口能力，具体开通条件以服务说明为准；插件不会自动修改微信后台白名单。
+
+### 可选功能开关
+
+草稿与备用生图开关默认开启，但不代表批准了具体操作。若要保留草稿、关闭备用生图，可在对应配置目录的 `cordis.patch.yml` 中加入下面的配置。DSH 会替换整段 `config`，因此需保留路径和凭据引用：
 
 ```yaml
 - id: dsh-md2wechat
@@ -196,32 +228,31 @@ Both write and fallback feature gates default to `true`; enabling a gate does no
     enableFallbackImageTool: false
 ```
 
-Save the row in the profile's `cordis.patch.yml`. Setting `enableWechatWriteTools: false` disables draft/fallback tools; fallback requires both gates. Clicking preview in the article UI directly runs the configured renderer without a second approval or model request. Agent-initiated preview tools retain host approval. Upload/generation, export and draft creation keep their own confirmations.
+`enableWechatWriteTools: false` 会关闭草稿和备用生图工具；备用生图需要两个开关都开启。
 
-## Troubleshooting
+修订文件默认位于工作区的 `.dsh/md2wechat`。私有图片计划和操作记录默认位于 `$DSH_HOME/plugins/dsh-md2wechat`，未设置 `DSH_HOME` 时使用 `~/.dsh/plugins/dsh-md2wechat`。
+
+## 常见问题
 
 <details>
-<summary>Common problems, recovery and advanced tools</summary>
+<summary>安装、恢复与权限问题</summary>
 
-- **Profile-lock `EPERM`:** the host cannot access its profile lock, before plugin dependency installation. Check the selected profile directory and the current user or sandbox access through the host's supported controls. This is not a plugin, Node-version or CLI compatibility failure. Do not use `sudo` or bypass permission boundaries.
-- **Host peer-version mismatch:** the creator package accepts DSH `0.2.0-rc.2` or `0.2.1-rc.2`; `0.1.0-rc.5` and other host versions do not satisfy that requirement. Resolve the host/plugin version choice explicitly, rather than forcing peer dependency installation. The plugin never upgrades the host.
-- **CLI activation failure:** check the configured executable file, the actual host PATH, `md2wechat version --json` and `md2wechat capabilities --json`. The JSON envelope and required commands are checked before plugin tools register; a different version number alone is not a rejection. The detected version is recorded in compatibility results and preview authority, so changing the CLI requires a new preview and review. Source-only article starts and generated image records report `cliVersion: unknown`: source-only work does not invoke the CLI, and a separate version probe cannot prove which executable produced an image. The plugin never installs or upgrades the CLI.
-- **Earlier build fails on `protocol/remote-info`:** install the corrected plugin package on a supported host. The generated contracts now use the official shared baseline, without that newer-only import. Do not patch host exports or force an incompatible peer range.
-- **Installed but no article entry:** after verifying matching host/client packages and CLI compatibility, restart the profile so the client extension reloads. Look for **文章历史** in the fixed navigation, select a session, and open the Markdown file. Conversation shortcuts are optional; old generic cards do not turn into an editor.
-- **Read-only or outside-workspace error:** creator actions respect the session's current sandbox policy and canonical workspace boundary. Use a permitted location or change policy through the host; the plugin does not grant itself access. Export can replace an existing destination only after the host approval.
-- **Upgrading an earlier source build:** recover a compatible saved revision, or explicitly open the original Markdown (or a preserved revision’s article.md) as a new article, then create/review a fresh preview. Source-only revisions no longer claim an unobserved CLI version; their IDs can change once. A manifest using the older identity format cannot be restored by weakening validation. Existing artifacts are retained, not automatically migrated or trusted.
-- **Restarted or reopened session:** choose the same session in **文章历史** and continue a saved article. Files and saved choices can be restored; pending requests, previews and review authority cannot. For an older unsaved card, explicitly choose an existing revision or reopen the original Markdown. Permission, connection and invalid-file errors offer different recovery actions; none silently creates a replacement article.
-- **Missing credentials:** add the named reference in DSH. Do not paste secrets into the conversation.
-- **State directory rejected:** revision artifacts default to `.dsh/md2wechat` inside the workspace. Private image-plan and operation authority defaults to `$DSH_HOME/plugins/dsh-md2wechat` (or `~/.dsh/plugins/dsh-md2wechat`). Set an absolute `stateDir` outside workspaces, artifacts and temporary directories if those overlap.
-- **Upload or draft result unknown:** inspect the WeChat account before recovery. The plugin blocks automatic reissue, but the CLI can retry uploads internally; approval describes that boundary.
-
-Advanced callers can still use `md2wechat_doctor`, `md2wechat_start_article`, `md2wechat_improve_article`, `md2wechat_plan_images`, `md2wechat_preview` and `md2wechat_export`. Optional `md2wechat_create_draft` and `md2wechat_generate_images` retain their feature gates and approval checks. These legacy tools remain compatible interfaces, not the primary author checklist or a way around review requirements.
-
-md2wechat is a separately trusted executable. The plugin does not install, update or independently sandbox it; use the host's execution controls and review its configuration.
+- **配置目录锁报 `EPERM`：** 宿主无法访问配置目录锁，发生在插件依赖安装前。检查目录权限和宿主允许的访问范围，不要使用 `sudo` 绕过。
+- **宿主版本不匹配：** 当前插件支持 DSH `0.2.0-rc.2` 或 `0.2.1-rc.2`，不支持 v1 使用的 `0.1.0-rc.5`。不要强制安装不兼容依赖；插件不会升级宿主。
+- **CLI 无法启用：** 检查可执行文件路径、宿主 PATH，以及 `version --json`、`capabilities --json` 的输出。更换 CLI 后需要重新预览和审阅。
+- **旧包提示 `protocol/remote-info` 缺失：** 在受支持的宿主中安装修正后的插件包，不要修改宿主导出或强行放宽版本要求。
+- **安装后没有文章入口：** 确认宿主和客户端版本匹配，重启后从「文章历史」选择会话，或在对话里请助手重新打开文章。
+- **文件只读或在工作区外：** 使用会话允许的位置，或通过宿主调整访问权限。插件不会自行扩大权限；覆盖导出文件也需确认。
+- **旧文章或快捷入口无法恢复：** 选择兼容的已保存版本，或把原 Markdown、保留的 `article.md` 重新打开为新文章，再生成和审阅预览。不会自动迁移或降低检查要求。
+- **缺少凭据：** 在 DSH 中添加相应引用，不要把密钥贴进对话。
+- **状态目录被拒绝：** 自定义 `stateDir` 必须是位于工作区、文章产物和临时目录之外的绝对路径。
+- **上传或草稿结果不明：** 先到微信后台核对，再明确恢复。重开面板不会自动重试；CLI 内部可能重试上传，确认时会说明这一点。
 
 </details>
 
-## Development and verification
+md2wechat 是独立运行的外部程序，插件不会安装、升级或单独隔离它，请使用宿主的执行控制并检查其配置。
+
+## 开发与验证
 
 ```sh
 pnpm test
@@ -232,12 +263,14 @@ pnpm run build
 pnpm run pack:check
 ```
 
-The [installed acceptance harness](./scripts/creator-host-acceptance/README.md) exercises real packed-package loading and the official DSH host. The [browser workflow](./.github/workflows/creator-acceptance.yml) is designed to capture the actual installed article main panel, including narrow layouts and message shortcuts.
+[安装验收说明](./scripts/creator-host-acceptance/README.md) 使用真实打包产物和官方 DSH 宿主；[浏览器验收流程](./.github/workflows/creator-acceptance.yml) 用于检查安装后的文章界面、窄屏布局和对话入口。
 
-Controlled fixtures and simulated writes do not verify paid image providers, a live WeChat account or completed real-browser acceptance. No passing CI or screenshot claim is implied by this README.
+最近的修正验证使用 DSH `0.2.1-rc.2`、CLI `3.8.0`、本地排版测试服务与模拟微信写入，并在真实宿主中打开过修改后的界面。其他目标版本需要另行重跑。模拟检查不代表付费生图或真实公众号投递已验证。
 
-Release delivery is tag-triggered: a `v*` tag must match the package version and point to a commit on `main`. The release workflow runs validation, builds and packs the plugin, then publishes the `.tgz` and `SHA256SUMS` as GitHub Release assets. A prerelease version such as `2.0.0-rc.3` is marked as a prerelease. It does not publish to npm, and merging a PR alone does not create a release.
+发布由 `v*` 标签触发，标签需与包版本一致且指向 `main` 上的提交。发布流程检查、构建并上传 `.tgz` 和 `SHA256SUMS`，预发布版本会标为预发布；合并 PR 本身不会发布，也不会上传到 npm。
 
-## License
+## 许可证
 
-[MIT](./LICENSE) © 2026 geekjourneyx · [Changelog](./CHANGELOG.md)
+本项目采用 [AGPL-3.0 许可证](./LICENSE)（`AGPL-3.0-only`）。md2wechat CLI 和外部服务遵循各自的许可与服务条款。
+
+© 2026 geekjourneyx · [更新记录](./CHANGELOG.md)
