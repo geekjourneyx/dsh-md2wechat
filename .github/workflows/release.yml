@@ -82,7 +82,7 @@ jobs:
           sha256sum --check SHA256SUMS
           cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
           Prebuilt DSH plugin; no source checkout or plugin compilation required.
-          Requires matching DSH host + web client 0.2.0-rc.2 or 0.2.1-rc.2 and a separately installed md2wechat CLI with compatible v1 JSON protocol and required capabilities (3.3.0 and 3.8.0 are regression targets).
+          Requires matching DSH host + web client 0.2.0-rc.2, 0.2.1-rc.2 or 0.2.1-rc.4 and a separately installed md2wechat CLI with compatible v1 JSON protocol and required capabilities (3.3.0 and 3.8.0 are regression targets).
           Verify the tgz using SHA256SUMS, then install the local archive with dsh plugin --profile web add.
           Do not bypass host peer compatibility checks; other host versions are not claimed compatible.
           Creator browser/live-provider acceptance remains incomplete; this release does not claim production acceptance.

@@ -1,12 +1,13 @@
-> Conversation-first repair: normal entry is the current conversation's article card and native right panel. The HTTP acceptance additionally exercises direct text import, manual publication-title consistency and picked-image import. `--inspect` keeps the isolated host open after checks and writes a private `inspect.json`; create `finish-inspection` in that run directory to finish. Do not publish its authentication URL. The old `--browser` script describes the former standalone panel and is not proof of the revised browser flow; use the recorded manual host checks until that runner is updated.
+> Conversation-first repair: normal entry is the current conversation's article card and native right panel. The HTTP acceptance additionally exercises direct text import, manual publication-title consistency and picked-image import. `--inspect` keeps the isolated host open after checks and writes a private `inspect.json`; create `finish-inspection` in that run directory to finish. Do not publish its authentication URL. The `--browser` checks follow the conversation dock, native article tab and read-only history.
 
 # Installed article-panel acceptance
 
 This harness installs one supplied archive into an isolated profile using published
-DSH 0.2.0-rc.2 or 0.2.1-rc.2. It never rebuilds or repacks that archive. The test-only
+DSH 0.2.0-rc.2, 0.2.1-rc.2 or 0.2.1-rc.4. It never rebuilds or repacks that archive. The test-only
 LlmAdapter emits a genuine tool call, executed by the real Agent loop. A second,
-retained session starts without any message or tool call, so the fixed article panel
-must work independently of a chat card.
+retained session receives a text-only fixture greeting so the host sidebar lists it.
+It has no article tool call; importing through authenticated Remote must still expose
+the article in that conversation’s dock.
 
 ## Run the installed-package gate
 
@@ -29,8 +30,8 @@ for cached dependencies; `--store /absolute/path` selects a prepared pnpm store.
 The old environment-variable invocation of `pnpm test:installed` remains available
 for source-build host diagnostics. Its report explicitly does not claim installed
 article-panel or browser acceptance. For the release gate, supply `--package` and run
-exactly the same archive against both hosts and both official CLI versions, 3.3.0
-and 3.8.0; compare `packageSha256` across all four reports.
+exactly the same archive against all three hosts and both official CLI versions, 3.3.0
+and 3.8.0; compare `packageSha256` across all six reports.
 
 ## Safety boundaries
 
@@ -100,21 +101,21 @@ Do not substitute data URLs, a standalone component or a generated image. The ex
 GitHub Actions workflow is the browser route for that environment after the branch is
 pushed. A configured workflow is not evidence of a queued or passing run.
 
-The browser opens the official fixed “文章” navigation with no selected session,
-explicitly selects the blank session, imports Markdown without a tool call, previews,
-changes theme and applies a real tool-produced suggestion. It switches to the native
-message card and back, refreshes, and checks the same saved article. The stale
-historical card must show an actionable recovery state without scanning automatically;
-only “选择已保存版本”, an explicit manifest choice and “恢复所选版本” may restore it.
-After a real host restart, the browser restores the unreviewed article, explicitly
-refreshes/reviews again and exports exactly the displayed preview bytes.
+The browser dismisses the host's first-run notice when present, opens the retained
+conversation and uses its article dock to open the native right tab. The article is
+imported through authenticated Remote; this does not claim a browser file-import test.
+It previews, changes theme, edits the title and a paragraph, and applies a real
+tool-produced suggestion. Read-only article history must return to the original
+conversation. Page refresh and an actual host restart must preserve the article;
+after restart it must be unreviewed, and explicit preview/review/export must produce
+exactly the displayed preview bytes. Historical-card recovery remains outside this
+browser gate.
 
-Screenshots include fixed navigation, 1440px main workspace, an applied edit, 360px /
-768px / 1440px panel layouts, historical recovery prompt and chosen-version recovery,
-restart restoration and reviewed export. Narrow layouts assert no document or panel
-horizontal overflow. A failure screenshot is retained when possible. Browser requests
-are limited to the loopback installed host and data/blob resources. Fixture content is
-not production-provider typography.
+Screenshots cover the conversation editor, 360px / 768px / 1440px layouts and reviewed
+export after restart. Narrow layouts assert no document or editor horizontal overflow.
+A failure screenshot is retained when possible. Browser requests are limited to the
+loopback installed host and data/blob resources. Fixture content is not
+production-provider typography.
 
 ## Evidence and status
 
