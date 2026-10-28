@@ -1,6 +1,6 @@
 # dsh-md2wechat
 
-<img src="./assets/readme/readme-hero.webp" alt="dsh-md2wechat：从 Markdown 草稿到公众号文章的创作插画，非产品截图。" width="100%">
+<img src="./assets/feature-wall-01.png" alt="在 DSH 对话里生成文章卡片，预览面板调整标题、封面、配图并切换主题" width="100%">
 
 **DSH 一站式公众号创作插件**
 
@@ -26,7 +26,11 @@
 | 导出与草稿 | 导出已审阅的 HTML，或准备微信素材后保存到公众号草稿箱 |
 | 文章历史 | 保存文章、主题、图片选择和修订记录，继续之前的创作 |
 
+<img src="./assets/feature-wall-02.png" alt="48 套主题：同一篇文章的真实渲染" width="100%">
+
 高级排版模块由 md2wechat 的 API 排版服务处理，插件没有单独的模块选择面板。模块用法见 [高级排版指南](https://github.com/geekjourneyx/md2wechat-skill/blob/main/docs/LAYOUT.md)，实际效果以当前服务返回的预览为准。
+
+<img src="./assets/feature-wall-03.png" alt="59 个排版模块：矩阵、对话、流程、时间线、对比、数据、清单等真实渲染" width="100%">
 
 md2wechat 还提供多公众号账号配置，以及微信接口 IP 白名单和固定出口的接入说明。插件当前使用 DSH 中配置的一组公众号凭据，不提供界面内多账号切换或批量投递；相关配置见 [多账号与 IP 白名单](#多账号与-ip-白名单)。完整能力与配置文档请查看 [md2wechat-skill](https://github.com/geekjourneyx/md2wechat-skill)。
 
