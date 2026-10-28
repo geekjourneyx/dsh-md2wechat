@@ -30,7 +30,7 @@ class FixtureAdapter extends LlmAdapter {
       yield {type:'finish',reason:{kind:'tool-calls'}};
       return;
     }
-    const complete=options.messages.some(m=>m.role==='tool');
+    const complete=options.messages.some(m=>m.role==='tool') || options.messages.some(m => m.role === 'user' && JSON.stringify(m.content).includes('测试文章编辑入口。'));
     if(!complete){
       const id='creator-fixture-open',name=process.env.E2E_TOOL||'md2wechat_open_workspace';
       const args=JSON.stringify({sourcePath:process.env.E2E_SOURCE,title:'离线验收文章'});
@@ -69,7 +69,10 @@ export function apply(ctx){
       handle.agent.session.append('sandbox/mode',{mode:'workspace-write'});
       handle.agent.session.append('session/title',{title:name==='primary'?'离线验收会话':'空白主面板会话',messageSeqs:[],source:{kind:'user'}});
     }
-    // Only the primary fixture invokes a model. The panel fixture starts without any tool card.
+    // A text-only turn makes this no-article-tool fixture visible in the host sidebar.
+    handles.panel.agent.followup(createUserMessage({content:[{type:'text',text:'测试文章编辑入口。'}],source:{kind:'user'}}));
+    await handles.panel.agent.whenIdle();
+    // The panel greeting is text-only; only the primary fixture opens an article tool.
     agent.followup(createUserMessage({content:[{type:'text',text:'用原生文章工作区打开测试 Markdown。'}],source:{kind:'user'}}));
     await agent.whenIdle();
     const deniedHandle=await ctx.agents.create({sessionId:randomUUID(),agentOptions:{provider:'creator-fixture',model:'fixture'},meta:{cwd:process.env.E2E_WORKSPACE},setup:c=>ctx.agentPresets.mount(c).then(()=>undefined)});
@@ -87,6 +90,7 @@ export function apply(ctx){
     await writeFile(process.env.E2E_FIXTURE_STATE+'.tmp',JSON.stringify(saved),{mode:0o600});
     await rename(process.env.E2E_FIXTURE_STATE+'.tmp',process.env.E2E_FIXTURE_STATE);
   }
+  await ctx.sessionPersistence.flush();
   const events=agent.session.snapshotEvents();
   const calls=events.filter(e=>e.type==='tool/call'),results=events.filter(e=>e.type==='tool/result');
   const result=results.find(e=>e.data.meta?.kind==='md2wechat-creator');

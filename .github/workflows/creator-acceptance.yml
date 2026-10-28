@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        host: ['0.2.0-rc.2', '0.2.1-rc.2']
+        host: ['0.2.0-rc.2', '0.2.1-rc.2', '0.2.1-rc.4']
         cli: ['3.3.0', '3.8.0']
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -36,7 +36,7 @@ jobs:
           node scripts/creator-host-acceptance/run.mjs \
             --package "$CREATOR_PACKAGE" \
             --host "$RUNNER_TEMP/creator-host" \
-            --cli "$RUNNER_TEMP/creator-cli/node_modules/@geekjourneyx/md2wechat/bin/md2wechat" \
+            --cli "$RUNNER_TEMP/creator-cli/node_modules/.bin/md2wechat" \
             --root "$RUNNER_TEMP/creator-e2e-results" --online --simulate-writes --browser \
             --playwright "$RUNNER_TEMP/creator-browser/node_modules/playwright-core/index.mjs"
       - uses: actions/upload-artifact@v4
