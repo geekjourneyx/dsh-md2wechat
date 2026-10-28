@@ -11,7 +11,12 @@ const ALLOWED_ROOTS = new Set([
   'tests', 'docs', 'tsconfig.json', 'tsconfig.prepare.json', 'tsdown.config.ts',
   'tsdown.prepare.config.ts', 'vitest.config.ts', 'tsconfig.client.json', '.github', 'assets',
 ])
-const README_ASSETS = new Set(['assets', 'assets/readme', 'assets/readme/readme-hero.webp'])
+const README_ASSETS = new Set([
+  'assets',
+  'assets/feature-wall-01.png',
+  'assets/feature-wall-02.png',
+  'assets/feature-wall-03.png',
+])
 const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'lib', 'coverage'])
 
 /** Run Git and return whether it completed successfully. */

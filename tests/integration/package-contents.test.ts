@@ -54,7 +54,7 @@ describe('packed plugin artifact', () => {
       expect(fixture.entries).toContain(`package/lib/${entry}`)
     }
     expect(fixture.entries.filter(entry => entry === 'package/cordis.patch.yml')).toHaveLength(1)
-    for (const document of ['README.md', 'CHANGELOG.md', 'LICENSE', 'assets/readme/readme-hero.webp']) {
+    for (const document of ['README.md', 'CHANGELOG.md', 'LICENSE', 'assets/feature-wall-01.png', 'assets/feature-wall-02.png', 'assets/feature-wall-03.png']) {
       expect(fixture.entries.filter(entry => entry === `package/${document}`)).toHaveLength(1)
     }
     expect(fixture.entries).toContain('package/package.json')
@@ -86,11 +86,10 @@ describe('packed plugin artifact', () => {
     expect(readme).toContain('npm install -g @geekjourneyx/md2wechat')
     expect(readme).not.toMatch(/(?:^|\n)npm publish\b/u)
     expect(readme).not.toMatch(/\/Users\/|md2wechat-(?:darwin|linux|windows)/u)
-    expect(readme).toContain('src="./assets/readme/readme-hero.webp"')
-    const hero = await readFile(join(fixture.packageRoot, 'assets/readme/readme-hero.webp'))
-    expect(hero.subarray(0, 4).toString()).toBe('RIFF')
-    expect(hero.subarray(8, 12).toString()).toBe('WEBP')
-    expect(hero.byteLength).toBeLessThan(350_000)
+    expect(readme).toContain('src="./assets/feature-wall-01.png"')
+    const hero = await readFile(join(fixture.packageRoot, 'assets/feature-wall-01.png'))
+    expect(hero.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
+    expect(hero.byteLength).toBeLessThan(1_000_000)
     expect(changelog.match(/^## 1\.0\.0\b/gmu)).toHaveLength(1)
     expect(changelog.match(/^## \d/gmu)).toHaveLength(4)
     expect(changelog).toContain('## 2.0.0-rc.3 - 2026-10-24')
