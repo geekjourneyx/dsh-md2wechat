@@ -81,12 +81,12 @@ jobs:
           cd release-assets
           sha256sum --check SHA256SUMS
           cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
-          Prebuilt DSH plugin; no source checkout or plugin compilation required.
-          Requires matching DSH host + web client 0.2.0-rc.2, 0.2.1-rc.2 or 0.2.1-rc.4 and a separately installed md2wechat CLI with compatible v1 JSON protocol and required capabilities (3.3.0 and 3.8.0 are regression targets).
-          Verify the tgz using SHA256SUMS, then install the local archive with dsh plugin --profile web add.
-          Do not bypass host peer compatibility checks; other host versions are not claimed compatible.
-          Creator browser/live-provider acceptance remains incomplete; this release does not claim production acceptance.
-          The plugin never publishes articles. Review the included README for credentials, setup and approval boundaries.
+          DSH 一站式公众号创作插件预发布版，可直接安装下方 tgz，无需自行编译。
+          支持相互匹配的 DSH 宿主与网页客户端 0.2.0-rc.2、0.2.1-rc.2、0.2.1-rc.4；需单独安装兼容的 md2wechat CLI。
+          新增「高级排版」入口，按文章选择模块，整篇最多 8 个，确认建议后应用。
+          修正预览失败提示，区分标题、作者、摘要超限，以及密钥、连接和超时问题。
+          下载后用 SHA256SUMS 校验，再使用 dsh plugin --profile web add 安装 tgz。详细安装与配置见 README。
+          本地模拟服务的自动化验收不代表真实付费生图或公众号投递已经验证。插件仅保存未发布草稿，不发布或群发文章。
           NOTES
           args=()
           if [ "$PRERELEASE" = true ]; then args+=(--prerelease); fi

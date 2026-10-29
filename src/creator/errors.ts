@@ -1,9 +1,23 @@
 /** Finite browser-safe article failures; raw backend diagnostics never cross this boundary. */
-export type CreatorErrorCode = 'IMAGE_INVALID' | 'TITLE_INVALID' | 'IMPORT_INVALID' | 'IMPORT_IMAGES' | 'ARTICLE_NOT_FOUND' | 'RECOVERY_REQUIRED' | 'PERMISSION_DENIED' | 'SOURCE_CHANGED' | 'ARTIFACT_INVALID' | 'VERSION_CONFLICT' | 'HOST_UNAVAILABLE'
+export type CreatorErrorCode = 'PREVIEW_TITLE_INVALID' | 'PREVIEW_AUTHOR_INVALID' | 'PREVIEW_DIGEST_INVALID' | 'PREVIEW_FAILED' | 'PREVIEW_RESPONSE_INVALID' | 'CLI_TIMEOUT' | 'OPERATION_CANCELLED' | 'CREDENTIALS_MISSING' | 'API_KEY_INVALID' | 'API_UNREACHABLE' | 'CLI_UNAVAILABLE' | 'LAYOUT_INVALID' | 'LAYOUT_LIMIT' | 'OPERATION_FAILED' | 'IMAGE_INVALID' | 'TITLE_INVALID' | 'IMPORT_INVALID' | 'IMPORT_IMAGES' | 'ARTICLE_NOT_FOUND' | 'RECOVERY_REQUIRED' | 'PERMISSION_DENIED' | 'SOURCE_CHANGED' | 'ARTIFACT_INVALID' | 'VERSION_CONFLICT' | 'HOST_UNAVAILABLE'
 export type CreatorRecoveryAction = 'open-source' | 'recover-revision' | 'check-permissions' | 'select-session' | 'continue' | 'import-new' | 'check-artifacts' | 'refresh' | 'retry'
 export interface CreatorErrorInfo { code: CreatorErrorCode; message: string; actions: CreatorRecoveryAction[] }
 
 const failures: Record<CreatorErrorCode, { message: string; actions: readonly CreatorRecoveryAction[] }> = {
+  PREVIEW_TITLE_INVALID: { message: '文章标题超过 32 个字符，当前插件无法显示这份预览。请点击「编辑标题」缩短标题后重新预览；原文未更改。', actions: [] },
+  PREVIEW_AUTHOR_INVALID: { message: '文章作者超过 16 个字符，当前插件无法显示这份预览。请缩短文章头部的作者信息后重新预览；原文未更改。', actions: [] },
+  PREVIEW_DIGEST_INVALID: { message: '文章摘要超过 128 个字符，当前插件无法显示这份预览。请缩短文章头部的摘要后重新预览；原文未更改。', actions: [] },
+  PREVIEW_FAILED: { message: '预览未完成，尚未确认具体原因。原文未更改；请保留这次会话记录用于排查，不必反复修改配置。', actions: [] },
+  PREVIEW_RESPONSE_INVALID: { message: '排版返回的结果未通过插件检查，不能显示为有效预览。原文未更改；请核对插件与 md2wechat 版本是否兼容。', actions: [] },
+  CLI_TIMEOUT: { message: '等待 md2wechat 处理超时，暂未拿到结果。请检查网络和服务状态；涉及上传或草稿时，先核对公众号后台再决定是否重试。', actions: [] },
+  OPERATION_CANCELLED: { message: '操作已取消或未获授权。请确认是否继续；若已经开始上传或保存草稿，先核对公众号后台，避免重复提交。', actions: [] },
+  CREDENTIALS_MISSING: { message: '无法读取此操作需要的凭据。请在 DSH 中检查排版密钥；上传和保存草稿还需要公众号 AppID 与 Secret。不要把密钥贴进对话。', actions: [] },
+  API_KEY_INVALID: { message: '排版服务拒绝了当前密钥。请检查密钥是否完整、有效，必要时联系服务提供方；修改文章内容不能解决此问题。', actions: [] },
+  API_UNREACHABLE: { message: '无法连接排版密钥验证服务。请检查网络、代理和服务地址；这不代表密钥已被判定无效。', actions: [] },
+  CLI_UNAVAILABLE: { message: '无法取得 md2wechat 所需能力。请检查安装、可执行文件路径和版本兼容性；文章无需重写。', actions: [] },
+  LAYOUT_INVALID: { message: '高级排版模块未通过检查。请重新生成符合当前 md2wechat 模块规则的建议；尚未应用这次修改。', actions: [] },
+  LAYOUT_LIMIT: { message: '应用后整篇文章将超过 8 个高级排版模块。请减少模块或替换已有模块；尚未应用这次修改。', actions: [] },
+  OPERATION_FAILED: { message: '操作未完成，尚未确认具体原因。请保留这次会话记录用于排查；不要据此重新导入文章或重复上传、提交草稿。', actions: [] },
   IMAGE_INVALID: { message: '请选择不超过 8 MiB 的 PNG、JPEG、GIF 或 WebP 图片。', actions: ['retry'] },
   TITLE_INVALID: { message: '标题请填写 1–32 个字，不要换行或包含 HTML。', actions: ['retry'] },
   IMPORT_INVALID: { message: '请输入有效正文，文章不能超过 2 MiB。', actions: ['retry'] },
@@ -60,10 +74,23 @@ known('ARTIFACT_INVALID', [
 ])
 known('HOST_UNAVAILABLE', [
   '当前宿主缺少文章工作区所需的会话权限服务。', '文章会话已关闭，请重新选择会话。',
-  '无法读取排版主题，请检查 md2wechat。', '没有可用的排版主题，请检查 md2wechat。',
   'creator operation agent disposed', 'creator operation runner disposed', 'creator operation cancelled',
   'creator operation turn ended before completion',
 ])
+known('CREDENTIALS_MISSING', ['MD2WECHAT_API_KEY is not configured for article preview', '请先配置排版与公众号凭据。', '无法读取交付所需凭据，请检查配置。', '请先配置排版凭据。', '无法读取排版凭据，请检查配置。', 'fallback image credentials could not be resolved'])
+known('CLI_TIMEOUT', ['CLI command timed out'])
+known('OPERATION_CANCELLED', ['CLI command cancelled', 'article preview cancelled', '交付未获授权，未执行上传或提交。', 'article preview approval rejected', 'article preview approval cancelled', 'article preview approval unavailable'])
+known('CLI_UNAVAILABLE', ['无法读取排版主题，请检查 md2wechat。', '没有可用的排版主题，请检查 md2wechat。', '文章检查失败，请确认当前 md2wechat 支持文章检查。'])
+known('PREVIEW_FAILED', ['article preview failed'])
+known('PREVIEW_RESPONSE_INVALID', ['文章检查未返回有效结果。'])
+known('VERSION_CONFLICT', ['请重新生成当前文章预览，再导出。', '预览已经变化，请重新审阅。', '最终预览已过期，请重新准备并审阅。', '本地预览已过期，请重新生成并审阅。'])
+
+/** Only documented codes are interpreted; provider prose, URLs and secrets are never displayed. */
+export function creatorCliError(response: { code: string }): Error {
+  const codes: Record<string, CreatorErrorCode> = { API_KEY_REQUIRED: 'CREDENTIALS_MISSING', API_KEY_INVALID: 'API_KEY_INVALID', API_KEY_VERIFY_FAILED: 'API_UNREACHABLE', PREVIEW_FAILED: 'PREVIEW_FAILED', PREVIEW_ACTION_REQUIRED: 'PREVIEW_RESPONSE_INVALID', LAYOUT_VALIDATE_HAS_ERRORS: 'LAYOUT_INVALID' }
+  return creatorRemoteError(undefined, codes[response.code] ?? 'OPERATION_FAILED')
+}
+export function knownCreatorFailure(error: unknown): boolean { return marker(error) !== undefined || messages.has(field(error, 'message') ?? '') || systemCodes.has(field(error, 'code') ?? '') }
 const systemCodes = new Map<string, CreatorErrorCode>([
   ['EACCES', 'PERMISSION_DENIED'], ['EPERM', 'PERMISSION_DENIED'],
   ['remote-access/denied', 'PERMISSION_DENIED'], ['gateway/interactions-forbidden', 'PERMISSION_DENIED'],
@@ -90,7 +117,7 @@ function info(code: CreatorErrorCode): CreatorErrorInfo { return { code, message
 export function creatorErrorInfo(error: unknown): CreatorErrorInfo { return info(marker(error) ?? systemCodes.get(field(error, 'code') ?? '') ?? 'HOST_UNAVAILABLE') }
 
 /** New Error without cause/custom fields: both hosts preserve this finite marker in Error.message. */
-export function creatorRemoteError(error: unknown, fallback: CreatorErrorCode = 'RECOVERY_REQUIRED'): Error {
+export function creatorRemoteError(error: unknown, fallback: CreatorErrorCode = 'OPERATION_FAILED'): Error {
   const code = marker(error) ?? messages.get(field(error, 'message') ?? '') ?? systemCodes.get(field(error, 'code') ?? '') ?? (field(error, 'name') === 'SyntaxError' ? 'ARTIFACT_INVALID' : fallback)
   return new Error(`[md2wechat:${code}] ${failures[code].message}`)
 }

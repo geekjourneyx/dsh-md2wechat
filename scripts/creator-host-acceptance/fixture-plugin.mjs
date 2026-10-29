@@ -23,7 +23,7 @@ class FixtureAdapter extends LlmAdapter {
       const text=typeof blocks==='string'?blocks:blocks.filter(b=>b.type==='text').map(b=>b.text).join('\n');
       const line=text.split('\n').find(line=>line.startsWith('{')&&line.includes('requestId'));
       const request=JSON.parse(line);
-      const args=JSON.stringify({articleId:request.articleId,version:request.version,requestId:request.requestId,changes:[{title:'让结尾更清晰',reason:'用具体动作收束段落，保持原意。',before:'保留原文，选择主题后预览。',after:'先保留原文，再选择主题并检查预览。'}]});
+      const args=JSON.stringify({articleId:request.articleId,version:request.version,requestId:request.requestId,changes:[{title:'让结尾更清晰',reason:'用具体动作收束段落，保持原意。',before:'保留原文，选择主题后预览。',after:request.kind==='layout'?':::hero\ntitle: 保留原文，检查预览\n:::\n\n先保留原文，再选择主题并检查预览。':'先保留原文，再选择主题并检查预览。'}]});
       yield {type:'block-start',index:0,blockType:'tool-call'};
       yield {type:'tool-call-delta',index:0,id:'fixture-proposal-'+request.requestId,name:'md2wechat_propose_changes',argumentsDelta:args};
       yield {type:'block-end',index:0,block:{type:'tool-call',id:'fixture-proposal-'+request.requestId,name:'md2wechat_propose_changes',arguments:args}};

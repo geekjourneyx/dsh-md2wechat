@@ -11,7 +11,7 @@
 
 [功能介绍](#功能介绍) · [安装](#安装) · [开始创作](#开始创作) · [配置](#配置) · [常见问题](#常见问题)
 
-> 当前版本 **2.0.0-rc.3** 为预发布版，可从 [发布页](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.3) 下载。历史 v1.0.0 是更早的工具流程，使用不同的宿主版本。
+> 当前版本 **2.0.0-rc.4** 为预发布版，可从 [发布页](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.4) 下载。历史 v1.0.0 是更早的工具流程，使用不同的宿主版本。
 
 ## 功能介绍
 
@@ -21,14 +21,14 @@
 | 文字润色 | 获取修改建议、比较前后差异，选择采用或继续编辑正文 |
 | 标题优化 | 直接修改标题，或让助手提供新的标题建议 |
 | 主题排版 | 切换公众号主题，查看实际排版效果 |
-| 高级排版模块 | 在正文中使用 md2wechat 的模块语法，制作主视觉、提示卡片等版式，再通过预览检查效果 |
+| 高级排版模块 | 点击「高级排版」，按文章选择主视觉、行动引导、卡片、分割线等模块；整篇最多 8 个，确认建议后应用 |
 | 封面与正文配图 | 导入本地图片或使用生图能力，选择封面，并为指定段落配图 |
 | 导出与草稿 | 导出已审阅的 HTML，或准备微信素材后保存到公众号草稿箱 |
 | 文章历史 | 保存文章、主题、图片选择和修订记录，继续之前的创作 |
 
 <img src="./assets/feature-wall-02.png" alt="48 套主题：同一篇文章的真实渲染" width="100%">
 
-高级排版模块由 md2wechat 的 API 排版服务处理，插件没有单独的模块选择面板。模块用法见 [高级排版指南](https://github.com/geekjourneyx/md2wechat-skill/blob/main/docs/LAYOUT.md)，实际效果以当前服务返回的预览为准。
+在「正文配图与文字建议」中，点击润色按钮旁的「高级排版」。助手会读取当前 md2wechat 支持的模块，结合文章提出建议，已有模块也计入 8 个上限，不会为了凑数堆满。动画分割线仅在当前版本支持时使用，微信内的动效以实际显示为准。高级排版模块由 md2wechat 的 API 排版服务处理。模块用法见 [高级排版指南](https://github.com/geekjourneyx/md2wechat-skill/blob/main/docs/LAYOUT.md)，实际效果以当前服务返回的预览为准。
 
 <img src="./assets/feature-wall-03.png" alt="59 个排版模块：矩阵、对话、流程、时间线、对比、数据、清单等真实渲染" width="100%">
 
@@ -64,9 +64,9 @@ md2wechat capabilities --json
 
 ### 安装插件
 
-**DSH `0.2.1-rc.4` 用户：** 当前源码已加入兼容支持。已发布的 `2.0.0-rc.3` 安装包仍只支持前两个宿主版本；新版安装包发布前，请使用下方「从源码构建」步骤，不要强制安装旧包。
+**DSH `0.2.1-rc.4` 用户：** 请使用 `2.0.0-rc.4` 或更新的兼容安装包，旧版 `2.0.0-rc.3` 不支持此宿主。
 
-从 [v2.0.0-rc.3 发布页](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.3) 下载 `geekjourneyx-dsh-md2wechat-2.0.0-rc.3.tgz` 和 `SHA256SUMS`，放在同一目录，先校验：
+从 [v2.0.0-rc.4 发布页](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.4) 下载 `geekjourneyx-dsh-md2wechat-2.0.0-rc.4.tgz` 和 `SHA256SUMS`，放在同一目录，先校验：
 
 ```sh
 sha256sum --check SHA256SUMS
@@ -81,7 +81,7 @@ shasum -a 256 --check SHA256SUMS
 确认校验成功后，在该目录安装：
 
 ```sh
-dsh plugin --profile web add ./geekjourneyx-dsh-md2wechat-2.0.0-rc.3.tgz
+dsh plugin --profile web add ./geekjourneyx-dsh-md2wechat-2.0.0-rc.4.tgz
 ```
 
 使用发布包不需要克隆或构建本仓库。插件通过 GitHub 发布包分发，不是通过 npm 安装；前面的 npm 命令安装的是 md2wechat CLI。
@@ -102,14 +102,14 @@ dsh plugin --profile web why @geekjourneyx/dsh-md2wechat
 dsh --profile web --dump-config
 ```
 
-确认安装的插件版本是 `2.0.0-rc.3`，然后重启对应配置的 DSH，让宿主和网页客户端加载同一版本。CLI 缺失或不兼容时，插件会停止启用并提示原因。用户自行在 DSH 中添加所需凭据后，即可打开文章生成预览。
+确认安装的插件版本是 `2.0.0-rc.4`，然后重启对应配置的 DSH，让宿主和网页客户端加载同一版本。CLI 缺失或不兼容时，插件会停止启用并提示原因。用户自行在 DSH 中添加所需凭据后，即可打开文章生成预览。
 
 ### 交给助手安装
 
 把下面这段发给助手：
 
 ```text
-请阅读 https://github.com/geekjourneyx/dsh-md2wechat 的 README，按「安装」章节安装 2.0.0-rc.3 预发布版。
+请阅读 https://github.com/geekjourneyx/dsh-md2wechat 的 README，按「安装」章节安装 2.0.0-rc.4 预发布版。
 先检查环境；尚未安装 md2wechat CLI 时，执行 npm install -g @geekjourneyx/md2wechat，已有兼容版本则继续使用。
 不要强制安装不兼容版本，不要配置或读取密钥。完成后告诉我实际看到的插件版本和 md2wechat 版本。
 ```
@@ -124,7 +124,7 @@ git clone https://github.com/geekjourneyx/dsh-md2wechat.git
 cd dsh-md2wechat
 pnpm install --frozen-lockfile
 pnpm pack --pack-destination ./dist
-dsh plugin --profile web add ./dist/geekjourneyx-dsh-md2wechat-2.0.0-rc.3.tgz
+dsh plugin --profile web add ./dist/geekjourneyx-dsh-md2wechat-2.0.0-rc.4.tgz
 ```
 
 这里打包的是当前源码，文件名中的版本取自 `package.json`。
@@ -258,6 +258,11 @@ dsh plugin --profile web add https://github.com/geekjourneyx/dsh-md2wechat/relea
 
 md2wechat 是独立运行的外部程序，插件不会安装、升级或单独隔离它，请使用宿主的执行控制并检查其配置。
 
+### 预览失败如何处理
+
+请按页面显示的具体原因处理。标题最多 32 个字符、作者最多 16 个字符、摘要最多 128 个字符，超过限制时先缩短相应内容。密钥被拒绝与无法连接验证服务会分别提示；原因尚未确认时，不会建议反复修改配置或重新导入文章。上传或保存草稿超时后，应先核对公众号后台，避免重复提交。
+
+
 ## 开发与验证
 
 ```sh
@@ -271,7 +276,7 @@ pnpm run pack:check
 
 [安装验收说明](./scripts/creator-host-acceptance/README.md) 使用真实打包产物和官方 DSH 宿主；[浏览器验收流程](./.github/workflows/creator-acceptance.yml) 用于检查安装后的文章界面、窄屏布局和对话入口。
 
-已在 DSH `0.2.1-rc.4` 与 CLI `3.8.0` 上完成自动化验证：831 项测试通过，并在真实宿主与浏览器中检查了文章入口、标题和正文编辑、换主题、应用建议、文章历史、窄屏显示、刷新及重启恢复、审阅与导出。排版使用本地测试服务，图片上传和存草稿使用模拟微信写入；不代表付费生图或真实公众号投递已验证。
+已在 DSH `0.2.1-rc.4` 与 CLI `3.8.0` 上完成自动化验证：856 项测试通过，并在真实宿主与浏览器中检查了文章入口、标题和正文编辑、换主题、应用建议、文章历史、窄屏显示、刷新及重启恢复、审阅与导出。排版使用本地测试服务，图片上传和存草稿使用模拟微信写入；不代表付费生图或真实公众号投递已验证。
 
 持续集成包含三种受支持的 DSH 版本与 CLI `3.3.0`、`3.8.0` 的六组组合，具体通过状态以对应运行结果为准。
 

@@ -205,6 +205,31 @@ describe('md2wechat_preview', () => {
     await import('node:fs/promises').then(nodeFs => nodeFs.rm(temporary, { recursive: true, force: true }))
   })
 
+  it.each([['title', 32, 'PREVIEW_TITLE_INVALID'], ['author', 16, 'PREVIEW_AUTHOR_INVALID'], ['digest', 128, 'PREVIEW_DIGEST_INVALID']] as const)('explains an overlong %s even when CLI preview succeeds', async (field, limit, code) => {
+    const value = '字'.repeat(limit + 1)
+    await installArticle(field === 'title' ? `# ${value}\n` : `---\n${field}: ${value}\n---\n# Fixture\n`)
+    const gateway = new PreviewGateway(); gateway.includeLocalImage = false
+    gateway.mutate = response => mutateInspectResponse(response, inspect => {
+      const metadata = mutableRecord(inspect.metadata)
+      metadata[field] = { value, source: field === 'title' ? 'markdown.heading' : `frontmatter.${field}`, limit, length: limit + 1, valid: false }
+      if (field === 'title') { const structure = mutableRecord(inspect.structure); structure.body_h1 = { present: true, text: value }; structure.headings = [{ level: 1, text: value }] }
+      const diagnostic = { code: `${field.toUpperCase()}_TOO_LONG`, level: 'error', field, message: 'private provider detail', suggested_fix: 'private path' }
+      inspect.checks = [diagnostic, ...(inspect.checks as unknown[]), ...(field === 'digest' ? [{ code: 'DIGEST_METADATA_ONLY', level: 'info', field: 'digest', message: 'metadata only', suggested_fix: 'check summary' }] : [])]
+      const readiness = mutableRecord(inspect.readiness); readiness.convert_ready = false
+      mutableRecord(readiness.targets).convert = 'blocked'
+      readiness.blockers = [{ ...diagnostic, blocks: ['convert', 'upload', 'draft'] }]
+    })
+    await expect(createPreviewTool(dependencies(gateway)).execute({ manifestPath }, exec())).rejects.toThrow(`[md2wechat:${code}]`)
+    expect((await listRegularFiles(join(workspace, '.dsh/md2wechat'))).some(path => path.endsWith('.html'))).toBe(false)
+    expect(decoder.decode(await store.read(articlePath))).toContain(value)
+  })
+
+  it.each([['API_KEY_INVALID', 'API_KEY_INVALID'], ['API_KEY_VERIFY_FAILED', 'API_UNREACHABLE'], ['PREVIEW_FAILED', 'PREVIEW_FAILED']] as const)('preserves safe meaning of CLI %s without provider prose', async (code, expected) => {
+    const gateway = new PreviewGateway()
+    gateway.mutate = () => ({ success: false, code, message: 'token=private', error: '/private/provider', schema_version: 'v1', status: 'failed', retryable: false })
+    await expect(createPreviewTool(dependencies(gateway)).execute({ manifestPath }, exec())).rejects.toThrow(`[md2wechat:${expected}]`)
+  })
+
   it('loads released historical content for preview without rewriting its files', async () => {
     const id = 'bddaadb0f8ba78e393e19a7e6114a7636caf4f34128fe7977a08484885306e3b'
     const article = encoder.encode('# Historical fixture\n\nOriginal paragraph.\n')

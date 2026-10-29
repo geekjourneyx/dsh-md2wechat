@@ -1,3 +1,4 @@
+import { assertLayoutLimit } from './layout.ts'
 import type { CreatorDeliveryProof, CreatorLocalProof } from './delivery.ts'
 import { paragraphImageAnchors } from './image-choices.ts'
 import type { ImageCandidate, ParagraphImageAnchor } from './image-choices.ts'
@@ -189,6 +190,11 @@ export class CreatorSession {
     if (this.suggestionRequest?.id !== requestId || this.suggestionRequest.status !== 'pending') throw new Error('建议请求已经失效，请重新分析。')
     const valid = validateSuggestions(changes)
     for (const change of valid) applyExactChange(this.revision.markdown, change)
+    if (this.suggestionRequest.kind === 'layout') {
+      let proposed = this.revision.markdown
+      for (const change of valid) proposed = applyExactChange(proposed, change)
+      assertLayoutLimit(proposed)
+    }
     this.suggestions = valid.map(change => ({ ...change, id: randomUUID() }))
     this.suggestionRequest.status = 'ready'
   }
