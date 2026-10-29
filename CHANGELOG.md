@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.0-rc.4 - 2026-10-29
+
+- 支持 DSH 宿主与网页客户端 0.2.1-rc.4。
+- 在润色按钮旁加入「高级排版」，根据文章和当前可用模块提出建议；整篇最多 8 个模块，确认后应用并检查模块格式。
+- 修复预览错误提示：区分标题、作者、摘要超限，以及密钥、连接、超时等问题；未知原因不再误导用户修改配置或重新导入文章。
+- README 改为中文，补充 CLI 安装、配置文档、IP 白名单与多账号能力边界，许可证更新为 AGPL-3.0。
+
 ## 2.0.0-rc.3 - 2026-10-24
 
 - Replace article tabs with a single-page editor: cover/title message card, inline cover choices and paragraph editing.

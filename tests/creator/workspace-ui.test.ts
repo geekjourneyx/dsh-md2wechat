@@ -62,7 +62,7 @@ it('requires current final review and explicit checkbox before saving an unpubli
 
 it('cannot review server-ready bytes before they are displayed or after a read failure', async () => {
   let finish!: (html: string) => void
-  const dispatch = vi.fn(async () => view)
+  const dispatch = vi.fn<CreatorClient['dispatch']>(async () => view)
   await render({ get: async () => view, dispatch, readPreview: () => new Promise(resolve => { finish = resolve }) })
   expect(button('审阅当前版本').disabled).toBe(true)
   await act(async () => { finish('<p>当前真实内容</p>') })
@@ -226,4 +226,13 @@ it('retains an accessible draft and cancel when reloading a concurrently changed
   expect(container.textContent).toContain('这段原文已更新')
   await act(async () => button('取消修改').click())
   expect(button('存为草稿').disabled).toBe(false)
+})
+
+it('offers advanced layout next to polishing with an eight-module explanation', async () => {
+  const dispatch = vi.fn<CreatorClient['dispatch']>(async () => view)
+  await render({ get: async () => view, dispatch, readPreview: async () => '<p>文章</p>' })
+  expect(button('高级排版').closest('details')?.textContent).toContain('请助手润色')
+  expect(container.textContent).toContain('整篇最多 8 个')
+  await act(async () => button('高级排版').click())
+  expect(dispatch.mock.calls[0]?.[1]).toEqual({ type: 'request-suggestions', kind: 'layout' })
 })

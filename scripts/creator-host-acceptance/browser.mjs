@@ -73,13 +73,15 @@ export async function exerciseArticlePanel({ page, launch, logs, source, traject
   await waitFor(async () => (await readView(rpc, identity)).markdown.includes('在新版宿主中完成正文编辑并保存。'));
   await editor.getByRole('button', { name: '查看效果', exact: true }).click();
   await editor.getByText('正文配图与文字建议', { exact: true }).click();
-  await editor.getByRole('button', { name: '改进阅读体验', exact: true }).click();
+  await editor.getByRole('button', { name: '高级排版', exact: true }).click();
   await editor.getByRole('button', { name: '应用这条建议', exact: true }).waitFor();
   await editor.getByRole('button', { name: '应用这条建议', exact: true }).click();
   await waitFor(async () => (await readView(rpc, identity)).markdown.includes('先保留原文，再选择主题并检查预览。'));
   await preview(page, rpc, identity, waitFor);
   report.checks.browserTitleBodyThemeAndSuggestion = true;
   const edited = await readView(rpc, identity);
+  assert.ok(edited.markdown.includes(':::hero\ntitle:'), 'advanced layout suggestion did not apply a module');
+  report.checks.advancedLayoutModuleApplied = true;
   await page.screenshot({ path: join(logs, '01-conversation-editor.png'), fullPage: true });
   for (const width of [360, 768, 1440]) {
     await assertFits(page, width);

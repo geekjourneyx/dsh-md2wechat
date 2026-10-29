@@ -150,8 +150,8 @@ describe('authenticated article Remote contract', () => {
     ['PERMISSION_DENIED', new Error('creator operation rejected by admission policy')],
     ['HOST_UNAVAILABLE', Object.assign(new Error('connection secret'), { code: 'ECONNRESET' })],
     ['HOST_UNAVAILABLE', new Error('当前宿主缺少文章工作区所需的会话权限服务。')],
-    ['RECOVERY_REQUIRED', new Error('unexpected backend /private/path token=secret')],
-    ['RECOVERY_REQUIRED', new TypeError('creator document article identity is invalid')],
+    ['OPERATION_FAILED', new Error('unexpected backend /private/path token=secret')],
+    ['OPERATION_FAILED', new TypeError('creator document article identity is invalid')],
     ['ARTIFACT_INVALID', new TypeError('creator document schema version is invalid')],
   ] as const)('maps %s failures to bounded browser-safe diagnostics', async (code, cause) => {
     const failing = vi.fn(async () => { throw cause })
@@ -171,7 +171,7 @@ describe('authenticated article Remote contract', () => {
   it('sanitizes even hostile thrown objects and preserves pre-invocation permission failures', async () => {
     const hostile = Object.defineProperty({}, 'message', { get() { throw new Error('/private/secret') } })
     const failing = async () => { throw hostile }
-    await failureCode(remote({ get: failing, dispatch: failing } as CreatorBackend).get(owner, unknownId, signal), 'RECOVERY_REQUIRED')
+    await failureCode(remote({ get: failing, dispatch: failing } as CreatorBackend).get(owner, unknownId, signal), 'OPERATION_FAILED')
     expect(creatorErrorInfo(hostile).code).toBe('HOST_UNAVAILABLE')
     for (const code of ['remote-access/denied', 'gateway/interactions-forbidden']) {
       expect(creatorErrorInfo({ code, message: '/private/secret' })).toMatchObject({ code: 'PERMISSION_DENIED' })

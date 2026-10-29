@@ -239,7 +239,7 @@ describe('explicit bounded legacy article recovery', () => {
 
   it('does not publish an unsaved identity or leak a failed save diagnostic', async () => {
     const f = await fixture(); const saved = await f.revision(); f.failSave(); const api = f.api()
-    await code(api.recoverRevision(f.agent, saved.manifestPath, signal), 'RECOVERY_REQUIRED')
+    await code(api.recoverRevision(f.agent, saved.manifestPath, signal), 'OPERATION_FAILED')
     expect(await api.list(f.agent, signal)).toEqual([])
     expect(await readFile(join(f.workspace, '.articles', 'revisions', saved.revisionId, 'article.md'), 'utf8')).toBe(saved.markdown)
   })

@@ -1,3 +1,4 @@
+import { creatorCliError, creatorRemoteError, knownCreatorFailure } from '../creator/errors.ts'
 import { createHash } from 'node:crypto'
 import { dirname, posix } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -253,6 +254,7 @@ export function createPreviewOperation({
       } catch (error) {
         if (exec.signal.aborted || error instanceof PreviewCancelledError) throw new Error('article preview cancelled')
         if (error instanceof SafePreviewError) throw new Error(error.message)
+        if (knownCreatorFailure(error)) throw creatorRemoteError(error)
         throw new Error('article preview failed')
       }
   }
@@ -435,6 +437,7 @@ function validatePreviewResponse(
   prepared: PreparedPreviewInputs,
   settings: { theme: string; fontSize: PreviewFontSize; backgroundType: PreviewBackgroundType },
 ): { metadata: PreviewMetadata; assets: readonly PreviewAsset[] } {
+  if (!response.success || response.status === 'action_required') throw creatorCliError(response)
   if (!response.success
     || response.code !== 'PREVIEW_READY'
     || response.message !== 'Preview ready'
@@ -505,6 +508,9 @@ function validateInspect(
     throw new TypeError('preview inspect checks do not match the prepared article')
   }
   validateReadiness(inspect.readiness, checks)
+  if (!title.valid) throw creatorRemoteError(undefined, 'PREVIEW_TITLE_INVALID')
+  if (!author.valid) throw creatorRemoteError(undefined, 'PREVIEW_AUTHOR_INVALID')
+  if (!digest.valid) throw creatorRemoteError(undefined, 'PREVIEW_DIGEST_INVALID')
   return {
     metadata: { title: title.value, author: author.value, digest: digest.value },
     assets: prepared.assets.map(asset => asset.kind === 'local'
