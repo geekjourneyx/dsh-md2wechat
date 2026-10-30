@@ -26,7 +26,7 @@ function artifact(metadata, archive, output) {
     if (entries.filter(entry => entry === `package/${path}`).length !== 1) throw new Error(`Missing or duplicate runtime entry: ${path}`)
   }
   for (const entry of entries) {
-    if (!/^package\/(?:$|lib\/$|lib\/types\/(?:[A-Za-z0-9_./-]*\/|[A-Za-z0-9_./-]+\.d\.ts)?|lib\/(?:index|client|typert\.host|typert\.remote-client)\.(?:js|d\.ts)|package\.json|cordis\.patch\.yml|README\.md|CHANGELOG\.md|LICENSE|assets\/(?:$|feature-wall-0[123]\.png|readme\/(?:$|readme-hero\.webp)))$/u.test(entry)
+    if (!/^package\/(?:$|lib\/$|lib\/types\/(?:[A-Za-z0-9_./-]*\/|[A-Za-z0-9_./-]+\.d\.ts)?|lib\/(?:index|client|typert\.host|typert\.remote-client)\.(?:js|d\.ts)|package\.json|cordis\.patch\.yml|README\.md|CHANGELOG\.md|LICENSE|assets\/(?:$|feature-wall-0[123]\.png))$/u.test(entry)
       || entry.split('/').includes('..')) throw new Error(`Unexpected packaged file: ${entry}`)
   }
   const packed = JSON.parse(execFileSync('tar', ['-xOf', archive, 'package/package.json'], { encoding: 'utf8' }))

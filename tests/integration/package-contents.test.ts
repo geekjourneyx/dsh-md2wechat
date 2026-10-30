@@ -54,7 +54,7 @@ describe('packed plugin artifact', () => {
       expect(fixture.entries).toContain(`package/lib/${entry}`)
     }
     expect(fixture.entries.filter(entry => entry === 'package/cordis.patch.yml')).toHaveLength(1)
-    for (const document of ['README.md', 'CHANGELOG.md', 'LICENSE', 'assets/readme/readme-hero.webp']) {
+    for (const document of ['README.md', 'CHANGELOG.md', 'LICENSE', 'assets/feature-wall-01.png', 'assets/feature-wall-02.png', 'assets/feature-wall-03.png']) {
       expect(fixture.entries.filter(entry => entry === `package/${document}`)).toHaveLength(1)
     }
     expect(fixture.entries).toContain('package/package.json')
@@ -89,7 +89,7 @@ describe('packed plugin artifact', () => {
     for (const name of ['feature-wall-01.png', 'feature-wall-02.png', 'feature-wall-03.png']) {
       expect(readme).toContain(`src="./assets/${name}"`)
       const image = await readFile(join(fixture.packageRoot, 'assets', name))
-      expect(image.subarray(1, 4).toString()).toBe('PNG')
+      expect(image.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
       expect(image.byteLength).toBeLessThan(1_000_000)
     }
     expect(changelog.match(/^## 1\.0\.0\b/gmu)).toHaveLength(1)
