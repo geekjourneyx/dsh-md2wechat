@@ -1,3 +1,4 @@
+import { creatorRemoteError } from '../../src/creator/errors.ts'
 import { describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import { CreatorService } from '../../src/creator/service.ts'
@@ -337,6 +338,17 @@ describe('durable creator lifecycle', () => {
     expect(await creating).toMatchObject({ view: { theme: 'simple', version: 3, delivery: { kind: 'draft', status: 'completed', path: 'saved-draft' } } })
     expect(draftCalls).toBe(1)
     expect((await service.get(agent, opened.articleId)).delivery).toMatchObject({ status: 'completed', path: 'saved-draft' })
+  })
+
+  it.each(['PREVIEW_TITLE_INVALID', 'PREVIEW_AUTHOR_INVALID', 'PREVIEW_DIGEST_INVALID', 'API_KEY_INVALID', 'API_UNREACHABLE', 'CLI_TIMEOUT'] as const)('keeps %s actionable in the preview panel', async code => {
+    const f = fixture(); const service = f.service(); const opened = await service.open(agent, 'a.md', '', signal)
+    f.ops.preview = async () => { throw creatorRemoteError(undefined, code) }
+    const result = await service.dispatch(agent, opened.articleId, 1, { type: 'refresh-preview' }, signal)
+    expect(result.preview.status).toBe('error')
+    expect(result.preview.message).not.toContain('检查排版配置或重试')
+    expect(result.preview.message).not.toContain('[md2wechat:')
+    expect(result.markdown).toBe(opened.markdown)
+    if (code === 'PREVIEW_TITLE_INVALID') expect(result.preview.message).toContain('32')
   })
 
   it('still publishes the error from a genuinely active failed preview', async () => {

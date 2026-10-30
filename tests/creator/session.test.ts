@@ -63,3 +63,14 @@ describe('reviewable suggestions', () => {
     expect(state.view()).toMatchObject({ version: 1, suggestions: [], markdown: '# 文章' })
   })
 })
+
+ it('limits the combined advanced layout proposal to eight modules including existing ones', () => {
+   const modules = (n: number) => Array.from({ length: n }, () => ':::hero\ntitle: 示例\n:::').join('\n')
+   const state = new CreatorSession('article-a', 'owner-a', { ...revision, markdown: modules(6) + '\n甲\n乙' }, themes, 'default')
+   const request = state.requestSuggestions(1, 'layout')
+   const change = (before: string, n: number) => ({ title: '排版', reason: '强调', before, after: before + '\n' + modules(n) })
+   expect(() => state.propose(1, request.id, [change('甲', 2), change('乙', 1)])).toThrow('8 个')
+   expect(state.view().suggestions).toHaveLength(0)
+   state.propose(1, request.id, [change('甲', 1), change('乙', 1)])
+   expect(state.view().suggestions).toHaveLength(2)
+ })

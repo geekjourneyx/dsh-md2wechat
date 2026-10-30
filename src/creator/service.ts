@@ -1,5 +1,6 @@
+import { assertLayoutLimit } from './layout.ts'
 import { replaceArticleTitle } from './title.ts'
-import { creatorRemoteError } from './errors.ts'
+import { creatorRemoteError, creatorErrorInfo } from './errors.ts'
 import { isLegacyRevisionSource, legacyRevisionSource, LEGACY_RECOVERY_MESSAGE } from './legacy.ts'
 import type { DocumentStore } from './documents.ts'
 import { CreatorDeliveryUnknownError } from './delivery.ts'
@@ -267,6 +268,7 @@ export class CreatorService {
       case 'set-title':
       case 'apply-suggestion': {
         const markdown = action.type === 'edit-text' ? editParagraph(state.revision, action.before, action.after) : action.type === 'set-title' ? replaceArticleTitle(state.revision.markdown, action.title) : applyExactChange(state.revision.markdown, state.suggestion(version, action.suggestionId))
+        if (action.type === 'apply-suggestion' && state.view().suggestionRequest?.kind === 'layout') assertLayoutLimit(markdown)
         const revised = await operations.revise(state.revision, markdown, signal, state.candidates())
         const candidates = await operations.rebindImages(revised, state.candidates(), signal)
         signal.throwIfAborted(); if (this.delivering.has(articleId)) throw new Error('正在交付当前版本，请完成后再修改。'); state.replaceRevision(version, revised, true); state.rebindCandidates(candidates)
@@ -440,10 +442,10 @@ export class CreatorService {
         if (state.finishPreview(attempt, proof)) { state.committed(current); this.articles.set(articleId, state) }
       })
     } catch (error) {
-      const missingLayoutKey = error instanceof Error && error.message === 'MD2WECHAT_API_KEY is not configured for article preview'
+      const failure = creatorErrorInfo(creatorRemoteError(error, 'PREVIEW_FAILED')).message
       await this.serialize(articleId, async () => {
         const current = this.owned(agent, articleId); const state = current.fork()
-        if (state.failPreview(attempt, combined.aborted ? '预览已取消，原预览仍保留。' : missingLayoutKey ? '尚未连接排版密钥，请在 DSH 中配置 MD2WECHAT_API_KEY 后重试。原文未更改。' : '预览未完成。请检查排版配置或重试；原文未更改。')) { state.committed(current); this.articles.set(articleId, state) }
+        if (state.failPreview(attempt, combined.aborted ? '预览已取消，原预览仍保留。' : failure)) { state.committed(current); this.articles.set(articleId, state) }
       })
     }
     const state = this.owned(agent, articleId)

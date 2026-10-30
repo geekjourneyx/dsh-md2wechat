@@ -7,13 +7,13 @@ export function inspectionView(data: unknown): CreatorInspection {
   if (!Array.isArray(value.checks) || typeof value.readiness?.draft_ready !== 'boolean') throw new Error('文章检查未返回有效结果。')
   const labels: Record<string, string> = {
     MISSING_COVER: '请选择一张封面。', DUPLICATE_H1: '正文开头与文章标题重复，可以按需要保留或调整。',
-    TITLE_TOO_LONG: '标题超过长度限制，请缩短。', MISSING_TITLE: '请补充文章标题。',
+    TITLE_TOO_LONG: '标题超过 32 个字符，请点击「编辑标题」缩短。', AUTHOR_TOO_LONG: '作者超过 16 个字符，请缩短文章头部的作者信息。', DIGEST_TOO_LONG: '摘要超过 128 个字符，请缩短文章头部的摘要。', TITLE_BODY_MISMATCH: '公众号标题与正文标题不同，请核对是否符合预期。', DIGEST_METADATA_ONLY: '摘要仅用于公众号消息，不会自动插入正文。', LOCAL_IMAGE_UNSUPPORTED_FORMAT: '本地图片格式不支持上传，请换用 PNG、JPEG、GIF 或 WebP。', IMAGE_REPLACEMENT_REQUIRES_UPLOAD_OR_DRAFT: '本地预览可查看图片；保存到公众号前需要准备微信素材。', MISSING_TITLE: '请补充文章标题。',
     MISSING_IMAGE: '文章中有图片无法读取，请重新选择图片。',
   }
   return { ready: value.readiness.draft_ready, checks: value.checks.slice(0, 100).map(item => {
     if (!item || typeof item !== 'object') throw new Error('文章检查未返回有效结果。')
     const check = item as { code?: unknown; level?: unknown }
     if (typeof check.code !== 'string' || !['error', 'warn', 'info'].includes(String(check.level))) throw new Error('文章检查未返回有效结果。')
-    return { level: check.level as 'error' | 'warn' | 'info', message: labels[check.code] ?? (check.level === 'error' ? '文章有未解决的发布问题，请检查标题、正文和图片。' : '建议再次核对文章内容和图片显示效果。') }
+    return { level: check.level as 'error' | 'warn' | 'info', message: labels[check.code] ?? (check.level === 'error' ? '文章检查发现当前插件尚不能解释的发布问题，请保留会话记录排查。' : '文章检查返回了当前插件尚不能解释的提示，请核对预览。') }
   }) }
 }
