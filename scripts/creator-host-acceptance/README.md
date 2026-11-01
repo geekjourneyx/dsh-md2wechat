@@ -3,7 +3,7 @@
 # Installed article-panel acceptance
 
 This harness installs one supplied archive into an isolated profile using published
-DSH 0.2.0-rc.2, 0.2.1-rc.2 or 0.2.1-rc.4. It never rebuilds or repacks that archive. The test-only
+DSH 0.2.0-rc.2, 0.2.1-rc.2, 0.2.1-rc.3, 0.2.1-rc.4 or 0.2.1-rc.5. It never rebuilds or repacks that archive. The test-only
 LlmAdapter emits a genuine tool call, executed by the real Agent loop. A second,
 retained session receives a text-only fixture greeting so the host sidebar lists it.
 It has no article tool call; importing through authenticated Remote must still expose

@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        host: ['0.2.0-rc.2', '0.2.1-rc.2', '0.2.1-rc.4']
+        host: ['0.2.0-rc.2', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5']
         cli: ['3.3.0', '3.8.0']
     runs-on: ubuntu-latest
     timeout-minutes: 20
