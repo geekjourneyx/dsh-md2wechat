@@ -93,8 +93,8 @@ describe('packed plugin artifact', () => {
       expect(image.byteLength).toBeLessThan(1_000_000)
     }
     expect(changelog.match(/^## 1\.0\.0\b/gmu)).toHaveLength(1)
-    expect(changelog.match(/^## \d/gmu)).toHaveLength(5)
-    expect(changelog).toContain('## 2.0.0-rc.4 - 2026-10-29')
+    expect(changelog.match(/^## \d/gmu)).toHaveLength(6)
+    expect(changelog).toContain('## 2.0.0-rc.5 - 2026-11-01')
     expect(license.trimStart().startsWith('GNU AFFERO GENERAL PUBLIC LICENSE\n')).toBe(true)
     expect(license).toContain('Version 3, 19 November 2007')
     expect(readme).toContain('[AGPL-3.0 许可证](./LICENSE)')

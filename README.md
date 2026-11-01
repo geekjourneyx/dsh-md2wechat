@@ -7,11 +7,11 @@
 在 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) 中完成公众号写作、文字润色、标题优化、排版和配图，预览确认后导出 HTML 或保存到公众号草稿箱。排版与交付能力由 [md2wechat](https://github.com/geekjourneyx/md2wechat-skill) 提供。
 
 [![许可证：AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
-[![DSH 兼容版本](https://img.shields.io/badge/DSH-0.2.0--rc.2%20%7C%200.2.1--rc.2%20%7C%200.2.1--rc.4-475569.svg)](./package.json)
+[![DSH 兼容版本](https://img.shields.io/badge/DSH-5%20verified%20versions-475569.svg)](./package.json)
 
 [功能介绍](#功能介绍) · [安装](#安装) · [开始创作](#开始创作) · [配置](#配置) · [常见问题](#常见问题)
 
-> 当前版本 **2.0.0-rc.4** 为预发布版，可从 [发布页](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.4) 下载。历史 v1.0.0 是更早的工具流程，使用不同的宿主版本。
+> 当前版本 **2.0.0-rc.5** 为预发布版，可从 [发布页](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.5) 下载。历史 v1.0.0 是更早的工具流程，使用不同的宿主版本。
 
 ## 功能介绍
 
@@ -38,12 +38,23 @@ md2wechat 还提供多公众号账号配置，以及微信接口 IP 白名单和
 
 ### 环境要求
 
-- **DSH 宿主与网页客户端：** 使用相互匹配的 `0.2.0-rc.2`、`0.2.1-rc.2` 或 `0.2.1-rc.4`。
+- **DSH 宿主与网页客户端：** 使用相互匹配的 `0.2.0-rc.2`、`0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4` 或 `0.2.1-rc.5`。
 - **Node.js：** `^22.19.0` 或 `>=24.0.0`，且 `dsh` 命令可用。
 - **包管理器：** 通过 npm 启动的 DSH 需要可用的 pnpm；打包宿主可能已内置。源码构建使用 pnpm `11.7.0`。
 - **md2wechat CLI：** 单独安装，支持 `v1` JSON 协议及插件需要的命令。`3.3.0` 和 `3.8.0` 是回归验证目标，不是唯一允许的版本。
 - **工作区：** Markdown 文件和本地图片放在当前会话工作区内。
 - **凭据：** 预览和导出需要排版服务的 API Key；保存公众号草稿及备用生图另需相应凭据，见 [配置](#配置)。
+
+### 多版本兼容范围
+
+| DSH 版本 | 本插件支持情况 |
+|---|---|
+| `0.2.0-rc.2` | 保留支持 |
+| `0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.1-rc.5` | 支持，宿主与网页客户端须使用相同版本 |
+| `0.2.2-alpha.2` | 本次完整验收未通过，暂不声明支持 |
+| 其他版本或后续版本 | 尚未验证，不自动放行 |
+
+目前维护上述 5 个明确版本。新版本通过安装、页面交互和重启恢复验证后再加入；不会仅修改版本范围来绕过 DSH 的兼容检查。旧版是否退出支持会提前说明，不随新版本发布自动删除。官方版本及变化见 [DSH 发布记录](https://github.com/deepseek-ai/deepseek-harness/releases)。
 
 ### 先安装 md2wechat CLI
 
@@ -64,9 +75,9 @@ md2wechat capabilities --json
 
 ### 安装插件
 
-**DSH `0.2.1-rc.4` 用户：** 请使用 `2.0.0-rc.4` 或更新的兼容安装包，旧版 `2.0.0-rc.3` 不支持此宿主。
+**DSH `0.2.1-rc.5` 用户：** 请使用 `2.0.0-rc.5` 安装包；旧版插件 `2.0.0-rc.3` 和 `2.0.0-rc.4` 未声明支持此宿主，仅重装旧包不会解决版本拦截。
 
-从 [v2.0.0-rc.4 发布页](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.4) 下载 `geekjourneyx-dsh-md2wechat-2.0.0-rc.4.tgz` 和 `SHA256SUMS`，放在同一目录，先校验：
+从 [v2.0.0-rc.5 发布页](https://github.com/geekjourneyx/dsh-md2wechat/releases/tag/v2.0.0-rc.5) 下载 `geekjourneyx-dsh-md2wechat-2.0.0-rc.5.tgz` 和 `SHA256SUMS`，放在同一目录，先校验：
 
 ```sh
 sha256sum --check SHA256SUMS
@@ -81,7 +92,7 @@ shasum -a 256 --check SHA256SUMS
 确认校验成功后，在该目录安装：
 
 ```sh
-dsh plugin --profile web add ./geekjourneyx-dsh-md2wechat-2.0.0-rc.4.tgz
+dsh plugin --profile web add ./geekjourneyx-dsh-md2wechat-2.0.0-rc.5.tgz
 ```
 
 使用发布包不需要克隆或构建本仓库。插件通过 GitHub 发布包分发，不是通过 npm 安装；前面的 npm 命令安装的是 md2wechat CLI。
@@ -102,14 +113,14 @@ dsh plugin --profile web why @geekjourneyx/dsh-md2wechat
 dsh --profile web --dump-config
 ```
 
-确认安装的插件版本是 `2.0.0-rc.4`，然后重启对应配置的 DSH，让宿主和网页客户端加载同一版本。CLI 缺失或不兼容时，插件会停止启用并提示原因。用户自行在 DSH 中添加所需凭据后，即可打开文章生成预览。
+确认安装的插件版本是 `2.0.0-rc.5`，然后重启对应配置的 DSH，让宿主和网页客户端加载同一版本。CLI 缺失或不兼容时，插件会停止启用并提示原因。用户自行在 DSH 中添加所需凭据后，即可打开文章生成预览。
 
 ### 交给助手安装
 
 把下面这段发给助手：
 
 ```text
-请阅读 https://github.com/geekjourneyx/dsh-md2wechat 的 README，按「安装」章节安装 2.0.0-rc.4 预发布版。
+请阅读 https://github.com/geekjourneyx/dsh-md2wechat 的 README，按「安装」章节安装 2.0.0-rc.5 预发布版。
 先检查环境；尚未安装 md2wechat CLI 时，执行 npm install -g @geekjourneyx/md2wechat，已有兼容版本则继续使用。
 不要强制安装不兼容版本，不要配置或读取密钥。完成后告诉我实际看到的插件版本和 md2wechat 版本。
 ```
@@ -124,7 +135,7 @@ git clone https://github.com/geekjourneyx/dsh-md2wechat.git
 cd dsh-md2wechat
 pnpm install --frozen-lockfile
 pnpm pack --pack-destination ./dist
-dsh plugin --profile web add ./dist/geekjourneyx-dsh-md2wechat-2.0.0-rc.4.tgz
+dsh plugin --profile web add ./dist/geekjourneyx-dsh-md2wechat-2.0.0-rc.5.tgz
 ```
 
 这里打包的是当前源码，文件名中的版本取自 `package.json`。
@@ -244,7 +255,7 @@ dsh plugin --profile web add https://github.com/geekjourneyx/dsh-md2wechat/relea
 <summary>安装、恢复与权限问题</summary>
 
 - **配置目录锁报 `EPERM`：** 宿主无法访问配置目录锁，发生在插件依赖安装前。检查目录权限和宿主允许的访问范围，不要使用 `sudo` 绕过。
-- **宿主版本不匹配：** 当前插件支持 DSH `0.2.0-rc.2`、`0.2.1-rc.2` 或 `0.2.1-rc.4`，不支持 v1 使用的 `0.1.0-rc.5`。不要强制安装不兼容依赖；插件不会升级宿主。
+- **宿主版本不匹配：** 当前插件支持 DSH `0.2.0-rc.2`、`0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4` 或 `0.2.1-rc.5`，不支持 v1 使用的 `0.1.0-rc.5`。不要强制安装不兼容依赖；插件不会升级宿主。
 - **CLI 无法启用：** 检查可执行文件路径、宿主 PATH，以及 `version --json`、`capabilities --json` 的输出。更换 CLI 后需要重新预览和审阅。
 - **旧包提示 `protocol/remote-info` 缺失：** 在受支持的宿主中安装修正后的插件包，不要修改宿主导出或强行放宽版本要求。
 - **安装后没有文章入口：** 确认宿主和客户端版本匹配，重启后从「文章历史」选择会话，或在对话里请助手重新打开文章。
@@ -276,9 +287,9 @@ pnpm run pack:check
 
 [安装验收说明](./scripts/creator-host-acceptance/README.md) 使用真实打包产物和官方 DSH 宿主；[浏览器验收流程](./.github/workflows/creator-acceptance.yml) 用于检查安装后的文章界面、窄屏布局和对话入口。
 
-已在 DSH `0.2.1-rc.4` 与 CLI `3.8.0` 上完成自动化验证：856 项测试通过，并在真实宿主与浏览器中检查了文章入口、标题和正文编辑、换主题、应用建议、文章历史、窄屏显示、刷新及重启恢复、审阅与导出。排版使用本地测试服务，图片上传和存草稿使用模拟微信写入；不代表付费生图或真实公众号投递已验证。
+已在上述 5 个 DSH 版本与 CLI `3.8.0` 上完成自动化验证：856 项测试通过，并在真实宿主与浏览器中检查了文章入口、标题和正文编辑、换主题、应用建议、文章历史、窄屏显示、刷新及重启恢复、审阅与导出。排版使用本地测试服务，图片上传和存草稿使用模拟微信写入；不代表付费生图或真实公众号投递已验证。
 
-持续集成包含三种受支持的 DSH 版本与 CLI `3.3.0`、`3.8.0` 的六组组合，具体通过状态以对应运行结果为准。
+持续集成包含五种受支持的 DSH 版本与 CLI `3.3.0`、`3.8.0` 的十组组合，具体通过状态以对应运行结果为准。
 
 发布由 `v*` 标签触发，标签需与包版本一致且指向 `main` 上的提交。发布流程检查、构建并上传 `.tgz` 和 `SHA256SUMS`，预发布版本会标为预发布；合并 PR 本身不会发布，也不会上传到 npm。
 
